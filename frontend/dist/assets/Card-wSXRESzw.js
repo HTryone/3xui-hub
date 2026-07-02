@@ -1,0 +1,1 @@
+import{A as e,N as t,m as n,n as r,yt as i}from"./client-BOXNEpiV.js";var a=r({__name:`Card`,props:{padding:{type:Boolean,default:!0}},setup(r){return(a,o)=>(e(),n(`div`,{class:i([`ch-card`,{"ch-card--flush":!r.padding}])},[t(a.$slots,`default`,{},void 0,!0)],2))}},[[`__scopeId`,`data-v-9bca7751`]]);export{a as t};

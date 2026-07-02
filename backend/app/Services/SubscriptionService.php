@@ -155,8 +155,11 @@ class SubscriptionService
             if (isset($proxy['password'])) {
                 $yaml .= "    password: {$proxy['password']}\n";
             }
-            if (isset($proxy['cipher'])) {
-                $yaml .= "    cipher: {$proxy['cipher']}\n";
+            if (isset($proxy['encryption'])) {
+                $yaml .= "    encryption: {$proxy['encryption']}\n";
+            }
+            if (isset($proxy['flow'])) {
+                $yaml .= "    flow: {$proxy['flow']}\n";
             }
             if (isset($proxy['udp'])) {
                 $yaml .= "    udp: " . ($proxy['udp'] ? 'true' : 'false') . "\n";
@@ -176,10 +179,10 @@ class SubscriptionService
             if (isset($proxy['reality-opts'])) {
                 $yaml .= "    reality-opts:\n";
                 if (isset($proxy['reality-opts']['public-key'])) {
-                    $yaml .= "      public-key: \"{$proxy['reality-opts']['public-key']}\"\n";
+                    $yaml .= "      public-key: {$proxy['reality-opts']['public-key']}\n";
                 }
                 if (isset($proxy['reality-opts']['short-id'])) {
-                    $yaml .= "      short-id: \"{$proxy['reality-opts']['short-id']}\"\n";
+                    $yaml .= "      short-id: {$proxy['reality-opts']['short-id']}\n";
                 }
             }
             if (isset($proxy['network'])) {
@@ -197,13 +200,10 @@ class SubscriptionService
             }
             if (isset($proxy['xhttp-opts'])) {
                 $yaml .= "    xhttp-opts:\n";
-                $yaml .= "      path: \"{$proxy['xhttp-opts']['path']}\"\n";
-                $yaml .= "      mode: \"{$proxy['xhttp-opts']['mode']}\"\n";
-                if (isset($proxy['xhttp-opts']['extra'])) {
-                    $yaml .= "      extra:\n";
-                    foreach ($proxy['xhttp-opts']['extra'] as $key => $value) {
-                        $yaml .= "        {$key}: \"{$value}\"\n";
-                    }
+                $yaml .= "      path: {$proxy['xhttp-opts']['path']}\n";
+                $yaml .= "      mode: {$proxy['xhttp-opts']['mode']}\n";
+                if (isset($proxy['xhttp-opts']['x-padding-bytes'])) {
+                    $yaml .= "      x-padding-bytes: {$proxy['xhttp-opts']['x-padding-bytes']}\n";
                 }
             }
         }
@@ -269,7 +269,24 @@ class SubscriptionService
                 'port' => $port,
                 'uuid' => $uuid,
                 'udp' => true,
+                'client-fingerprint' => $params['fp'] ?? 'chrome',
             ];
+
+            // 解析 flow 参数（Reality 需要）
+            if (isset($params['flow'])) {
+                $proxy['flow'] = $params['flow'];
+            } elseif ($protocol === 'vless' && isset($params['security']) && $params['security'] === 'reality') {
+                // Reality 默认使用 xtls-rprx-vision
+                $proxy['flow'] = 'xtls-rprx-vision';
+            }
+
+            // encryption 参数
+            if (isset($params['encryption'])) {
+                $proxy['encryption'] = $params['encryption'];
+            } elseif ($protocol === 'vless') {
+                // VLESS 协议默认使用 none 加密
+                $proxy['encryption'] = 'none';
+            }
 
             // TLS / Reality
             if (isset($params['security'])) {
@@ -314,7 +331,7 @@ class SubscriptionService
                         $extra = json_decode($params['extra'], true);
                         if ($extra) {
                             if (isset($extra['xPaddingBytes'])) {
-                                $xhttpOpts['extra'] = ['xPaddingBytes' => $extra['xPaddingBytes']];
+                                $xhttpOpts['x-padding-bytes'] = $extra['xPaddingBytes'];
                             }
                         }
                     }
@@ -413,11 +430,23 @@ class SubscriptionService
             // UUID 或 password
             if ($protocol === 'vless') {
                 $outbound['uuid'] = $uuid;
+                // 解析 flow 参数（Reality 需要）
+                if (isset($params['flow'])) {
+                    $outbound['flow'] = $params['flow'];
+                } elseif (isset($params['security']) && $params['security'] === 'reality') {
+                    // Reality 默认使用 xtls-rprx-vision
+                    $outbound['flow'] = 'xtls-rprx-vision';
+                }
             } elseif ($protocol === 'trojan') {
                 $outbound['password'] = $uuid;
             } elseif ($protocol === 'ss') {
                 $outbound['method'] = $params['method'] ?? 'aes-256-gcm';
                 $outbound['password'] = $uuid;
+            }
+
+            // encryption 参数
+            if (isset($params['encryption'])) {
+                $outbound['encryption'] = $params['encryption'];
             }
 
             // TLS / Reality
@@ -616,6 +645,12 @@ class SubscriptionService
         $showExpire = SiteConfig::getValue('sub_show_expire', '0') === '1';
         $showTraffic = SiteConfig::getValue('sub_show_traffic', '0') === '1';
 
+        // 判断是否显示重置时间（只有周期套餐且月数 > 1 才显示）
+        $showReset = false;
+        if ($user->plan && $user->plan->isPeriod() && $user->plan->months > 1) {
+            $showReset = true;
+        }
+
         // 到期时间
         if ($showExpire) {
             $expire = $user->expired_at ? $user->expired_at->timestamp : 0;
@@ -631,8 +666,8 @@ class SubscriptionService
             ];
         }
 
-        // 当月流量
-        if ($showTraffic) {
+        // 当月流量（只有周期套餐才显示）
+        if ($showTraffic && $user->plan && $user->plan->isPeriod()) {
             $monthlyUsed = $user->monthly_traffic_used ?? 0;
             $monthlyLimit = $user->monthly_traffic_limit ?? 0;
             $usedStr = $this->formatBytes($monthlyUsed);
@@ -648,18 +683,20 @@ class SubscriptionService
             ];
         }
 
-        // 重置时间（始终显示）
-        $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
-        $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
-        $proxies[] = [
-            'name' => "重置: {$resetDays}天后",
-            'type' => 'ss',
-            'server' => '127.0.0.1',
-            'port' => 1,
-            'cipher' => 'aes-256-gcm',
-            'password' => 'info',
-            'udp' => false,
-        ];
+        // 重置时间（只有周期套餐且月数 > 1 才显示）
+        if ($showReset) {
+            $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
+            $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
+            $proxies[] = [
+                'name' => "重置: {$resetDays}天后",
+                'type' => 'ss',
+                'server' => '127.0.0.1',
+                'port' => 1,
+                'cipher' => 'aes-256-gcm',
+                'password' => 'info',
+                'udp' => false,
+            ];
+        }
 
         return $proxies;
     }
@@ -672,6 +709,12 @@ class SubscriptionService
         $outbounds = [];
         $showExpire = SiteConfig::getValue('sub_show_expire', '0') === '1';
         $showTraffic = SiteConfig::getValue('sub_show_traffic', '0') === '1';
+
+        // 判断是否显示重置时间（只有周期套餐且月数 > 1 才显示）
+        $showReset = false;
+        if ($user->plan && $user->plan->isPeriod() && $user->plan->months > 1) {
+            $showReset = true;
+        }
 
         // 到期时间
         if ($showExpire) {
@@ -687,8 +730,8 @@ class SubscriptionService
             ];
         }
 
-        // 当月流量
-        if ($showTraffic) {
+        // 当月流量（只有周期套餐才显示）
+        if ($showTraffic && $user->plan && $user->plan->isPeriod()) {
             $monthlyUsed = $user->monthly_traffic_used ?? 0;
             $monthlyLimit = $user->monthly_traffic_limit ?? 0;
             $usedStr = $this->formatBytes($monthlyUsed);
@@ -703,17 +746,19 @@ class SubscriptionService
             ];
         }
 
-        // 重置时间（始终显示）
-        $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
-        $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
-        $outbounds[] = [
-            'type' => 'shadowsocks',
-            'tag' => "重置: {$resetDays}天后",
-            'server' => '127.0.0.1',
-            'server_port' => 1,
-            'method' => 'aes-256-gcm',
-            'password' => 'info',
-        ];
+        // 重置时间（只有周期套餐且月数 > 1 才显示）
+        if ($showReset) {
+            $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
+            $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
+            $outbounds[] = [
+                'type' => 'shadowsocks',
+                'tag' => "重置: {$resetDays}天后",
+                'server' => '127.0.0.1',
+                'server_port' => 1,
+                'method' => 'aes-256-gcm',
+                'password' => 'info',
+            ];
+        }
 
         return $outbounds;
     }
@@ -746,6 +791,12 @@ class SubscriptionService
         $showExpire = SiteConfig::getValue('sub_show_expire', '0') === '1';
         $showTraffic = SiteConfig::getValue('sub_show_traffic', '0') === '1';
 
+        // 判断是否显示重置时间（只有周期套餐且月数 > 1 才显示）
+        $showReset = false;
+        if ($user->plan && $user->plan->isPeriod() && $user->plan->months > 1) {
+            $showReset = true;
+        }
+
         // 生成 SS URI（标准格式：base64(method:password)@server:port#name）
         $userInfo = base64_encode('aes-256-gcm:info');
 
@@ -756,8 +807,8 @@ class SubscriptionService
             $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode("到期: {$expireStr}");
         }
 
-        // 当月流量
-        if ($showTraffic) {
+        // 当月流量（只有周期套餐才显示）
+        if ($showTraffic && $user->plan && $user->plan->isPeriod()) {
             $monthlyUsed = $user->monthly_traffic_used ?? 0;
             $monthlyLimit = $user->monthly_traffic_limit ?? 0;
             $usedStr = $this->formatBytes($monthlyUsed);
@@ -765,10 +816,12 @@ class SubscriptionService
             $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode("当月: {$usedStr} / {$limitStr}");
         }
 
-        // 重置时间（始终显示）
-        $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
-        $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
-        $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode("重置: {$resetDays}天后");
+        // 重置时间（只有周期套餐且月数 > 1 才显示）
+        if ($showReset) {
+            $resetAt = $user->next_traffic_reset_at ? $user->next_traffic_reset_at->timestamp : 0;
+            $resetDays = $resetAt > 0 ? max(0, ceil(($resetAt - time()) / 86400)) : 0;
+            $links[] = "ss://{$userInfo}@127.0.0.1:1#" . urlencode("重置: {$resetDays}天后");
+        }
 
         return $links;
     }
