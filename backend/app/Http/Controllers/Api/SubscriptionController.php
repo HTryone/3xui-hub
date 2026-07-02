@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
+use App\Models\SiteConfig;
 use App\Models\User;
 use App\Services\BanService;
 use App\Services\SubscriptionException;
@@ -15,7 +16,8 @@ use Illuminate\Http\Response;
 
 /**
  * 订阅接口：GET /api/sub/{token}
- * 返回 text/plain 的 Base64 文本，同时同步流量。
+ * 支持格式：base64（默认）、clash、singbox
+ * 参数：?clash=1 或 ?singbox=1
  */
 class SubscriptionController extends Controller
 {
@@ -42,8 +44,16 @@ class SubscriptionController extends Controller
             return $this->text('[403] 账号已禁用', 403, '账号已禁用');
         }
 
+        // 确定格式
+        $format = $this->resolveFormat($request);
+
+        // 检查格式是否启用
+        if (!$this->isFormatEnabled($format)) {
+            return $this->text("[400] 不支持的订阅格式: {$format}", 400, '不支持的订阅格式');
+        }
+
         try {
-            $body = $this->service->generate($user);
+            $body = $this->service->generate($user, $format);
         } catch (SubscriptionException $e) {
             return $this->text("[{$e->codeValue}] {$e->getMessage()}", $e->codeValue, $e->getMessage());
         }
@@ -54,8 +64,46 @@ class SubscriptionController extends Controller
         $total = (int) $user->traffic_limit;
         $expire = $user->expired_at ? $user->expired_at->timestamp : 0;
 
-        return $this->text($body)
-            ->header('Subscription-Userinfo', "upload={$upload}; download={$download}; total={$total}; expire={$expire}");
+        // 根据格式设置 Content-Type
+        $contentType = match ($format) {
+            'clash' => 'text/yaml; charset=UTF-8',
+            'singbox' => 'application/json; charset=UTF-8',
+            default => 'text/plain; charset=UTF-8',
+        };
+
+        return response($body, 200)
+            ->header('Content-Type', $contentType)
+            ->header('Subscription-Userinfo', "upload={$upload}; download={$download}; total={$total}; expire={$expire}")
+            ->header('X-CH-Code', '0')
+            ->header('X-CH-Msg', 'ok');
+    }
+
+    /**
+     * 确定请求的格式。
+     */
+    private function resolveFormat(Request $request): string
+    {
+        if ($request->has('clash') || $request->has('clash=1')) {
+            return 'clash';
+        }
+
+        if ($request->has('singbox') || $request->has('singbox=1')) {
+            return 'singbox';
+        }
+
+        return 'base64';
+    }
+
+    /**
+     * 检查格式是否启用。
+     */
+    private function isFormatEnabled(string $format): bool
+    {
+        return match ($format) {
+            'clash' => SiteConfig::getValue('sub_clash_enabled', '0') === '1',
+            'singbox' => SiteConfig::getValue('sub_singbox_enabled', '0') === '1',
+            default => true, // base64 始终启用
+        };
     }
 
     /**
