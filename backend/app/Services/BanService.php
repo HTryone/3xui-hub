@@ -93,9 +93,17 @@ class BanService
                         $resp = $driver->getClient($email);
                         if ($resp === null) continue;
                         $clientData = $resp['client'] ?? $resp;
+                        $clientData['email']  = $email;
                         $clientData['enable'] = $enable;
                         if (isset($clientData['id'])) {
                             $clientData['id'] = (string) $clientData['id'];
+                        }
+                        // 3x-ui 不同版本对空数组字段严格性不同：JP1 要求 allowedIPs 为 []string，
+                        // 而 getClient 在某些版本返回的是空字符串 "". 归一化为 [] 避免更新被拒。
+                        foreach (['allowedIPs'] as $arrKey) {
+                            if (array_key_exists($arrKey, $clientData) && !is_array($clientData[$arrKey])) {
+                                $clientData[$arrKey] = [];
+                            }
                         }
                         $driver->updateClient($email, $clientData, $inboundId);
                     } catch (\Throwable) {
@@ -107,9 +115,15 @@ class BanService
                     $resp = $driver->getClient($email);
                     if ($resp !== null) {
                         $clientData = $resp['client'] ?? $resp;
+                        $clientData['email']  = $email;
                         $clientData['enable'] = $enable;
                         if (isset($clientData['id'])) {
                             $clientData['id'] = (string) $clientData['id'];
+                        }
+                        foreach (['allowedIPs'] as $arrKey) {
+                            if (array_key_exists($arrKey, $clientData) && !is_array($clientData[$arrKey])) {
+                                $clientData[$arrKey] = [];
+                            }
                         }
                         $driver->updateClient($email, $clientData);
                     }
