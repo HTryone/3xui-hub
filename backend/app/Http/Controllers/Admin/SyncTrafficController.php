@@ -88,7 +88,7 @@ class SyncTrafficController extends Controller
             foreach ($chunk as $node) {
                 $driver = $this->driverFactory->make($node);
                 $promises[$node->id] = function () use ($driver) {
-                    return $driver->getClientStatsGroupedByInbound();
+                    return $driver->getClientStatsByEmail();
                 };
             }
 
@@ -99,29 +99,17 @@ class SyncTrafficController extends Controller
                 foreach ($chunk as $node) {
                     try {
                         $driver = $this->driverFactory->make($node);
-                        $results[$node->id] = $driver->getClientStatsGroupedByInbound();
+                        $results[$node->id] = $driver->getClientStatsByEmail();
                     } catch (\Throwable) {
                         $results[$node->id] = [];
                     }
                 }
             }
 
-            foreach ($results as $nodeId => $statsByInbound) {
-                $merged = [];
-                foreach ($statsByInbound ?? [] as $emailStats) {
-                    foreach ($emailStats as $email => $stat) {
-                        // 3x-ui 同一 email 在每个 inbound 下返回的是同一份全局累计值，
-                        // 并非按入站拆分。若逐入站累加会让挂 N 个入站的用户被记成 N 倍，
-                        // 故同名 email 只取首个入站的值（一个面板一个用户只计一次）。
-                        if (!isset($merged[$email])) {
-                            $merged[$email] = [
-                                'up'   => (int) ($stat['up']   ?? 0),
-                                'down' => (int) ($stat['down'] ?? 0),
-                            ];
-                        }
-                    }
-                }
-                $allStats[$nodeId] = $merged;
+            // getClientStatsByEmail() 已按 email 去重（同 email 跨入站只取首值），
+            // 直接作为该节点的 [email => 流量] 结果，不再做任何跨入站累加。
+            foreach ($results as $nodeId => $stats) {
+                $allStats[$nodeId] = $stats ?? [];
             }
         }
 

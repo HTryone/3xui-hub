@@ -106,6 +106,11 @@ class ThreeXUiDriver implements PanelDriverInterface
         return $this->client->getClientStatsGroupedByInbound();
     }
 
+    public function getClientStatsByEmail(): array
+    {
+        return $this->client->getClientStatsByEmail();
+    }
+
     public function getClientLinks(string $identifier): array
     {
         return $this->client->getClientLinks($identifier);

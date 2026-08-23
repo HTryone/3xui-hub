@@ -82,23 +82,11 @@ class UserController extends Controller
         Node::where('enabled', true)->each(function (Node $node) use ($user, $email) {
             try {
                 $driver = $this->driverFactory->make($node);
-                $statsByInbound = $driver->getClientStatsGroupedByInbound();
+                $stats = $driver->getClientStatsByEmail();
 
-                // 3x-ui 同一 email 在每个 inbound 下返回的是同一份全局累计值，
-                // 并非按入站拆分；逐入站累加会让挂 N 个入站的用户被记成 N 倍，
-                // 故同名 email 只取首个入站的值。
-                $merged = null;
-                foreach ($statsByInbound as $emailStats) {
-                    if (isset($emailStats[$email])) {
-                        $merged = [
-                            'up'   => (int) ($emailStats[$email]['up']   ?? 0),
-                            'down' => (int) ($emailStats[$email]['down'] ?? 0),
-                        ];
-                        break;
-                    }
-                }
-
-                $traffic = ($merged !== null && ($merged['up'] > 0 || $merged['down'] > 0)) ? $merged : null;
+                // getClientStatsByEmail() 已按 email 去重，直接取该用户的值
+                $stat = $stats[$email] ?? null;
+                $traffic = ($stat !== null && ($stat['up'] > 0 || $stat['down'] > 0)) ? $stat : null;
                 $this->syncService->syncUserNode($user, $node, $traffic);
             } catch (\Throwable $e) {
                 // 节点离线或异常，跳过

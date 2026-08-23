@@ -282,6 +282,41 @@ class ThreeXUiClient
         return $result;
     }
 
+    /**
+     * 单节点 client 流量，按 email 去重后返回。
+     * 返回 [clientEmail => ['up'=>int, 'down'=>int], ...]
+     *
+     * 去重依据（已查实 3x-ui / Xray 官方源码）：
+     * - Xray 按 user>>>email 计数，一个 email 只有一个 counter，跨其所有 inbound 聚合；
+     * - 3x-ui 库 client_traffics 表 Email 唯一，节点 API 每个 email 只返回一行。
+     * 故同一 email 出现在多个 inbound 下时，携带的是【同一份全局累计值】，
+     * 只需取首次出现的值（对齐 3x-ui 内部的 emailTrafficMap 写法），
+     * 绝不可跨 inbound 累加（那会让挂 N 个入站的用户被记成 N 倍）。
+     * 每个节点只需 1 次 HTTP 请求（listInbounds）。
+     *
+     * 这是流量同步唯一的去重入口：所有同步路径（cron / 队列 / 管理员点同步 / 用户端同步）
+     * 都消费本方法，避免各自重复实现去重而漏改某一处。
+     */
+    public function getClientStatsByEmail(): array
+    {
+        $inbounds = $this->listInbounds();
+        $result = [];
+
+        foreach ($inbounds as $inbound) {
+            foreach ($inbound['clientStats'] ?? [] as $stat) {
+                $email = $stat['email'] ?? '';
+                if ($email === '') continue;
+                if (isset($result[$email])) continue; // 同 email 跨入站重复，只取首次
+                $result[$email] = [
+                    'up'   => (int) ($stat['up']   ?? 0),
+                    'down' => (int) ($stat['down'] ?? 0),
+                ];
+            }
+        }
+
+        return $result;
+    }
+
     /** GET /panel/api/inbounds/options → 轻量 picker [{id,protocol,port,tag,remark,tlsFlowCapable}]。 */
     public function inboundOptions(): array
     {

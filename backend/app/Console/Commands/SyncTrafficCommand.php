@@ -80,7 +80,7 @@ class SyncTrafficCommand extends Command
 
     /**
      * 并行拉取所有节点流量数据。
-     * 每节点调1次 getClientStatsGroupedByInbound()，分批并行。
+     * 每节点调1次 getClientStatsByEmail()（已按 email 去重），分批并行。
      *
      * @return array [nodeId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
      */
@@ -95,7 +95,7 @@ class SyncTrafficCommand extends Command
             foreach ($chunk as $node) {
                 $driver = $driverFactory->make($node);
                 $promises[$node->id] = function () use ($driver) {
-                    return $driver->getClientStatsGroupedByInbound();
+                    return $driver->getClientStatsByEmail();
                 };
             }
 
@@ -108,29 +108,17 @@ class SyncTrafficCommand extends Command
                 foreach ($chunk as $node) {
                     try {
                         $driver = $driverFactory->make($node);
-                        $results[$node->id] = $driver->getClientStatsGroupedByInbound();
+                        $results[$node->id] = $driver->getClientStatsByEmail();
                     } catch (\Throwable) {
                         $results[$node->id] = [];
                     }
                 }
             }
 
-            // 合并每个节点的 inbound 流量
-            // 注意：3x-ui 同一 email 在每个 inbound 下返回的是【同一份全局累计值】，并非按入站拆分。
-            // 逐入站累加会让挂 N 个入站的用户被记成 N 倍，故同名 email 只取首个入站的值。
-            foreach ($results as $nodeId => $statsByInbound) {
-                $merged = [];
-                foreach ($statsByInbound ?? [] as $emailStats) {
-                    foreach ($emailStats as $email => $stat) {
-                        if (!isset($merged[$email])) {
-                            $merged[$email] = [
-                                'up'   => (int) ($stat['up']   ?? 0),
-                                'down' => (int) ($stat['down'] ?? 0),
-                            ];
-                        }
-                    }
-                }
-                $allStats[$nodeId] = $merged;
+            // getClientStatsByEmail() 已按 email 去重（同 email 跨入站只取首值），
+            // 直接作为该节点的 [email => 流量] 结果，不再做任何跨入站累加。
+            foreach ($results as $nodeId => $stats) {
+                $allStats[$nodeId] = $stats ?? [];
             }
         }
 
