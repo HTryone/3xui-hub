@@ -46,15 +46,19 @@ class SyncNodeTrafficJob implements ShouldQueue
             return;
         }
 
-        // 2. 合并所有 inbound 的流量（同用户跨 inbound 累加）
+        // 2. 合并所有 inbound 的流量
+        // 注意：3x-ui 同一 email 在每个 inbound 下返回的是【同一份全局累计值】，
+        // 并非按入站拆分。若逐入站累加，用户挂 N 个入站会被记成 N 倍。
+        // 因此同名 email 只取首个入站的值（一个面板一个用户只计一次）。
         $mergedStats = [];
         foreach ($statsByInbound as $inboundId => $emailStats) {
             foreach ($emailStats as $email => $stat) {
                 if (!isset($mergedStats[$email])) {
-                    $mergedStats[$email] = ['up' => 0, 'down' => 0];
+                    $mergedStats[$email] = [
+                        'up'   => (int) ($stat['up']   ?? 0),
+                        'down' => (int) ($stat['down'] ?? 0),
+                    ];
                 }
-                $mergedStats[$email]['up'] += $stat['up'];
-                $mergedStats[$email]['down'] += $stat['down'];
             }
         }
 
