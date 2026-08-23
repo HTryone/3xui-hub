@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================================
 # 3xui-hub 一键安装脚本
-# https://github.com/YouzSpace/3xui-hub
+# 上游: https://github.com/YouzSpace/3xui-hub
+# 复刻: https://github.com/HTryone/3xui-hub
 # ============================================================
 
 set -e
@@ -16,7 +17,8 @@ NC='\033[0m'
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
-REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
+REPO_URL="https://github.com/YouzSpace/3xui-hub.git"  # 默认值，运行时会按选择覆盖
+REPO_OWNER="YouzSpace"
 VERSION="1.0.0"
 
 # 日志函数
@@ -337,6 +339,43 @@ install_mysql() {
 }
 
 # 部署项目
+# 选择代码来源：1=上游 YouzSpace / 2=复刻 HTryone（均拉 main 分支）
+# 支持环境变量 REPO_OWNER=HTryone 直接指定，跳过交互；无交互终端时默认走选项 1
+select_source() {
+    # 优先读取环境变量（适合 curl | bash 等无法稳定交互的场景）
+    if [ "${REPO_OWNER:-}" = "HTryone" ] || [ "${USE_FORK:-}" = "1" ]; then
+        REPO_OWNER="HTryone"
+        REPO_URL="https://github.com/HTryone/3xui-hub.git"
+        info "已选择：我的复刻 (HTryone/3xui-hub)"
+        return
+    fi
+
+    echo ""
+    info "请选择代码来源（均拉取 main 分支）："
+    echo -e "  ${BLUE}1)${NC} 上游原版 (YouzSpace/3xui-hub)"
+    echo -e "  ${BLUE}2)${NC} 我的复刻 (HTryone/3xui-hub)"
+    echo -n -e "${YELLOW}请输入选项 [1/2，默认 1]：${NC}"
+
+    # 从控制终端读取；/dev/tty 不可用时（无交互终端）回退为空，默认走 1
+    if ! read -r SRC_CHOICE </dev/tty 2>/dev/null; then
+        SRC_CHOICE=""
+        echo ""
+        warn "未检测到可交互终端，使用默认值 1（上游原版）"
+        warn "如需使用复刻，请运行：curl ... | REPO_OWNER=HTryone bash"
+    fi
+    SRC_CHOICE="${SRC_CHOICE:-1}"
+
+    if [ "$SRC_CHOICE" = "2" ]; then
+        REPO_OWNER="HTryone"
+        REPO_URL="https://github.com/HTryone/3xui-hub.git"
+        info "已选择：我的复刻 (HTryone/3xui-hub)"
+    else
+        REPO_OWNER="YouzSpace"
+        REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
+        info "已选择：上游原版 (YouzSpace/3xui-hub)"
+    fi
+}
+
 deploy_project() {
     info "部署项目..."
 
@@ -351,11 +390,11 @@ deploy_project() {
     else
         info "下载项目（浅克隆，体积最小化）..."
 
-        # 国内镜像列表，按优先级尝试
+        # 国内镜像列表，按优先级尝试（随来源切换 owner）
         MIRRORS=(
-            "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git"
-            "https://ghproxy.net/https://github.com/YouzSpace/3xui-hub.git"
-            "https://github.com/YouzSpace/3xui-hub.git"
+            "https://ghfast.top/https://github.com/${REPO_OWNER}/3xui-hub.git"
+            "https://ghproxy.net/https://github.com/${REPO_OWNER}/3xui-hub.git"
+            "https://github.com/${REPO_OWNER}/3xui-hub.git"
         )
 
         CLONED=false
@@ -693,6 +732,9 @@ main() {
 
     # 安装 MySQL
     install_mysql
+
+    # 选择代码来源（上游 / 我的复刻）
+    select_source
 
     # 部署项目
     deploy_project
