@@ -1,0 +1,2 @@
+# 强制脚本以 LF 行尾入库，防止 Windows CRLF 污染导致 Linux 上 shebang 失效
+3hub text eol=lf

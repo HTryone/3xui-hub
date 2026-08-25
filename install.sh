@@ -663,9 +663,17 @@ install_3hub() {
     info "安装 3hub 管理命令..."
 
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
+    # 清洗 Windows CRLF，避免 Linux 上 shebang 行变成 #!/bin/bash\r 导致命令无法执行
+    sed -i 's/\r$//' /usr/local/bin/3hub
     chmod +x /usr/local/bin/3hub
 
-    success "3hub 命令安装完成"
+    # 部署兜底：装完必须能真正执行，否则中止安装（防 CRLF / 语法污染漏到生产）
+    if ! 3hub --help >/dev/null 2>&1; then
+        error "3hub 命令安装后无法执行，疑似 CRLF 污染或语法错误，已中止安装"
+        exit 1
+    fi
+
+    success "3hub 命令安装完成（已验证可执行）"
 }
 
 # 输出安装结果
