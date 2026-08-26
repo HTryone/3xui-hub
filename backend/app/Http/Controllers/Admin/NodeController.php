@@ -64,7 +64,12 @@ class NodeController extends Controller
             return $node;
         });
 
-        // 新节点：把所有已有用户同步过去
+        // ① 接入新节点：先清掉远程 3x-ui 上残留的「本面板托管 client」（email 形如 ch_user_{id}），
+        //    使远程从 0 起步，避免重新接入一台曾托管过的机器时旧流量被重复计入。
+        //    只删被管 client、保留入站与非托管 client；远程不可达/鉴权失败则静默跳过，不阻塞节点创建。
+        $this->cleanupResidualManagedClients($node);
+
+        // 新节点：把所有已有用户同步过去（重建为全新 0 流量 client）
         $this->userService->provisionAllUsersToNode($node);
 
         return $this->success($this->present($node, true), '创建成功');
@@ -98,24 +103,40 @@ class NodeController extends Controller
 
     public function destroy(Node $node): \Illuminate\Http\JsonResponse
     {
-        // 同步删除 3x-ui 上该节点各入站的所有 client
-        $driver = $this->driverFactory->make($node);
-        $inboundIds = $node->inbounds()->pluck('inbound_id')->toArray();
-        User::whereNotNull('email')->each(function (User $user) use ($driver, $inboundIds) {
-            $email = $user->clientEmail();
-            foreach ($inboundIds as $inboundId) {
-                try {
-                    $driver->deleteClient($email, false, $inboundId);
-                } catch (\Throwable) {
-                    // 不存在，忽略
+        // ② 销毁节点：先用健康探测判断远程是否可达（请求超时由客户端 timeout 兜底，不会无限挂起）。
+        //    可达 → 删除远程上本面板托管的 client；不可达 → 跳过远程操作。
+        //    无论远程是否可达，本地节点【必定】删除，根除「删不掉 / 面板卡死」的问题。
+        $reachable = false;
+        $driver = null;
+        try {
+            $driver = $this->driverFactory->make($node); // api_key 解密失败会抛，归入不可达
+            $health = $driver->healthCheck();
+            $reachable = (bool) ($health['ok'] ?? false);
+        } catch (\Throwable) {
+            $reachable = false;
+        }
+
+        if ($reachable && $driver !== null) {
+            $inboundIds = $node->inbounds()->pluck('inbound_id')->toArray();
+            User::whereNotNull('email')->each(function (User $user) use ($driver, $inboundIds) {
+                $email = $user->clientEmail();
+                foreach ($inboundIds as $inboundId) {
+                    try {
+                        $driver->deleteClient($email, false, $inboundId);
+                    } catch (\Throwable) {
+                        // 不存在，忽略
+                    }
                 }
-            }
-            try { $driver->deleteClient($email); } catch (\Throwable) {}
-        });
+                try { $driver->deleteClient($email); } catch (\Throwable) {}
+            });
+        }
 
         $node->delete();
 
-        return $this->success(null, '已删除');
+        return $this->success(
+            null,
+            $reachable ? '已删除（远程托管 client 已清理）' : '已删除（远程不可达，已跳过远程清理）'
+        );
     }
 
     /** M4.4 测试连接：healthCheck 并更新节点状态/延迟。 */
@@ -271,6 +292,35 @@ class NodeController extends Controller
                 if ($existing) {
                     $driver->attachClient($user->clientEmail(), $inboundIds);
                 }
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+    }
+
+    /**
+     * 接入新节点时，删除远程 3x-ui 上残留的「本面板托管 client」（email 形如 ch_user_{id}）。
+     * 目的：让远程从 0 起步，避免重新接入一台曾托管过的机器时旧流量被重复计入。
+     * 只删被管 client、保留入站与非托管 client；远程不可达/出错时静默跳过，不阻塞节点创建。
+     */
+    private function cleanupResidualManagedClients(Node $node): void
+    {
+        try {
+            $driver = $this->driverFactory->make($node);
+            $clients = $driver->listClients();
+        } catch (\Throwable $e) {
+            report($e);
+
+            return; // 远程不可达或鉴权失败，跳过清理（后续 provision 按现状处理）
+        }
+
+        foreach ($clients as $client) {
+            $email = $client['email'] ?? '';
+            if ($email === '' || !preg_match('/^ch_user_\d+$/', $email)) {
+                continue;
+            }
+            try {
+                $driver->deleteClient($email); // keepTraffic=false → 删除并重置流量
             } catch (\Throwable $e) {
                 report($e);
             }
