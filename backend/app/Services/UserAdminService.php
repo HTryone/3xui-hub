@@ -141,7 +141,9 @@ class UserAdminService
                 $existing = $client->getClient($email);
                 if ($existing) {
                     // 已存在：更新配置
-                    $clientData['id'] = $existing['id'] ?? null;
+                    // v3.7.0 API 返回的 client 里 id 是数据库行号（数字），真 UUID 在 uuid 字段；
+                    // 旧版无 uuid 键时回退 id（旧版 id 即 UUID）。
+                    $clientData['id'] = $existing['uuid'] ?? ($existing['id'] ?? null);
                     foreach ($inboundIds as $inboundId) {
                         try {
                             $client->updateClient($email, $clientData, $inboundId);

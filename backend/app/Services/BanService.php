@@ -95,8 +95,9 @@ class BanService
                         $clientData = $resp['client'] ?? $resp;
                         $clientData['email']  = $email;
                         $clientData['enable'] = $enable;
-                        if (isset($clientData['id'])) {
-                            $clientData['id'] = (string) $clientData['id'];
+                        if (!empty($clientData['uuid'])) {
+                            // v3.7.0 返回的 id 是数据库行号（数字），真 UUID 在 uuid 字段
+                            $clientData['id'] = $clientData['uuid'];
                         }
                         // 3x-ui 不同版本对空数组字段严格性不同：JP1 要求 allowedIPs 为 []string，
                         // 而 getClient 在某些版本返回的是空字符串 "". 归一化为 [] 避免更新被拒。
@@ -117,8 +118,9 @@ class BanService
                         $clientData = $resp['client'] ?? $resp;
                         $clientData['email']  = $email;
                         $clientData['enable'] = $enable;
-                        if (isset($clientData['id'])) {
-                            $clientData['id'] = (string) $clientData['id'];
+                        if (!empty($clientData['uuid'])) {
+                            // v3.7.0 返回的 id 是数据库行号（数字），真 UUID 在 uuid 字段
+                            $clientData['id'] = $clientData['uuid'];
                         }
                         foreach (['allowedIPs'] as $arrKey) {
                             if (array_key_exists($arrKey, $clientData) && !is_array($clientData[$arrKey])) {
