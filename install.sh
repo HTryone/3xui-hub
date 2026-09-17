@@ -413,18 +413,19 @@ SESSION_DRIVER=database
 SESSION_LIFETIME=120
 
 CACHE_STORE=file
-QUEUE_CONNECTION=sync
+QUEUE_CONNECTION=database
+DB_QUEUE_RETRY_AFTER=180
 EOF
 
     # 生成 APP_KEY
     info "生成 APP_KEY..."
     php artisan key:generate 2>&1 | tee -a "$LOG_FILE" || error_exit "APP_KEY 生成失败"
 
-    # 设置 .env 权限（确保 PHP-FPM 用户可读写）
+    # 设置 .env 权限（运行用户只读）
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
-    chown "$NGINX_USER":"$NGINX_USER" .env 2>/dev/null || true
-    chmod 664 .env 2>/dev/null || true
+    chown root:"$NGINX_USER" .env 2>/dev/null || true
+    chmod 640 .env 2>/dev/null || true
 
     # 创建 MySQL 数据库
     if command -v mysql &>/dev/null; then
@@ -443,11 +444,11 @@ EOF
 
     # 设置权限（确保 storage 目录存在）
     mkdir -p storage/{app/public,framework/{cache/data,sessions,testing,views},logs}
-    chmod -R 755 storage bootstrap/cache
+    chmod -R 775 storage bootstrap/cache
     # 自动检测 Nginx worker 用户
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
-    chown -R "$NGINX_USER":"$NGINX_USER" "$INSTALL_DIR/backend" 2>/dev/null || true
+    chown -R "$NGINX_USER":"$NGINX_USER" storage bootstrap/cache 2>/dev/null || true
 
     success "环境配置完成"
 }
@@ -619,6 +620,39 @@ setup_cron() {
     fi
 }
 
+# 配置常驻队列 Worker（后台流量同步）
+setup_queue_worker() {
+    info "配置后台任务 Worker..."
+
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    cat > /etc/systemd/system/3xui-hub-queue.service << EOF
+[Unit]
+Description=3xui-hub Queue Worker
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${INSTALL_DIR}/backend
+ExecStart=/usr/bin/php artisan queue:work database --sleep=2 --tries=5 --timeout=120 --max-time=3600
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=130
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now 3xui-hub-queue.service
+    systemctl is-active --quiet 3xui-hub-queue.service || error_exit "后台任务 Worker 启动失败"
+    success "后台任务 Worker 已启动"
+}
+
 # 安装 3hub 命令
 install_3hub() {
     info "安装 3hub 管理命令..."
@@ -705,6 +739,9 @@ main() {
 
     # 配置 cron
     setup_cron
+
+    # 配置后台任务 Worker
+    setup_queue_worker
 
     # 安装 3hub 命令
     install_3hub

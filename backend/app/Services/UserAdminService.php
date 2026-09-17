@@ -191,6 +191,45 @@ class UserAdminService
     }
 
     /**
+     * 新节点初始化专用：逐用户清理残留后立即重建，失败时终止且不启用节点。
+     *
+     * @param array<string, true> $remoteEmails
+     */
+    public function initializeAllUsersOnNode(Node $node, array $remoteEmails): void
+    {
+        $users = User::query()->get();
+        $driver = $this->driverFactory->make($node);
+
+        foreach ($users as $user) {
+            $email = $user->clientEmail();
+            $inboundIds = $node->inboundIdsFor($user->protocol);
+
+            if ($user->plan_id === null || empty($inboundIds)) {
+                if (isset($remoteEmails[$email])) {
+                    $driver->deleteClient($email, false);
+                }
+                continue;
+            }
+
+            if (isset($remoteEmails[$email])) {
+                $driver->deleteClient($email, false);
+            }
+
+            $created = $driver->createClient([
+                'email' => $email,
+                'enable' => (bool) $user->enabled,
+                'totalGB' => $user->traffic_limit > 0 ? (int) $user->traffic_limit : 0,
+                'expiryTime' => $user->expired_at ? (int) ($user->expired_at->timestamp * 1000) : 0,
+                'limitIp' => 0,
+            ], $inboundIds);
+
+            if ($created === null) {
+                throw new \RuntimeException("用户 {$email} 创建失败");
+            }
+        }
+    }
+
+    /**
      * 总量套餐续费：重置总流量 + 重新启用 + 3x-ui 重置。
      */
     public function renew(User $user): void

@@ -2,15 +2,11 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
-use App\Models\Node;
 use App\Models\SiteConfig;
 use App\Models\User;
-use App\Services\BanService;
 use App\Services\SubscriptionException;
 use App\Services\SubscriptionService;
-use App\Services\TrafficSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
@@ -23,9 +19,6 @@ class SubscriptionController extends Controller
 {
     public function __construct(
         private SubscriptionService $service,
-        private NodeDriverFactory $driverFactory,
-        private TrafficSyncService $syncService,
-        private BanService $banService,
     ) {}
 
     public function show(Request $request, string $token): Response
@@ -104,27 +97,6 @@ class SubscriptionController extends Controller
             'singbox' => SiteConfig::getValue('sub_singbox_enabled', '0') === '1',
             default => true, // base64 始终启用
         };
-    }
-
-    /**
-     * 同步用户在所有节点上的流量。
-     */
-    private function syncUserTraffic(User $user): void
-    {
-        Node::where('enabled', true)->each(function (Node $node) use ($user) {
-            try {
-                $driver = $this->driverFactory->make($node);
-                $traffic = $driver->getClientTraffic($user->clientEmail());
-                $this->syncService->syncUserNode($user, $node, $traffic);
-            } catch (\Throwable $e) {
-                // 节点离线，跳过
-            }
-        });
-
-        // 检查封禁
-        $fresh = $user->fresh();
-        $fresh->load('plan');
-        $this->banService->checkAfterSync($fresh);
     }
 
     private function text(string $body, int $code = 0, string $msg = 'ok'): Response

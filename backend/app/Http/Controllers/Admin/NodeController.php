@@ -43,6 +43,7 @@ class NodeController extends Controller
     public function store(Request $request): \Illuminate\Http\JsonResponse
     {
         $data = $this->validateNode($request);
+        $shouldEnable = (bool) ($data['enabled'] ?? true);
 
         $node = DB::transaction(function () use ($data) {
             $node = Node::create([
@@ -54,18 +55,29 @@ class NodeController extends Controller
                 'username' => $data['username'] ?? '',
                 'password' => $data['password'] ?? '',
                 'api_key' => $data['api_key'] ?? '',
-                'enabled' => (bool) ($data['enabled'] ?? true),
+                'enabled' => false,
                 'verify_ssl' => (bool) ($data['verify_ssl'] ?? false),
                 'status' => 'offline',
             ]);
 
-            $this->syncInbounds($node, $data['inbounds'] ?? []);
+            $this->syncInbounds($node, $data['inbounds'] ?? [], false);
 
             return $node;
         });
 
-        // 新节点：把所有已有用户同步过去
-        $this->userService->provisionAllUsersToNode($node);
+        try {
+            $this->initializeNode($node);
+        } catch (\Throwable $e) {
+            report($e);
+            $node->delete();
+
+            return $this->error('节点初始化失败，未保存：' . $e->getMessage());
+        }
+
+        $node->forceFill([
+            'enabled' => $shouldEnable,
+            'status' => $shouldEnable ? 'online' : 'offline',
+        ])->save();
 
         return $this->success($this->present($node, true), '创建成功');
     }
@@ -98,24 +110,32 @@ class NodeController extends Controller
 
     public function destroy(Node $node): \Illuminate\Http\JsonResponse
     {
-        // 同步删除 3x-ui 上该节点各入站的所有 client
-        $driver = $this->driverFactory->make($node);
         $inboundIds = $node->inbounds()->pluck('inbound_id')->toArray();
-        User::whereNotNull('email')->each(function (User $user) use ($driver, $inboundIds) {
-            $email = $user->clientEmail();
-            foreach ($inboundIds as $inboundId) {
-                try {
-                    $driver->deleteClient($email, false, $inboundId);
-                } catch (\Throwable) {
-                    // 不存在，忽略
-                }
-            }
-            try { $driver->deleteClient($email); } catch (\Throwable) {}
-        });
-
+        $emails = User::query()->get()->map(fn (User $user) => $user->clientEmail())->all();
         $node->delete();
 
-        return $this->success(null, '已删除');
+        $remoteCleaned = false;
+        try {
+            $driver = $this->driverFactory->make($node);
+            $health = $driver->healthCheck();
+            if (($health['ok'] ?? false) === true) {
+                foreach ($emails as $email) {
+                    foreach ($inboundIds as $inboundId) {
+                        try {
+                            $driver->deleteClient($email, false, $inboundId);
+                        } catch (\Throwable) {
+                            // 单个入站不存在时继续清理其它入站
+                        }
+                    }
+                    try { $driver->deleteClient($email, false); } catch (\Throwable) {}
+                }
+                $remoteCleaned = true;
+            }
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return $this->success(null, $remoteCleaned ? '已删除，已尝试清理远程托管客户端' : '已删除，节点不可达，已跳过远程清理');
     }
 
     /** M4.4 测试连接：healthCheck 并更新节点状态/延迟。 */
@@ -226,7 +246,7 @@ class NodeController extends Controller
         return $request->validate($rules);
     }
 
-    private function syncInbounds(Node $node, array $inbounds): void
+    private function syncInbounds(Node $node, array $inbounds, bool $syncUsers = true): void
     {
         $oldInbounds = $node->inbounds()->get()->keyBy('protocol');
 
@@ -251,10 +271,32 @@ class NodeController extends Controller
             sort($oldIds);
             $newIds = array_map('intval', $ids);
             sort($newIds);
-            if ($oldIds !== $newIds && !empty($newIds)) {
+            if ($syncUsers && $oldIds !== $newIds && !empty($newIds)) {
                 $this->syncUsersToInbounds($node, $proto, $newIds);
             }
         }
+    }
+
+    /**
+     * 清理当前系统用户在旧面板上的残留客户端，再从零创建，避免重接后重复计算旧流量。
+     */
+    private function initializeNode(Node $node): void
+    {
+        $driver = $this->driverFactory->make($node);
+        $ownedEmails = User::query()->get()
+            ->mapWithKeys(fn (User $user) => [$user->clientEmail() => true])
+            ->all();
+        $remoteEmails = [];
+
+        foreach ($driver->listClients() as $remoteClient) {
+            $email = $remoteClient['email'] ?? null;
+            if (!is_string($email) || !isset($ownedEmails[$email])) {
+                continue;
+            }
+            $remoteEmails[$email] = true;
+        }
+
+        $this->userService->initializeAllUsersOnNode($node, $remoteEmails);
     }
 
     /**

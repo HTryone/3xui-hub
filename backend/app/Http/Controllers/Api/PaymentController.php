@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\PaymentConfig;
+use App\Models\Plan;
 use App\Services\PaymentService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -31,6 +32,14 @@ class PaymentController extends Controller
             'plan_id' => ['required', 'integer'],
             'payment_config_id' => ['sometimes', 'nullable', 'integer'],
         ]);
+
+        $plan = Plan::find($data['plan_id']);
+        if (!$plan) {
+            return $this->error('套餐不存在', 400);
+        }
+        if (!$plan->is_active) {
+            return $this->error('该套餐已下架', 400);
+        }
 
         // 检查是否有1分钟内的待支付订单（同一个套餐）
         $recentOrder = Order::where('user_id', $user->id)

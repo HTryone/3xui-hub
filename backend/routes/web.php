@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
+use App\Http\Controllers\Admin\AsyncTaskController as AdminAsyncTaskController;
 use App\Http\Controllers\Admin\BackupController as AdminBackupController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
@@ -57,13 +58,18 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::post('/plans', [AdminPlanController::class, 'store']);
     Route::get('/plans/{plan}', [AdminPlanController::class, 'show']);
     Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);
-    Route::delete('/plans/{plan}', [AdminPlanController::class, 'destroy']);
+    Route::post('/plans/{plan}/deactivate', [AdminPlanController::class, 'deactivate']);
+    Route::post('/plans/{plan}/activate', [AdminPlanController::class, 'activate']);
 
     // 订单管理
     Route::get('/orders', [AdminOrderController::class, 'index']);
 
     // 流量同步
     Route::post('/sync-traffic', [AdminSyncTrafficController::class, 'sync']);
+
+    // 异步任务
+    Route::get('/async-tasks', [AdminAsyncTaskController::class, 'index']);
+    Route::post('/async-tasks/{asyncTask}/retry', [AdminAsyncTaskController::class, 'retry']);
 
     // 备份管理
     Route::get('/backup/export', [AdminBackupController::class, 'export']);

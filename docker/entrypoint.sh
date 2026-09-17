@@ -75,7 +75,8 @@ SESSION_DOMAIN=null
 
 BROADCAST_CONNECTION=log
 FILESYSTEM_DISK=local
-QUEUE_CONNECTION=sync
+QUEUE_CONNECTION=database
+DB_QUEUE_RETRY_AFTER=180
 
 CACHE_STORE=file
 
@@ -85,6 +86,20 @@ MAIL_FROM_NAME="\${APP_NAME}"
 
 VITE_APP_NAME="\${APP_NAME}"
 EOF
+fi
+
+# 可写的持久化 .env 直接升级；只读挂载由 Compose 环境变量覆盖
+if [ -w .env ]; then
+    if grep -q '^QUEUE_CONNECTION=' .env; then
+        sed -i 's/^QUEUE_CONNECTION=.*/QUEUE_CONNECTION=database/' .env
+    else
+        echo 'QUEUE_CONNECTION=database' >> .env
+    fi
+    if grep -q '^DB_QUEUE_RETRY_AFTER=' .env; then
+        sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' .env
+    else
+        echo 'DB_QUEUE_RETRY_AFTER=180' >> .env
+    fi
 fi
 
 # 生成 APP_KEY
@@ -118,5 +133,5 @@ echo " 启动完成！"
 echo " 访问: ${APP_URL:-http://localhost:8080}"
 echo "=========================================="
 
-# 启动 Supervisor（管理 Nginx + PHP-FPM）
+# 启动 Supervisor（管理 Nginx、PHP-FPM、MySQL、Cron 和队列 Worker）
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

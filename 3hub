@@ -6,6 +6,7 @@
 VERSION="1.0.0"
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 BACKEND_DIR="${INSTALL_DIR}/backend"
+QUEUE_SERVICE="3xui-hub-queue.service"
 
 # 颜色
 RED='\033[0;31m'
@@ -21,6 +22,51 @@ check_install() {
         echo -e "${RED}错误: 3xui-hub 未安装或安装目录不正确${NC}"
         exit 1
     fi
+}
+
+configure_queue_worker() {
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    if grep -q '^QUEUE_CONNECTION=' "$BACKEND_DIR/.env"; then
+        sed -i 's/^QUEUE_CONNECTION=.*/QUEUE_CONNECTION=database/' "$BACKEND_DIR/.env"
+    else
+        echo 'QUEUE_CONNECTION=database' >> "$BACKEND_DIR/.env"
+    fi
+    if grep -q '^DB_QUEUE_RETRY_AFTER=' "$BACKEND_DIR/.env"; then
+        sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' "$BACKEND_DIR/.env"
+    else
+        echo 'DB_QUEUE_RETRY_AFTER=180' >> "$BACKEND_DIR/.env"
+    fi
+
+    chown root:"$NGINX_USER" "$BACKEND_DIR/.env" 2>/dev/null || true
+    chmod 640 "$BACKEND_DIR/.env" 2>/dev/null || true
+    chown -R "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
+    chmod -R 775 "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
+
+    cat > "/etc/systemd/system/$QUEUE_SERVICE" << EOF
+[Unit]
+Description=3xui-hub Queue Worker
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${BACKEND_DIR}
+ExecStart=/usr/bin/php artisan queue:work database --sleep=2 --tries=5 --timeout=120 --max-time=3600
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=130
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$QUEUE_SERVICE" >/dev/null 2>&1
+    systemctl restart "$QUEUE_SERVICE"
 }
 
 # 命令列表（编号对应）
@@ -117,6 +163,12 @@ cmd_status() {
     else
         echo -e "PHP-FPM:   ${RED}未运行${NC}"
     fi
+
+    if systemctl is-active "$QUEUE_SERVICE" &>/dev/null; then
+        echo -e "队列 Worker: ${GREEN}运行中${NC}"
+    else
+        echo -e "队列 Worker: ${RED}未运行${NC}"
+    fi
 }
 
 # 检测更新
@@ -165,10 +217,19 @@ cmd_update() {
     # 迁移数据库
     php artisan migrate --force 2>&1
 
+    # 配置数据库队列和常驻 Worker
+    configure_queue_worker
+
     # 清除缓存
     php artisan config:clear 2>&1
     php artisan route:clear 2>&1
     php artisan view:clear 2>&1
+    php artisan queue:restart 2>&1
+    systemctl restart "$QUEUE_SERVICE"
+    if ! systemctl is-active --quiet "$QUEUE_SERVICE"; then
+        echo -e "${RED}后台任务 Worker 启动失败，请运行: systemctl status $QUEUE_SERVICE${NC}"
+        return 1
+    fi
 
     # 复制前端文件
     cp -r "$INSTALL_DIR/frontend/dist/"* "$BACKEND_DIR/public/" 2>/dev/null || true

@@ -21,9 +21,6 @@ class SyncTrafficCommand extends Command
     protected $signature = 'traffic:sync';
     protected $description = '自动同步所有用户流量并关停超限用户';
 
-    /** 每批并行请求数 */
-    private const BATCH_SIZE = 50;
-
     public function handle(
         NodeDriverFactory $driverFactory,
         TrafficSyncService $syncService,
@@ -37,25 +34,25 @@ class SyncTrafficCommand extends Command
             return self::SUCCESS;
         }
 
-        // 1. 并行拉取所有节点流量
-        $allStats = $this->fetchNodesParallel($driverFactory, $nodes);
-
-        // 2. 按节点批量同步
         $totalSynced = 0;
         $allDeltaUserIds = [];
 
         foreach ($nodes as $node) {
-            $mergedStats = $allStats[$node->id] ?? [];
-            if (empty($mergedStats)) continue;
+            try {
+                $result = $syncService->syncNodeFromSource($node, function () use ($driverFactory, $node) {
+                    $driver = $driverFactory->make($node);
 
-            $result = $syncService->syncNodeBatch($node, $mergedStats);
-            $syncService->upsertSnapshots($result['snapshotData']);
-            $syncService->applyDeltas($result['deltaMap']);
+                    return $this->mergeStats($driver->getClientStatsGroupedByInbound());
+                });
+            } catch (\Throwable) {
+                continue;
+            }
+            if (!$result['acquired']) continue;
 
             $totalSynced += count($result['deltaMap']);
             $allDeltaUserIds = array_merge($allDeltaUserIds, array_keys($result['deltaMap']));
 
-            $this->line("  节点 {$node->name}: " . count($mergedStats) . " 用户, " . count($result['deltaMap']) . " 有增量");
+            $this->line("  节点 {$node->name}: " . count($result['snapshotData']) . " 用户, " . count($result['deltaMap']) . " 有增量");
         }
 
         // 3. Ban检查（仅检查有流量变化的用户）
@@ -74,63 +71,23 @@ class SyncTrafficCommand extends Command
             }
         }
 
-        $this->info("同步完成: {$totalSynced} 用户有增量, {$banned} 关停");
+        $this->info("同步完成: {$totalSynced} 条用户节点记录有增量, {$banned} 关停");
         return self::SUCCESS;
     }
 
-    /**
-     * 并行拉取所有节点流量数据。
-     * 每节点调1次 getClientStatsGroupedByInbound()，分批并行。
-     *
-     * @return array [nodeId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
-     */
-    private function fetchNodesParallel(NodeDriverFactory $driverFactory, $nodes): array
+    private function mergeStats(array $statsByInbound): array
     {
-        $allStats = [];
-
-        // 分批并行
-        $chunks = $nodes->chunk(self::BATCH_SIZE);
-        foreach ($chunks as $chunk) {
-            $promises = [];
-            foreach ($chunk as $node) {
-                $driver = $driverFactory->make($node);
-                $promises[$node->id] = function () use ($driver) {
-                    return $driver->getClientStatsGroupedByInbound();
-                };
-            }
-
-            // 并行执行这批请求
-            try {
-                $results = \GuzzleHttp\Promise\Utils::unwrap($promises);
-            } catch (\Throwable $e) {
-                // 并行失败时降级为串行
-                $results = [];
-                foreach ($chunk as $node) {
-                    try {
-                        $driver = $driverFactory->make($node);
-                        $results[$node->id] = $driver->getClientStatsGroupedByInbound();
-                    } catch (\Throwable) {
-                        $results[$node->id] = [];
-                    }
+        $merged = [];
+        foreach ($statsByInbound as $emailStats) {
+            foreach ($emailStats as $email => $stat) {
+                if (!isset($merged[$email])) {
+                    $merged[$email] = ['up' => 0, 'down' => 0];
                 }
-            }
-
-            // 合并每个节点的 inbound 流量
-            foreach ($results as $nodeId => $statsByInbound) {
-                $merged = [];
-                foreach ($statsByInbound ?? [] as $emailStats) {
-                    foreach ($emailStats as $email => $stat) {
-                        if (!isset($merged[$email])) {
-                            $merged[$email] = ['up' => 0, 'down' => 0];
-                        }
-                        $merged[$email]['up'] += $stat['up'];
-                        $merged[$email]['down'] += $stat['down'];
-                    }
-                }
-                $allStats[$nodeId] = $merged;
+                $merged[$email]['up'] += $stat['up'];
+                $merged[$email]['down'] += $stat['down'];
             }
         }
 
-        return $allStats;
+        return $merged;
     }
 }

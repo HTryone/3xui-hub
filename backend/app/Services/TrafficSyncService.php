@@ -5,6 +5,8 @@ namespace App\Services;
 use App\Models\Node;
 use App\Models\TrafficSnapshot;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 /**
  * 流量增量计算（M7.4~M7.6 + 套餐适配）。
@@ -18,16 +20,47 @@ use App\Models\User;
 class TrafficSyncService
 {
     /**
-     * 同步单 user+node 的流量。
-     *
-     * @param array|null $traffic getClientTraffic 返回的 {up,down,...}，null 表示无 client
+     * 兼容原有调用方；远程同步应使用 syncUserNodeFromSource()，
+     * 确保远程读取和数据库提交处于同一个节点锁内。
      */
     public function syncUserNode(User $user, Node $node, ?array $traffic): void
     {
         if ($traffic === null) {
-            return; // 该节点无此 client，跳过
+            return;
         }
 
+        $this->syncUserNodeFromSource($user, $node, fn () => $traffic);
+    }
+
+    /**
+     * 在节点锁内读取远程单用户流量并提交，避免旧采样晚于新采样写入。
+     *
+     * @param callable(): ?array $source
+     * @return array{acquired: bool, updated: bool}
+     */
+    public function syncUserNodeFromSource(User $user, Node $node, callable $source): array
+    {
+        $lock = Cache::lock($this->lockName($node), 120);
+        if (!$lock->get()) {
+            return ['acquired' => false, 'updated' => false];
+        }
+
+        try {
+            $traffic = $source();
+            if ($traffic === null) {
+                return ['acquired' => true, 'updated' => false];
+            }
+
+            DB::transaction(fn () => $this->syncUserNodeUnlocked($user, $node, $traffic));
+
+            return ['acquired' => true, 'updated' => true];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function syncUserNodeUnlocked(User $user, Node $node, array $traffic): void
+    {
         $nowUp = (int) ($traffic['up'] ?? 0);
         $nowDown = (int) ($traffic['down'] ?? 0);
         $nowTotal = $nowUp + $nowDown;
@@ -150,6 +183,44 @@ class TrafficSyncService
         }
 
         return ['deltaMap' => $deltaMap, 'snapshotData' => $snapshotData];
+    }
+
+
+    /**
+     * 在节点锁内读取远程批量流量并原子提交，保证采样顺序与快照顺序一致。
+     *
+     * @param callable(): array $source
+     * @return array{acquired: bool, deltaMap: array, snapshotData: array}
+     */
+    public function syncNodeFromSource(Node $node, callable $source): array
+    {
+        $empty = ['acquired' => false, 'deltaMap' => [], 'snapshotData' => []];
+        $lock = Cache::lock($this->lockName($node), 120);
+        if (!$lock->get()) {
+            return $empty;
+        }
+
+        try {
+            return $this->commitNodeStats($node, $source());
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function commitNodeStats(Node $node, array $clientStats): array
+    {
+        return DB::transaction(function () use ($node, $clientStats) {
+            $result = $this->syncNodeBatch($node, $clientStats);
+            $this->upsertSnapshots($result['snapshotData']);
+            $this->applyDeltas($result['deltaMap']);
+
+            return ['acquired' => true] + $result;
+        });
+    }
+
+    private function lockName(Node $node): string
+    {
+        return "traffic-sync:node:{$node->id}";
     }
 
     /**

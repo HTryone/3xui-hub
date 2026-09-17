@@ -16,7 +16,7 @@ class PlanController extends Controller
 
     public function index(): \Illuminate\Http\JsonResponse
     {
-        $plans = Plan::orderBy('price')->get();
+        $plans = Plan::where('is_active', true)->orderBy('price')->get();
 
         return $this->success($plans->map(fn (Plan $p) => [
             'id' => $p->id,

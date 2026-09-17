@@ -2,12 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Drivers\NodeDriverFactory;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
-use App\Models\User;
-use App\Services\BanService;
-use App\Services\TrafficSyncService;
+use App\Services\AsyncTaskService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -19,9 +16,7 @@ class UserController extends Controller
     use ApiResponse;
 
     public function __construct(
-        private NodeDriverFactory $driverFactory,
-        private TrafficSyncService $syncService,
-        private BanService $banService,
+        private AsyncTaskService $tasks,
     ) {}
 
     public function me(Request $request): \Illuminate\Http\JsonResponse
@@ -61,46 +56,15 @@ class UserController extends Controller
     public function syncTraffic(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = $request->user();
-        $user->load('plan');
-        $this->syncUserTraffic($user);
-        $user->refresh();
-        $user->load('plan');
+        $nodeIds = Node::where('enabled', true)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $result = $this->tasks->findOrCreateTrafficSync($nodeIds, 'user', $user->id, $user->id);
+        $task = $result['task'];
 
         return $this->success([
-            'traffic_used' => (int) $user->traffic_used,
-            'monthly_traffic_used' => (int) $user->monthly_traffic_used,
-        ], '流量已同步');
-    }
-
-    /**
-     * 同步用户在所有节点上的流量。
-     */
-    private function syncUserTraffic(User $user): void
-    {
-        $email = $user->clientEmail();
-
-        Node::where('enabled', true)->each(function (Node $node) use ($user, $email) {
-            try {
-                $driver = $this->driverFactory->make($node);
-                $statsByInbound = $driver->getClientStatsGroupedByInbound();
-
-                $merged = ['up' => 0, 'down' => 0];
-                foreach ($statsByInbound as $emailStats) {
-                    if (isset($emailStats[$email])) {
-                        $merged['up'] += $emailStats[$email]['up'];
-                        $merged['down'] += $emailStats[$email]['down'];
-                    }
-                }
-
-                $traffic = ($merged['up'] > 0 || $merged['down'] > 0) ? $merged : null;
-                $this->syncService->syncUserNode($user, $node, $traffic);
-            } catch (\Throwable $e) {
-                // 节点离线或异常，跳过
-            }
-        });
-
-        $fresh = $user->fresh();
-        $fresh->load('plan');
-        $this->banService->checkAfterSync($fresh);
+            'task_id' => $task->id,
+            'status' => $task->status,
+            'queued_nodes' => count($nodeIds),
+            'already_running' => !$result['created'],
+        ], $result['created'] ? '同步任务已提交' : '已有同步任务正在执行');
     }
 }

@@ -29,6 +29,8 @@ services:
       - DB_DATABASE=controlhub
       - DB_USERNAME=root
       - DB_PASSWORD=
+      - QUEUE_CONNECTION=database
+      - DB_QUEUE_RETRY_AFTER=180
       - APP_KEY=${APP_KEY:-}
       - APP_URL=${APP_URL:-http://localhost:8080}
     healthcheck:

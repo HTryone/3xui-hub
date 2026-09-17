@@ -45,16 +45,18 @@ class PlanController extends Controller
         return $this->success($this->present($plan), '更新成功');
     }
 
-    public function destroy(Plan $plan): \Illuminate\Http\JsonResponse
+    public function deactivate(Plan $plan): \Illuminate\Http\JsonResponse
     {
-        // 有关联用户时不允许删除（订单会级联删除）
-        if ($plan->users()->exists()) {
-            return $this->error('该套餐下还有用户，请先迁移用户到其他套餐');
-        }
+        $plan->forceFill(['is_active' => false])->save();
 
-        $plan->delete();
+        return $this->success($this->present($plan), '已下架（已购用户不受影响）');
+    }
 
-        return $this->success(null, '已删除');
+    public function activate(Plan $plan): \Illuminate\Http\JsonResponse
+    {
+        $plan->forceFill(['is_active' => true])->save();
+
+        return $this->success($this->present($plan), '已上架');
     }
 
     private function validatePlan(Request $request, ?Plan $plan = null): array
@@ -99,6 +101,7 @@ class PlanController extends Controller
             'monthly_traffic' => $p->monthly_traffic,
             'period_traffic' => $p->period_traffic,
             'total_traffic' => $p->total_traffic,
+            'is_active' => (bool) $p->is_active,
             'created_at' => $p->created_at?->toIso8601String(),
         ];
     }

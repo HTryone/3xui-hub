@@ -21,6 +21,7 @@ class Plan extends Model
         'monthly_traffic',
         'period_traffic',
         'total_traffic',
+        'is_active',
     ];
 
     protected function casts(): array
@@ -30,6 +31,7 @@ class Plan extends Model
             'monthly_traffic' => 'integer',
             'period_traffic' => 'integer',
             'total_traffic' => 'integer',
+            'is_active' => 'boolean',
         ];
     }
 

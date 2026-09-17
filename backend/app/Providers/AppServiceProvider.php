@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Drivers\DriverRegistry;
 use App\Drivers\NodeDriverFactory;
+use App\Services\ThreeXUiClientFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
 
@@ -19,7 +20,10 @@ class AppServiceProvider extends ServiceProvider
 
         // 节点驱动工厂（单例）
         $this->app->singleton(NodeDriverFactory::class, function ($app) {
-            return new NodeDriverFactory($app->make(DriverRegistry::class));
+            return new NodeDriverFactory(
+                $app->make(DriverRegistry::class),
+                $app->make(ThreeXUiClientFactory::class),
+            );
         });
     }
 

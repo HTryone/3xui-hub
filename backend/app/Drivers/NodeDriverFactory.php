@@ -5,7 +5,7 @@ namespace App\Drivers;
 use App\Drivers\Contracts\PanelDriverInterface;
 use App\Drivers\ThreeXUi\ThreeXUiDriver;
 use App\Models\Node;
-use App\Services\ThreeXUi\ThreeXUiClient;
+use App\Services\ThreeXUiClientFactory;
 use RuntimeException;
 
 /**
@@ -17,6 +17,7 @@ class NodeDriverFactory
 {
     public function __construct(
         private readonly DriverRegistry $registry,
+        private readonly ThreeXUiClientFactory $clientFactory,
     ) {}
 
     /** 根据节点创建面板驱动 */
@@ -25,7 +26,7 @@ class NodeDriverFactory
         $type = $node->driver_type ?? '3x-ui';
 
         return match ($type) {
-            '3x-ui' => new ThreeXUiDriver(ThreeXUiClient::fromNode($node)),
+            '3x-ui' => new ThreeXUiDriver($this->clientFactory->forNode($node)),
             default  => throw new RuntimeException("Unsupported node driver: {$type}"),
         };
     }

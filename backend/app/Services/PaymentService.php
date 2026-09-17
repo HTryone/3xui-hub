@@ -29,6 +29,10 @@ class PaymentService
             throw new \InvalidArgumentException('套餐不存在');
         }
 
+        if (!$plan->is_active) {
+            throw new \InvalidArgumentException('该套餐已下架');
+        }
+
         if ($user->plan_id == $planId && $user->expired_at && $user->expired_at->isFuture()) {
             throw new \InvalidArgumentException('您已购买该套餐');
         }

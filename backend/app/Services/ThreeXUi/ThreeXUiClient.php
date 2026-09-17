@@ -92,6 +92,7 @@ class ThreeXUiClient
             'base_uri' => $this->baseUrl,
             'http_errors' => true,
             'timeout' => 10.0,
+            'connect_timeout' => 2.0,
             'verify' => $this->verify,
         ]);
     }
@@ -310,7 +311,10 @@ class ThreeXUiClient
         $start = microtime(true);
 
         try {
-            $result = $this->send('GET', self::EP_SERVER_STATUS);
+            $result = $this->send('GET', self::EP_SERVER_STATUS, [
+                'timeout' => 3.0,
+                'connect_timeout' => 2.0,
+            ]);
         } catch (\Throwable $e) {
             return $this->unhealthy(0, $e->getMessage());
         }
