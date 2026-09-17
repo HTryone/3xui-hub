@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\AsyncTaskService;
 use App\Services\BanService;
 use App\Services\TrafficSyncService;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -25,6 +26,8 @@ class SyncNodeTrafficJob implements ShouldQueue
 
     public int $tries = 5;
     public array $backoff = [60, 300, 900, 3600];
+    /** 锁竞争时已重新入队的次数（随 Job 序列化携带，上限由 config('tasks.max_lock_releases') 控制） */
+    public int $releaseCount = 0;
 
     public function __construct(
         public int $nodeId,
@@ -76,11 +79,39 @@ class SyncNodeTrafficJob implements ShouldQueue
                 $deltaMap = $result['deltaMap'];
             }
         } catch (\Throwable $e) {
+            Log::error('SyncNodeTrafficJob failed', [
+                'task_id' => $this->taskId,
+                'item_key' => $this->itemKey,
+                'node_id' => $this->nodeId,
+                'user_id' => $this->userId,
+                'attempts' => $this->attempts(),
+                'error' => $e->getMessage(),
+            ]);
             throw $e;
         }
 
         if (!$result['acquired']) {
-            $this->release(5);
+            $maxReleases = (int) config('tasks.max_lock_releases', 5);
+            if ($this->releaseCount < $maxReleases) {
+                $this->releaseCount++;
+                Log::info('SyncNodeTrafficJob lock contention, re-queueing', [
+                    'task_id' => $this->taskId,
+                    'item_key' => $this->itemKey,
+                    'node_id' => $this->nodeId,
+                    'release_count' => $this->releaseCount,
+                ]);
+                $this->release(30);
+                return;
+            }
+            Log::warning('SyncNodeTrafficJob lock contention exceeded limit, failing item', [
+                'task_id' => $this->taskId,
+                'item_key' => $this->itemKey,
+                'node_id' => $this->nodeId,
+                'release_count' => $this->releaseCount,
+            ]);
+            if ($this->taskId !== null && $this->itemKey !== null) {
+                $tasks->failItem($this->taskId, $this->itemKey, '节点锁长时间竞争，同步终止');
+            }
             return;
         }
 

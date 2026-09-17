@@ -196,6 +196,31 @@ class AsyncTaskService
         return $task->refresh();
     }
 
+    /**
+     * 超时兜底：把在阈值内未进入终态的任务标为失败，
+     * 防止 Worker 被杀、Job 丢失、锁竞争等场景导致任务永久 running。
+     * 阈值默认读 config('tasks.stale_after_minutes')。
+     *
+     * @param int|null $minutes 可选覆盖阈值（分钟），默认取配置
+     * @return int 被清扫的任务数
+     */
+    public function timeoutStale(?int $minutes = null): int
+    {
+        $minutes = $minutes ?? (int) config('tasks.stale_after_minutes', 10);
+
+        $staleTasks = AsyncTask::query()
+            ->whereIn('status', [AsyncTask::STATUS_PENDING, AsyncTask::STATUS_RUNNING])
+            ->where('created_at', '<', now()->subMinutes($minutes))
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($staleTasks as $task) {
+            $this->failPendingItems($task, '任务超时未完成');
+        }
+
+        return $staleTasks->count();
+    }
+
     public function failPendingItems(AsyncTask $task, string $summary): AsyncTask
     {
         DB::transaction(function () use ($task, $summary) {
