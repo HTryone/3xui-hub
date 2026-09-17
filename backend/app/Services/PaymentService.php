@@ -29,10 +29,6 @@ class PaymentService
             throw new \InvalidArgumentException('套餐不存在');
         }
 
-        if ($user->plan_id == $planId && $user->expired_at && $user->expired_at->isFuture()) {
-            throw new \InvalidArgumentException('您已购买该套餐');
-        }
-
         if ($paymentConfigId) {
             $payment = PaymentConfig::where('id', $paymentConfigId)->where('enabled', true)->first();
         } else {
