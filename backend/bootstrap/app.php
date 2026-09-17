@@ -21,6 +21,9 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin.auth' => \App\Http\Middleware\AdminAuth::class,
         ]);
 
+        $middleware->web(append: [\App\Http\Middleware\RecordOperationLog::class]);
+        $middleware->api(append: [\App\Http\Middleware\RecordOperationLog::class]);
+
         // /admin-api/* 为 SPA 消费的 JSON 接口（session 鉴权 + 登录限流已提供保护），
         // 排除 CSRF 以便前端直接 POST；自托管面板可接受此折中。
         // 若后续需 CSRF 加固，改用前端取 XSRF-TOKEN cookie + X-XSRF-TOKEN header 流程。

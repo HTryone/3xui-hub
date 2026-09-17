@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AsyncTask;
 use App\Models\Node;
 use App\Services\AsyncTaskService;
 use App\Traits\ApiResponse;
@@ -66,5 +67,34 @@ class UserController extends Controller
             'queued_nodes' => count($nodeIds),
             'already_running' => !$result['created'],
         ], $result['created'] ? '同步任务已提交' : '已有同步任务正在执行');
+    }
+
+    /**
+     * 查询当前用户最近一次流量同步任务状态（供前端轮询到终态后刷新）。
+     */
+    public function syncTaskStatus(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
+        $task = AsyncTask::query()
+            ->where('type', 'traffic_sync')
+            ->where('subject_type', 'user')
+            ->where('subject_id', $user->id)
+            ->latest('id')
+            ->first();
+
+        if (!$task) {
+            return $this->success(['task_id' => null, 'status' => null], '暂无同步任务');
+        }
+
+        return $this->success([
+            'task_id' => $task->id,
+            'status' => $task->status,
+            'total' => $task->total,
+            'completed' => $task->completed,
+            'failed' => $task->failed,
+            'attempts' => $task->attempts,
+            'max_attempts' => $task->max_attempts,
+            'error' => $this->tasks->publicError($task),
+        ]);
     }
 }

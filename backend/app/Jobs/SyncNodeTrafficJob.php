@@ -67,14 +67,16 @@ class SyncNodeTrafficJob implements ShouldQueue
                 $email = $user->clientEmail();
                 $result = $sync->syncUserNodeFromSource($user, $node, function () use ($driverFactory, $node, $email) {
                     $driver = $driverFactory->make($node);
-                    $stats = $this->mergeStats($driver->getClientStatsGroupedByInbound());
+                    // 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）
+                    $stats = $driver->getClientStatsByEmail();
                     return $stats[$email] ?? null;
                 });
                 $deltaMap = [];
             } else {
                 $result = $sync->syncNodeFromSource($node, function () use ($driverFactory, $node) {
                     $driver = $driverFactory->make($node);
-                    return $this->mergeStats($driver->getClientStatsGroupedByInbound());
+                    // 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）
+                    return $driver->getClientStatsByEmail();
                 });
                 $deltaMap = $result['deltaMap'];
             }
@@ -137,21 +139,5 @@ class SyncNodeTrafficJob implements ShouldQueue
             $tasks = app(AsyncTaskService::class);
             $tasks->failItem($this->taskId, $this->itemKey, $tasks->summaryFor('traffic_sync'));
         }
-    }
-
-    private function mergeStats(array $statsByInbound): array
-    {
-        $mergedStats = [];
-        foreach ($statsByInbound as $emailStats) {
-            foreach ($emailStats as $email => $stat) {
-                if (!isset($mergedStats[$email])) {
-                    $mergedStats[$email] = ['up' => 0, 'down' => 0];
-                }
-                $mergedStats[$email]['up'] += $stat['up'];
-                $mergedStats[$email]['down'] += $stat['down'];
-            }
-        }
-
-        return $mergedStats;
     }
 }

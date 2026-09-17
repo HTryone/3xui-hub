@@ -61,6 +61,7 @@ Route::post('/payment/notify', [ApiPaymentController::class, 'notify']);
 Route::middleware('api.auth')->group(function () {
     Route::get('/me', [ApiUserController::class, 'me']);
     Route::post('/sync-traffic', [ApiUserController::class, 'syncTraffic']);
+    Route::get('/sync-traffic/status', [ApiUserController::class, 'syncTaskStatus']);
     Route::get('/nodes', [ApiNodeController::class, 'index']);
     Route::post('/protocol', [ProtocolController::class, 'switch']);
 

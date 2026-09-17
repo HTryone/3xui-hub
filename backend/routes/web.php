@@ -12,6 +12,7 @@ use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficControll
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingController;
 use App\Http\Controllers\Admin\SubscriptionSettingController as AdminSubscriptionSettingController;
+use App\Http\Controllers\Admin\SystemStatusController as AdminSystemStatusController;
 use App\Http\Controllers\Admin\TutorialController as AdminTutorialController;
 use Illuminate\Support\Facades\Route;
 
@@ -95,6 +96,9 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 订阅格式配置
     Route::get('/subscription-settings', [AdminSubscriptionSettingController::class, 'index']);
     Route::put('/subscription-settings', [AdminSubscriptionSettingController::class, 'update']);
+
+    // 系统状态（操作日志 + 定时任务 + worker）
+    Route::get('/system/status', [AdminSystemStatusController::class, 'status']);
 
     // 教程管理
     Route::get('/tutorials', [AdminTutorialController::class, 'index']);

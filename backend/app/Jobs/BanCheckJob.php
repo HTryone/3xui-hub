@@ -20,6 +20,9 @@ class BanCheckJob implements ShouldQueue
 
     public function handle(BanService $banService): void
     {
+        // worker 心跳：被 worker 消费即视为在线（每 5 分钟一次），存字符串避免序列化问题
+        \Illuminate\Support\Facades\Cache::put('controlhub:worker-heartbeat', now()->toDateTimeString(), now()->addMinutes(20));
+
         User::where('enabled', true)
             ->with('plan')
             ->each(function (User $user) use ($banService) {

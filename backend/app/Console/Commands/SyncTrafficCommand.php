@@ -42,7 +42,8 @@ class SyncTrafficCommand extends Command
                 $result = $syncService->syncNodeFromSource($node, function () use ($driverFactory, $node) {
                     $driver = $driverFactory->make($node);
 
-                    return $this->mergeStats($driver->getClientStatsGroupedByInbound());
+                    // 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）
+                    return $driver->getClientStatsByEmail();
                 });
             } catch (\Throwable) {
                 continue;
@@ -73,21 +74,5 @@ class SyncTrafficCommand extends Command
 
         $this->info("同步完成: {$totalSynced} 条用户节点记录有增量, {$banned} 关停");
         return self::SUCCESS;
-    }
-
-    private function mergeStats(array $statsByInbound): array
-    {
-        $merged = [];
-        foreach ($statsByInbound as $emailStats) {
-            foreach ($emailStats as $email => $stat) {
-                if (!isset($merged[$email])) {
-                    $merged[$email] = ['up' => 0, 'down' => 0];
-                }
-                $merged[$email]['up'] += $stat['up'];
-                $merged[$email]['down'] += $stat['down'];
-            }
-        }
-
-        return $merged;
     }
 }

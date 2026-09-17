@@ -29,6 +29,7 @@ interface PanelDriverInterface extends DriverInterface
 
     // ── 批量流量同步 ──
     public function getClientStatsGroupedByInbound(): array;
+    public function getClientStatsByEmail(): array;
 
     // ── 订阅链接 ──
     public function getClientLinks(string $identifier): array;

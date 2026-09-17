@@ -79,6 +79,28 @@ class BanService
         }
     }
 
+    /**
+     * 全量替换 3x-ui client 前，规范化 API 不兼容的字段类型。
+     * 3x-ui 的 /clients/update 是全量替换语义，回传整个 client 对象时，
+     * 以下字段若类型不符会触发 Go 反序列化失败——而 toggleClient 里被
+     * catch(\Throwable) 静默吞掉，导致 enable 永远改不动（"没关"的根因）：
+     * - id：3x-ui 要求 string
+     * - allowedIPs / tunnelAllowedIPs：Go 用 []string 反序列化，空字符串会报
+     *   "cannot unmarshal string into Go struct field .allowedIPs of type []string"
+     */
+    private function normalizeForUpdate(array $clientData): array
+    {
+        if (isset($clientData['id'])) {
+            $clientData['id'] = (string) $clientData['id'];
+        }
+        foreach (['allowedIPs', 'tunnelAllowedIPs'] as $field) {
+            if (isset($clientData[$field]) && $clientData[$field] === '') {
+                $clientData[$field] = [];
+            }
+        }
+        return $clientData;
+    }
+
     public function toggleClient(User $user, bool $enable): void
     {
         $email = $user->clientEmail();
@@ -92,11 +114,8 @@ class BanService
                     try {
                         $resp = $driver->getClient($email);
                         if ($resp === null) continue;
-                        $clientData = $resp['client'] ?? $resp;
+                        $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
                         $clientData['enable'] = $enable;
-                        if (isset($clientData['id'])) {
-                            $clientData['id'] = (string) $clientData['id'];
-                        }
                         $driver->updateClient($email, $clientData, $inboundId);
                     } catch (\Throwable) {
                         // 入站不存在或 client 不存在，忽略
@@ -106,11 +125,8 @@ class BanService
                 try {
                     $resp = $driver->getClient($email);
                     if ($resp !== null) {
-                        $clientData = $resp['client'] ?? $resp;
+                        $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
                         $clientData['enable'] = $enable;
-                        if (isset($clientData['id'])) {
-                            $clientData['id'] = (string) $clientData['id'];
-                        }
                         $driver->updateClient($email, $clientData);
                     }
                 } catch (\Throwable) {}

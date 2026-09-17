@@ -32,6 +32,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // 记录定时任务运行结果（最近 5 条/任务，含报错）
+        \Illuminate\Support\Facades\Event::listen(
+            \Illuminate\Console\Events\ScheduledTaskFinished::class,
+            \App\Listeners\RecordScheduledTaskRun::class . '@onFinished'
+        );
+        \Illuminate\Support\Facades\Event::listen(
+            \Illuminate\Console\Events\ScheduledTaskFailed::class,
+            \App\Listeners\RecordScheduledTaskRun::class . '@onFailed'
+        );
+
         // SQLite 优化（仅当使用 SQLite 时生效）
         if (config('database.default') === 'sqlite') {
             try {
