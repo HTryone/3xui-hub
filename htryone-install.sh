@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================================
-# 3xui-hub 一键安装脚本
-# https://github.com/YouzSpace/3xui-hub
+# 3xui-hub 一键安装脚本（HTryone 复刻版）
+# 本脚本固定拉取本仓库代码: https://github.com/HTryone/3xui-hub
+# 上游原版请使用: https://github.com/YouzSpace/3xui-hub
 # ============================================================
 
 set -e
@@ -16,7 +17,8 @@ NC='\033[0m'
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
-REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
+REPO_URL="https://github.com/HTryone/3xui-hub.git"
+REPO_OWNER="HTryone"
 VERSION="1.0.0"
 
 # 日志函数
@@ -351,11 +353,11 @@ deploy_project() {
     else
         info "下载项目（浅克隆，体积最小化）..."
 
-        # 国内镜像列表，按优先级尝试
+        # 国内镜像列表，按优先级尝试（随来源切换 owner）
         MIRRORS=(
-            "https://ghfast.top/https://github.com/YouzSpace/3xui-hub.git"
-            "https://ghproxy.net/https://github.com/YouzSpace/3xui-hub.git"
-            "https://github.com/YouzSpace/3xui-hub.git"
+            "https://ghfast.top/https://github.com/${REPO_OWNER}/3xui-hub.git"
+            "https://ghproxy.net/https://github.com/${REPO_OWNER}/3xui-hub.git"
+            "https://github.com/${REPO_OWNER}/3xui-hub.git"
         )
 
         CLONED=false
@@ -624,9 +626,17 @@ install_3hub() {
     info "安装 3hub 管理命令..."
 
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
+    # 清洗 Windows CRLF，避免 Linux 上 shebang 行变成 #!/bin/bash\r 导致命令无法执行
+    sed -i 's/\r$//' /usr/local/bin/3hub
     chmod +x /usr/local/bin/3hub
 
-    success "3hub 命令安装完成"
+    # 部署兜底：装完必须能真正执行，否则中止安装（防 CRLF / 语法污染漏到生产）
+    if ! 3hub --help >/dev/null 2>&1; then
+        error "3hub 命令安装后无法执行，疑似 CRLF 污染或语法错误，已中止安装"
+        exit 1
+    fi
+
+    success "3hub 命令安装完成（已验证可执行）"
 }
 
 # 输出安装结果
@@ -694,7 +704,7 @@ main() {
     # 安装 MySQL
     install_mysql
 
-    # 部署项目
+    # 部署项目（固定拉取 HTryone/3xui-hub）
     deploy_project
 
     # 配置环境
