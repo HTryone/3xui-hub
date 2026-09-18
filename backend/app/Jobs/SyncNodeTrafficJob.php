@@ -51,8 +51,12 @@ class SyncNodeTrafficJob implements ShouldQueue
         /** @var Node|null $node */
         $node = Node::find($this->nodeId);
         if (!$node || !$node->enabled) {
+            // P2-2：节点被删除/禁用时本次同步什么都没做，标"失败+原因"而非假绿"成功"。
             if ($this->taskId !== null && $this->itemKey !== null) {
-                $tasks->completeItem($this->taskId, $this->itemKey);
+                $reason = $node === null
+                    ? '节点已删除，跳过同步'
+                    : '节点已禁用，跳过同步';
+                $tasks->failItem($this->taskId, $this->itemKey, $reason);
             }
             return;
         }

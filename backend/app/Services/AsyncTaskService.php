@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Jobs\SyncNodeTrafficJob;
+use App\Jobs\NodeInitUserJob;
 use App\Models\AsyncTask;
 use App\Models\AsyncTaskItem;
 use Illuminate\Support\Facades\Cache;
@@ -120,6 +121,11 @@ class AsyncTaskService
             if ($item->status === AsyncTaskItem::STATUS_SUCCEEDED) {
                 return false;
             }
+            // P2-3：任务已被兜底/正常判终态（succeeded/failed）后，迟到的队列 Job 不再认领，
+            // 避免复活并翻转 失败→成功。合法重试走 retry()（先把任务重置为 pending 再派发），不受影响。
+            if (in_array($task->status, [AsyncTask::STATUS_SUCCEEDED, AsyncTask::STATUS_FAILED], true)) {
+                return false;
+            }
             if ($task->attempts >= $task->max_attempts && $task->status === AsyncTask::STATUS_PENDING) {
                 throw new InvalidArgumentException('任务已达到最大尝试次数');
             }
@@ -159,6 +165,9 @@ class AsyncTaskService
         $task = DB::transaction(function () use ($taskId, $itemKey, $status, $summary) {
             $task = AsyncTask::query()->lockForUpdate()->findOrFail($taskId);
             $item = AsyncTaskItem::query()->where('task_id', $taskId)->where('item_key', $itemKey)->lockForUpdate()->firstOrFail();
+            if (in_array($task->status, [AsyncTask::STATUS_SUCCEEDED, AsyncTask::STATUS_FAILED], true)) {
+                return $task;
+            }
             if ($item->status === AsyncTaskItem::STATUS_SUCCEEDED) {
                 return $task;
             }
@@ -182,9 +191,14 @@ class AsyncTaskService
         $active = (int) ($counts[AsyncTaskItem::STATUS_PENDING] ?? 0) + (int) ($counts[AsyncTaskItem::STATUS_RUNNING] ?? 0);
         $changes = ['total' => $task->items()->count(), 'completed' => $completed, 'failed' => $failed];
         if ($active === 0) {
-            $changes['status'] = $failed > 0 ? AsyncTask::STATUS_FAILED : AsyncTask::STATUS_SUCCEEDED;
-            $changes['error'] = $failed > 0 ? $this->summaryFor($task->type) : null;
-            $changes['finished_at'] = now();
+            // P2-3 终态粘性：任务已被判终态后（超时兜底 failPendingItems / 上一次已完成），
+            // 迟到的回执只刷新计数，不再翻转 status（避免 失败→成功 跳变）。
+            $isTerminal = in_array($task->status, [AsyncTask::STATUS_SUCCEEDED, AsyncTask::STATUS_FAILED], true);
+            if (!$isTerminal) {
+                $changes['status'] = $failed > 0 ? AsyncTask::STATUS_FAILED : AsyncTask::STATUS_SUCCEEDED;
+                $changes['error'] = $failed > 0 ? $this->summaryFor($task->type) : null;
+                $changes['finished_at'] = now();
+            }
         }
         $task->update($changes);
         return $task->refresh();
@@ -210,7 +224,7 @@ class AsyncTaskService
 
         $staleTasks = AsyncTask::query()
             ->whereIn('status', [AsyncTask::STATUS_PENDING, AsyncTask::STATUS_RUNNING])
-            ->where('created_at', '<', now()->subMinutes($minutes))
+            ->where('updated_at', '<', now()->subMinutes($minutes))
             ->lockForUpdate()
             ->get();
 
@@ -255,7 +269,13 @@ class AsyncTaskService
                 'started_at' => null,
                 'finished_at' => null,
             ]);
-            $locked->update(['status' => AsyncTask::STATUS_PENDING, 'failed' => 0, 'error' => null, 'finished_at' => null]);
+            $locked->update([
+                'status' => AsyncTask::STATUS_PENDING,
+                'failed' => 0,
+                'error' => null,
+                'finished_at' => null,
+                'updated_at' => now(),
+            ]);
 
             return [$locked->refresh(), $failedKeys];
         });
@@ -272,6 +292,8 @@ class AsyncTaskService
             [, $id] = array_pad(explode(':', $itemKey, 2), 2, null);
             match ($task->type) {
                 'traffic_sync' => SyncNodeTrafficJob::dispatch((int) $id, $task->id, isset($meta['user_id']) ? (int) $meta['user_id'] : null, $itemKey),
+                // node_init 的 item_key 是 user:{userId}，节点 id 在任务行 subject_id 上
+                'node_init' => NodeInitUserJob::dispatch((int) $task->subject_id, (int) $id, $task->id, $itemKey),
                 default => throw new InvalidArgumentException("不支持任务类型：{$task->type}"),
             };
         }
@@ -286,6 +308,7 @@ class AsyncTaskService
     {
         return match ($type) {
             'traffic_sync' => '节点同步失败',
+            'node_init' => '节点接入初始化失败',
             default => '任务执行失败',
         };
     }

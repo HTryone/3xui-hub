@@ -170,27 +170,23 @@ class ThreeXUiClient
         return $email !== null ? $this->getClient($email) : null;
     }
 
-    /** POST /panel/api/clients/update/{email}，body = 完整 client（替换非 patch）。可指定 inboundId。 */
+    /** POST /panel/api/clients/update/{email}，body = 完整 client（替换非 patch）。可指定 inboundIds。 */
     public function updateClient(string $email, array $client, ?int $inboundId = null): bool
     {
         $options = ['json' => $client];
         if ($inboundId !== null) {
-            $options['query'] = ['inboundId' => $inboundId];
+            $options['query'] = ['inboundIds' => (string) $inboundId];
         }
         $this->request('POST', self::EP_CLIENTS_UPDATE . rawurlencode($email), $options);
 
         return true;
     }
 
-    /** POST /panel/api/clients/del/{email}?keepTraffic=0|1。可指定 inboundId 精确删除。 */
+    /** POST /panel/api/clients/del/{email}?keepTraffic=0|1，全量删除该 email。 */
     public function deleteClient(string $email, bool $keepTraffic = false, ?int $inboundId = null): bool
     {
-        $query = ['keepTraffic' => $keepTraffic ? '1' : '0'];
-        if ($inboundId !== null) {
-            $query['inboundId'] = $inboundId;
-        }
         $this->request('POST', self::EP_CLIENTS_DEL . rawurlencode($email), [
-            'query' => $query,
+            'query' => ['keepTraffic' => $keepTraffic ? '1' : '0'],
         ]);
 
         return true;
