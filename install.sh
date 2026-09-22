@@ -635,20 +635,24 @@ NGINX
     success "Nginx 配置完成"
 }
 
-# 配置 cron（流量自动同步）
+# 配置 cron（调度器：流量同步 / 封禁检查 / 月度重置 / 异步任务超时）
+# 真正的实现在 3hub 的 ensure_artisan_cron()，这里调同一个入口，不再自己维护一份，
+# 免得安装脚本和 3hub 各写一份后漂移（更新路径那份曾经没人管，线上 root crontab
+# 被其它工具覆盖后一直没补回来）。走子进程调用而不是 source：3hub 是可执行命令，
+# 里面定义了同名常量（INSTALL_DIR/VERSION），source 进安装脚本会污染后续步骤的环境。
 setup_cron() {
     info "配置定时任务（流量自动同步）..."
 
-    # schedule:run 必须以网站运行用户执行：root 跑会持续往 storage/framework/cache
-    # 写 root 属主缓存文件，导致 www-data 的队列 worker 间歇性 Permission denied
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
+    if [ ! -f "$INSTALL_DIR/3hub" ]; then
+        warn "未找到 $INSTALL_DIR/3hub，跳过定时任务配置（安装完成后运行 3hub sync-status 可自检）"
+        return 0
+    fi
 
-    CRON_CMD="* * * * * sudo -u ${NGINX_USER} bash -c 'cd ${INSTALL_DIR}/backend && php artisan schedule:run >> /dev/null 2>&1'"
-
-    # 覆盖式写入：先移除旧条目（含旧版 root 直跑的条目）再写入当前版本
-    (crontab -l 2>/dev/null | grep -v "artisan schedule:run"; echo "$CRON_CMD") | crontab -
-    success "定时任务已配置（schedule:run 以 ${NGINX_USER} 运行，每分钟检查，每5分钟同步流量）"
+    if bash "$INSTALL_DIR/3hub" __ensure-cron; then
+        success "定时任务已就绪（schedule:run 每分钟，以网站运行用户执行）"
+    else
+        warn "定时任务写入失败，请运行 3hub sync-status 自检，或手工 crontab -e 添加"
+    fi
 }
 
 # 配置常驻队列 Worker（后台流量同步）

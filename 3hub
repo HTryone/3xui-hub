@@ -47,6 +47,47 @@ run_artisan() {
     sudo -u "$NGINX_USER" php artisan "$@"
 }
 
+# 保障 Laravel 调度器 cron（幂等）：
+#   已有 artisan schedule:run 条目 → 原样不动；缺失 → 合并式补写并回显
+# 为什么要在更新/自检路径反复保障：root crontab 会被 acme.sh 安装、面板自带 cron
+# 管理、其它运维脚本整体重写掉。一旦 schedule:run 丢了，traffic:sync / ban-check /
+# health-check / traffic:monthly-reset / async-task-timeout 全部停摆，BanCheckJob 不再
+# 写 worker 心跳缓存，后台「系统状态」就会一直显示 worker 离线（其实 worker 好着）。
+# 返回 0=已配置（含本次补写），1=需要人工处理（无权限 / 写入失败）
+ensure_artisan_cron() {
+    local NGINX_USER CRON_CMD CURRENT
+
+    # 必须用网站运行用户执行：root 直跑会持续往 storage/framework/cache 写 root 属主
+    # 缓存文件，导致 www-data 的队列 worker 间歇性 Permission denied
+    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    CRON_CMD="* * * * * sudo -u ${NGINX_USER} bash -c 'cd ${BACKEND_DIR} && php artisan schedule:run >> /dev/null 2>&1'"
+
+    CURRENT=$(crontab -l 2>/dev/null)
+    if printf '%s\n' "$CURRENT" | grep -q "artisan schedule:run"; then
+        echo -e "Cron 定时任务: ${GREEN}已配置${NC}（schedule:run 以 ${NGINX_USER} 运行）"
+        return 0
+    fi
+
+    # 非 root 只提示不改写：那样写进的是当前用户自己的 crontab，看似修复实则永不生效
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "Cron 定时任务: ${YELLOW}未配置${NC}（写入 root crontab 需要 root 权限，请用 sudo 运行）"
+        return 1
+    fi
+
+    # 合并式写入：只剔除同名旧条目再追加，acme.sh 等其它条目必须原样保留。
+    # 绝不能用 `crontab <文件>` 整体覆盖——那会把别人的条目一并吞掉。
+    if ! { [ -n "$CURRENT" ] && printf '%s\n' "$CURRENT" | grep -v "artisan schedule:run"; echo "$CRON_CMD"; } | crontab -; then
+        echo -e "Cron 定时任务: ${RED}写入失败${NC}，请手工执行 crontab -e 添加："
+        echo "  $CRON_CMD"
+        return 1
+    fi
+
+    echo -e "Cron 定时任务: ${GREEN}已自动补配${NC}（schedule:run 以 ${NGINX_USER} 运行，此前缺失）"
+    return 0
+}
+
 configure_queue_worker() {
     NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
     NGINX_USER=${NGINX_USER:-www-data}
@@ -304,6 +345,11 @@ cmd_update() {
     # 迁移数据库
     run_artisan migrate --force 2>&1
 
+    # 保障调度器 cron（幂等）：root crontab 常被 acme.sh / 面板等工具整体重写，
+    # 更新路径必须每次自愈，否则 schedule:run 一丢就是「定时任务全停 + 心跳空白」
+    echo -e "${CYAN}检查定时任务...${NC}"
+    ensure_artisan_cron || echo -e "${YELLOW}定时任务未就绪，见上方提示${NC}"
+
     # 配置数据库队列和常驻 Worker
     configure_queue_worker
 
@@ -426,14 +472,8 @@ cmd_sync_status() {
     echo -e "${CYAN}=== 自动同步状态 ===${NC}"
     echo ""
 
-    # 检查 cron
-    if crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
-        echo -e "Cron 定时任务: ${GREEN}已配置${NC}"
-    else
-        echo -e "Cron 定时任务: ${RED}未配置${NC}"
-        echo -e "  修复: 重新运行安装脚本，或用 crontab -e 添加:"
-        echo -e "  * * * * * sudo -u www-data bash -c 'cd ${BACKEND_DIR} && php artisan schedule:run >> /dev/null 2>&1'"
-    fi
+    # 检查 cron：缺失时顺带补齐（自检路径同时是修复路径，口径改成「已自动修复」）
+    ensure_artisan_cron || true
 
     # 检查日志中的同步记录
     LOG_FILE="$BACKEND_DIR/storage/logs/laravel.log"
@@ -781,6 +821,9 @@ run_cmd() {
         restart)      cmd_restart ;;
         ssl)          cmd_ssl ;;
         domain)       shift; cmd_domain "$@" ;;
+        # 内部命令：只给 install.sh 安装期调用，让安装脚本和 3hub 复用同一份 cron 保障
+        # 逻辑（旧版两处各写一份，更新路径那份没人管，线上丢过条目）。不列进帮助菜单。
+        __ensure-cron) ensure_artisan_cron ;;
         help|--help|-h) show_help ;;
         *)
             echo -e "${RED}未知命令: $CMD${NC}"
