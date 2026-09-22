@@ -329,12 +329,20 @@ class BackupController extends Controller
         while (($line = fgets($handle)) !== false) {
             // 匹配 INSERT INTO `table_name` 或 INSERT INTO `table_name` VALUES
             if (preg_match('/^INSERT\s+INTO\s+`?(\w+)`?\s/i', $line, $m)) {
-                $table = $m[1];
-                if (!isset($counts[$table])) {
-                    $counts[$table] = 0;
+                $currentTable = $m[1];
+                if (!isset($counts[$currentTable])) {
+                    $counts[$currentTable] = 0;
                 }
-                // 计算这行 INSERT 里的值组数（每个 VALUES (...) 算一行）
-                $counts[$table] += substr_count($line, '),(') + 1;
+            }
+
+            // 在 INSERT 语句的延续行中累计值组（直到遇到分号结束）
+            if ($currentTable !== null) {
+                // 每个 "),(" 分隔一对值组，第一组没有前缀 "(" 所以 +1
+                $counts[$currentTable] += substr_count($line, '),(') + 1;
+                // 分号表示这条 INSERT 语句结束
+                if (strpos($line, ';') !== false) {
+                    $currentTable = null;
+                }
             }
         }
 
