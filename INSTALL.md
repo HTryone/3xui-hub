@@ -31,6 +31,71 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 3hub help          # 显示帮助
 ```
 
+## 队列与并发
+
+面板的后台任务跑在两条独立的队列上：
+
+| 队列 | 跑什么 | Worker |
+|------|--------|--------|
+| `default` | 定时任务类：封禁检查、健康检查、流量同步 | `3xui-hub-queue.service` |
+| `node-ops` | 节点类：新建节点初始化、节点 inbound 扫描/同步、客户端清理 | `3xui-hub-queue-node@1/@2.service` |
+
+### 为什么要两条队列
+
+一条 `php artisan queue:work` 进程同一时刻只跑一个 Job（单线程）。新建节点时要初始化
+100+ 个 Job，如果和定时任务挤在同一条队列里，封禁检查和健康检查就得排在它们后面，
+可能延迟几分钟到几十分钟 —— 超流量用户在该封禁的时候还在跑。
+
+拆开后两条队列各排各的：节点任务再长也不会挡住定时任务。代价是多两个常驻 PHP 进程。
+
+### 两边必须都到位
+
+应用侧「派到哪条队列」由 `.env` 的 `PANEL_NODE_OPS_QUEUE` 决定，worker 侧由
+`queue:work --queue=node-ops` 决定，**两边都到位才生效**：
+
+- 只改 `.env` 没起 worker → 节点任务被派进一条没人消费的队列，**永远不执行**，而且
+  不报错（面板上一直停在 pending，直到被判超时失败）。
+- 只起 worker 没改 `.env` → 节点任务仍进 `default`，多余的 worker 空转占内存。
+
+`install.sh` 和 `3hub update` 都会同时做这两件事，并在启动后自检
+（`install.sh` 查 `is-active` + `is-enabled`：前者证明现在在跑，后者保证重启后还在）：
+起不来的话直接报错中断，而不是留下一个静默坏掉的面板。
+
+### 调整 worker 数量
+
+默认 2 个 node-ops 实例。加减实例（模板单元，不用改单元文件）：
+
+```bash
+# 加到 3 个
+systemctl enable --now 3xui-hub-queue-node@3.service
+# 减到 1 个
+systemctl disable --now 3xui-hub-queue-node@2.service
+# 看状态（「节点 Worker」一行会显示 运行中（node-ops，2/2））
+3hub status
+```
+
+注意 `3hub` 的 status/restart/update 只认脚本里 `NODE_QUEUE_INSTANCES`（默认 `"1 2"`）
+列出的实例。要让它们也认新实例，同步改这个变量 —— 但 `3hub update` 会用仓库里的版本
+覆盖 `/usr/local/bin/3hub`，所以正式做法是改仓库里的 `3hub` 后随版本一起发布。
+
+Docker 部署改 `docker/supervisord.conf`：照着加一段 `[program:queue-node-3]`，
+或者把 `queue-node-2` 整段删掉只留一个。
+
+### 注意：并发要顾着面板本身的承载
+
+节点任务每个 Job 都要跨境请求 3x-ui 面板 API（实测 RTT 700~900ms，偶发 TLS 卡死），
+所以瓶颈往往不在本机 CPU，而在**被操作的节点面板**和本机内存：
+
+- **1 核 / 473MB 这类小机器**：就用默认的 2 个，甚至减到 1 个。一个 PHP worker 常驻
+  约 40~80MB，多开几个很容易把 MySQL 挤到 OOM。两个 node-ops worker 已设 `Nice=10` +
+  `CPUWeight=20`，让 Web 请求优先，但没有设内存硬上限（硬上限会在内存吃紧时杀掉
+  跑到一半的节点任务，反而更糟）；default worker 保持原样，未加优先级设置。
+- **被操作的面板是弱鸡机器（1 核 / 小带宽）时不要加并发**：同时打过去的初始化请求会
+  把面板自己打满，整体反而更慢甚至假死。加并发只会放大问题，正确做法是错开时间
+  （别在节点刚上线时批量操作）。
+- 判断依据：`3hub status` 看内存；`3hub log`（含 worker 的 journal）看 worker 有没有
+  被 OOM kill 或反复重启。
+
 ## 默认账号
 
 - **管理员**: admin / admin123
@@ -71,6 +136,13 @@ chown -R www:www storage database
 # 6. 配置 cron（流量自动同步）
 crontab -e
 # 添加: * * * * * cd /www/wwwroot/3xui-hub/backend && php artisan schedule:run >> /dev/null 2>&1
+
+# 7. 配置两个队列 Worker（systemd）
+#    .env 里加 PANEL_NODE_OPS_QUEUE=node-ops
+#    default 队列： /usr/bin/php artisan queue:work database --sleep=2 --tries=5 --timeout=120 --max-time=3600
+#    node-ops 队列：/usr/bin/php artisan queue:work database --queue=node-ops --sleep=2 --tries=5 --timeout=120 --max-time=3600
+#    两个都要，缺 node-ops worker 会让节点任务永远不执行（见「队列与并发」）。
+#    单元文件模板可直接抄 install.sh 里的 setup_queue_worker / setup_node_ops_worker
 ```
 
 ### Nginx 配置示例
@@ -110,6 +182,18 @@ server {
 
 ### 流量不同步
 检查 cron 是否配置：`3hub sync-status`
+
+### 节点任务一直 pending / 不执行
+节点类任务（新建节点初始化、节点扫描等）走独立队列 `node-ops`，先确认 worker 在跑：
+
+```bash
+3hub status        # 「节点 Worker」应为 运行中（node-ops，2/2）
+3hub log           # 含 worker 的 systemd journal，看有没有 OOM kill / 反复重启
+```
+
+若显示未运行，`3hub update` 会重新生成单元文件并启动它。也可能是 `.env` 里开了
+`PANEL_NODE_OPS_QUEUE=node-ops` 却没有对应的 worker —— 两边必须同时到位，
+详见「队列与并发」。
 
 ### 500 错误
 查看日志：`3hub log` 或 `tail -20 /www/wwwroot/3xui-hub/backend/storage/logs/laravel.log`

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Domain;
 use App\Models\Order;
 use App\Models\PaymentConfig;
 use App\Models\Plan;
@@ -84,11 +85,12 @@ class PaymentService
      */
     public function buildPayUrl(PaymentConfig $payment, Order $order): string
     {
-        // notify_url 必须是完整的回调 URL，如果不是则用默认值
+        // notify_url 必须是完整的回调 URL，如果不是则用主域名默认值（网关固定打主域）
         $notifyUrl = ($payment->notify_url && str_starts_with($payment->notify_url, 'http'))
             ? $payment->notify_url
-            : url('/api/payment/notify');
-        $callbackUrl = url('/');
+            : $this->defaultNotifyUrl();
+        // 回跳地址 = 下单请求所在域名（多域名：b.zes.one 下单回 b.zes.one，不回主域）
+        $callbackUrl = request()->getSchemeAndHttpHost() . '/';
 
         $params = [
             'pay_memberid' => $payment->member_id,
@@ -125,6 +127,20 @@ class PaymentService
             Log::error('支付网关请求异常', ['order_no' => $order->order_no, 'error' => $e->getMessage()]);
             return '';
         }
+    }
+
+    /**
+     * 缺省异步通知地址：domains 主域名 + /api/payment/notify；无主域行（老站）回退 url()。
+     */
+    private function defaultNotifyUrl(): string
+    {
+        $primary = Domain::where('is_primary', true)->where('enabled', true)->first();
+        if (!$primary) {
+            return url('/api/payment/notify');
+        }
+
+        // scheme https 优先（域名接入层默认走 TLS）
+        return 'https://' . $primary->domain . '/api/payment/notify';
     }
 
     /**

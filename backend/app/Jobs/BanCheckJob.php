@@ -26,8 +26,10 @@ class BanCheckJob implements ShouldQueue
         User::where('enabled', true)
             ->with('plan')
             ->each(function (User $user) use ($banService) {
-                $reason = $banService->banReason($user);
-                if ($reason !== false) {
+                // needsDisable：命中关闭条件且【未处于已确认关闭的时效内】才发请求。
+                // 已关闭未超时效 → 直接跳过（0 次 HTTP），避免每 5 分钟把同一批用户重关一遍；
+                // 超时效（config('ban.recheck_after_hours')）→ 照旧重新校验一次，兜住面板侧漂移。
+                if ($banService->needsDisable($user)) {
                     $banService->toggleClient($user, false);
                 }
             });

@@ -4,13 +4,19 @@ namespace App\Services\ThreeXUi;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Cookie\CookieJar;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Support\Facades\Log;
 
 /**
  * 3x-ui v3.x HTTP API 客户端（M5 核心）。
  *
  * 鉴权：优先 Bearer API Token（nodes.api_key），Bearer 跳过 CSRF、无状态。
  * 仅当未提供 api_key 时回退 cookie+CSRF 登录流程（/login + /panel/api/csrf-token）。
+ * 该登录态按「面板指纹」缓存（config panel.auth_cache_ttl），Web 请求与队列 Job
+ * 跨进程共用，TTL 内同一个面板只登录一次；会话失效（401/403）自动清缓存重登并重试一次。
  *
  * 路径前缀：baseURL = "{scheme}://{host}:{port}{web_base_path}"，webBasePath 可空。
  * API 命名空间：/panel/api/*。
@@ -59,6 +65,12 @@ class ThreeXUiClient
     protected string $password;
     protected bool $verify;
 
+    // 面板指纹成分（登录态缓存键用；客户端拿不到 node id，故不依赖它）
+    protected string $scheme;
+    protected string $host;
+    protected int $port;
+    protected string $basePath;
+
     /** cookie 模式登录态 */
     protected bool $authenticated = false;
     protected ?string $csrfToken = null;
@@ -82,6 +94,11 @@ class ThreeXUiClient
             $basePath = '/' . $basePath;
         }
 
+        $this->scheme = $scheme;
+        $this->host = (string) $host;
+        $this->port = (int) $port;
+        $this->basePath = $basePath;
+
         $this->baseUrl = sprintf('%s://%s:%d%s', $scheme, $host, $port, $basePath);
         $this->cookieJar = new CookieJar();
 
@@ -91,10 +108,25 @@ class ThreeXUiClient
         $this->client = $config['http_client'] ?? new Client([
             'base_uri' => $this->baseUrl,
             'http_errors' => true,
-            'timeout' => 10.0,
-            'connect_timeout' => 2.0,
+            'timeout' => self::panelConfig('api_timeout', 15.0),
+            'connect_timeout' => self::panelConfig('connect_timeout', 5.0),
             'verify' => $this->verify,
         ]);
+    }
+
+    /**
+     * 读 config/panel.php 的超时配置（秒）。
+     *
+     * ThreeXUiClientTest 属于不引导 Laravel 应用的纯单元测试（无 config 绑定），
+     * 此时回落到与 config/panel.php 一致的默认值，保证客户端可脱离应用单独使用。
+     */
+    private static function panelConfig(string $key, float $default): float
+    {
+        if (!function_exists('config') || !function_exists('app') || !app()->bound('config')) {
+            return $default;
+        }
+
+        return (float) config('panel.' . $key, $default);
     }
 
     /**
@@ -220,12 +252,54 @@ class ThreeXUiClient
         return true;
     }
 
-    /** GET /panel/api/clients/links/{email} → ["vless://...", ...]（3x-ui 生成完整链接）。 */
+    /**
+     * GET /panel/api/clients/links/{email} → ["vless://...", ...]（3x-ui 生成完整链接）。
+     *
+     * 「该 email 在这个面板上不存在」是合法状态（节点重接 / 初始化未建号期间就是缺 client），
+     * 降级为 debug 日志并返回空数组，不抛不 report —— 订阅少一个节点链接即可，
+     * 不该每次拉订阅都刷一条 ERROR + 全堆栈。
+     * 真正的 API 错误（网络/鉴权/5xx/响应格式非法）仍照原样抛出，交由调用方 report。
+     */
     public function getClientLinks(string $email): array
     {
-        $obj = $this->request('GET', self::EP_CLIENTS_LINKS . rawurlencode($email));
+        try {
+            $obj = $this->request('GET', self::EP_CLIENTS_LINKS . rawurlencode($email));
+        } catch (ThreeXUiException $e) {
+            if (!self::isClientNotFound($e)) {
+                throw $e;
+            }
+
+            self::debugLog('3x-ui client 不存在，跳过其订阅链接', [
+                'email' => $email,
+                'msg' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
 
         return is_array($obj) ? array_values(array_filter($obj, 'is_string')) : [];
+    }
+
+    /**
+     * 判定异常是否为「client 不存在」。
+     *
+     * 3x-ui 对不存在的 email 返回的是 HTTP 200 + {success:false, msg:"Obtain (record not found)"}，
+     * 与普通业务失败的响应结构完全一致，只能按文案识别；各版本措辞不一，故用关键字兜底匹配。
+     *
+     * 带传输层前缀的异常一律【不算】not-found：网络超时/鉴权失败/5xx/非法响应分别由
+     * send()、ensureAuthenticated()、request() 加前缀抛出，这些必须照常上抛。
+     */
+    private static function isClientNotFound(ThreeXUiException $e): bool
+    {
+        $msg = $e->getMessage();
+
+        foreach (['3x-ui request failed:', '3x-ui login failed:', 'invalid 3x-ui response:'] as $prefix) {
+            if (str_starts_with($msg, $prefix)) {
+                return false;
+            }
+        }
+
+        return (bool) preg_match('/record not found|not found|not exist|不存在/i', $msg);
     }
 
     /**
@@ -351,8 +425,8 @@ class ThreeXUiClient
 
         try {
             $result = $this->send('GET', self::EP_SERVER_STATUS, [
-                'timeout' => 3.0,
-                'connect_timeout' => 2.0,
+                'timeout' => self::panelConfig('healthcheck_timeout', 8.0),
+                'connect_timeout' => self::panelConfig('healthcheck_connect_timeout', 5.0),
             ]);
         } catch (\Throwable $e) {
             return $this->unhealthy(0, $e->getMessage());
@@ -434,13 +508,33 @@ class ThreeXUiClient
     }
 
     /**
-     * 执行一次 HTTP 请求，返回原始 ['body'=>string, 'status'=>int, 'latencyMs'=>int]。
+     * 执行一次 HTTP 请求，返回原始 ['body'=>string, 'status'=>int]。
      * 负责鉴权头、cookie、CSRF 兜底、Guzzle 异常包装。
+     *
+     * 会话失效重试：cookie 模式下业务请求回 401/403（登录态被顶掉/过期/面板重启）时，
+     * 清掉缓存 → 重新登录一次 → **只重试该请求一次**。Bearer 模式不参与（token 无效就该报错）。
+     * 只有 401/403 走这条路，其它状态码/网络错误的重试行为与拆分前完全一致（不重试）。
      */
     protected function send(string $method, string $path, array $options = []): array
     {
         $this->ensureAuthenticated();
 
+        try {
+            return $this->execute($method, $path, $options);
+        } catch (PanelAuthExpiredException) {
+            $this->forgetAuth();
+            $this->ensureAuthenticated();
+
+            return $this->execute($method, $path, $options, true);
+        }
+    }
+
+    /**
+     * 单次 HTTP 往返（不含重试）。$isRetry=true 时 401/403 不再触发二次重登，
+     * 而是按普通请求失败抛出 —— 避免「重登后仍然 401」被上层当成 not-found 静默吞掉。
+     */
+    private function execute(string $method, string $path, array $options, bool $isRetry = false): array
+    {
         $headers = [
             'Accept' => 'application/json',
         ];
@@ -467,6 +561,10 @@ class ThreeXUiClient
         try {
             $response = $this->client->request($method, $this->baseUrl . $path, $merged);
         } catch (RequestException $e) {
+            if (!$isRetry && $this->isSessionExpired($e)) {
+                throw new PanelAuthExpiredException('3x-ui session expired: ' . $e->getMessage(), 0, $e);
+            }
+
             throw new ThreeXUiException('3x-ui request failed: ' . $e->getMessage(), 0, $e);
         }
 
@@ -476,9 +574,24 @@ class ThreeXUiClient
         ];
     }
 
+    /** cookie 模式下 401/403 = 会话失效（Bearer 模式不适用，token 无效没有「重登」一说）。 */
+    private function isSessionExpired(RequestException $e): bool
+    {
+        if ($this->apiKey) {
+            return false;
+        }
+
+        $status = $e->getResponse()?->getStatusCode();
+
+        return $status === 401 || $status === 403;
+    }
+
     /**
-     * Bearer 模式（api_key 非空）→ 直接通过，无状态。
-     * cookie 模式 → /login JSON + 取 cookie，再 GET /panel/api/csrf-token 取 CSRF token。
+     * 鉴权入口。
+     *
+     * Bearer 模式（api_key 非空）→ 直接通过，无状态、**不碰缓存**。
+     * cookie 模式 → 优先复用跨进程缓存里的登录态（cookie + csrf），
+     * 缓存没有/不可用才真的 POST /login + GET /csrf-token，成功后写回缓存。
      */
     protected function ensureAuthenticated(): void
     {
@@ -486,15 +599,38 @@ class ThreeXUiClient
             return;
         }
 
+        if ($this->restoreAuthFromCache()) {
+            $this->authenticated = true;
+
+            return;
+        }
+
+        $this->login();
+        $this->authenticated = true;
+        $this->storeAuthToCache();
+    }
+
+    /**
+     * 真登录：POST /login（JSON）→ 成功后 GET /panel/api/csrf-token。
+     *
+     * 两个请求走独立的短超时（config/panel.php），不继承业务请求的 15 秒。
+     * catch 的是 TransferException 而非 RequestException —— Guzzle 的 ConnectException
+     * （连接超时/拒绝/DNS 失败）继承自 TransferException 而非 RequestException，
+     * 用后者接会把它漏给上层，管理员只看到一段英文的 cURL 报错。
+     */
+    protected function login(): void
+    {
         try {
             $resp = $this->client->request('POST', $this->baseUrl . self::EP_LOGIN, [
                 'json' => ['username' => $this->username, 'password' => $this->password],
                 'cookies' => $this->cookieJar,
                 'verify' => $this->verify,
                 'headers' => ['Accept' => 'application/json'],
+                'timeout' => self::panelConfig('login_timeout', 5.0),
+                'connect_timeout' => self::panelConfig('login_connect_timeout', 5.0),
             ]);
-        } catch (RequestException $e) {
-            throw new ThreeXUiException('3x-ui login failed: ' . $e->getMessage(), 0, $e);
+        } catch (TransferException $e) {
+            throw new ThreeXUiException($this->loginErrorMessage($e), 0, $e);
         }
 
         $body = json_decode((string) $resp->getBody(), true);
@@ -509,15 +645,146 @@ class ThreeXUiClient
                 'cookies' => $this->cookieJar,
                 'verify' => $this->verify,
                 'headers' => ['Accept' => 'application/json'],
+                'timeout' => self::panelConfig('csrf_timeout', 2.0),
+                'connect_timeout' => self::panelConfig('csrf_connect_timeout', 2.0),
             ]);
             $csrf = trim((string) $csrfResp->getBody(), "\" \r\n");
             $this->csrfToken = $csrf !== '' ? $csrf : null;
-        } catch (RequestException $e) {
+        } catch (TransferException $e) {
             // CSRF 获取失败不致命（部分版本无此端点），继续尝试
             $this->csrfToken = null;
         }
+    }
 
-        $this->authenticated = true;
+    /** 登录失败信息：连接超时翻译成人话，其余保持原前缀（isClientNotFound 依赖该前缀）。 */
+    private function loginErrorMessage(TransferException $e): string
+    {
+        if ($e instanceof ConnectException) {
+            return '3x-ui login failed: 节点登录超时，请检查 host/端口是否可达，或改用 api_key（' . $e->getMessage() . '）';
+        }
+
+        return '3x-ui login failed: ' . $e->getMessage();
+    }
+
+    // ===== 登录态跨进程缓存 =====
+
+    /**
+     * 缓存键：由 scheme/host/port/web_base_path/username 组成的稳定指纹。
+     * 刻意不掺 node id —— 客户端（含队列 Job、probeInbounds 里临时构造的实例）拿不到它。
+     * 不含 password：改密码后旧会话失效会由 401 → 清缓存 + 重登自愈。
+     */
+    protected function authCacheKey(): string
+    {
+        return 'panel-auth:' . sha1(implode("\0", [
+            $this->scheme,
+            $this->host,
+            (string) $this->port,
+            $this->basePath,
+            $this->username,
+        ]));
+    }
+
+    /**
+     * 缓存仓储；不可用（未引导 Laravel / 未绑定 cache / driver 不支持）时返回 null。
+     * 调用方一律把 null 当作「没有缓存」处理 —— 回退为每次登录，绝不因此报错。
+     */
+    private static function cacheRepository(): ?CacheRepository
+    {
+        if (!function_exists('app') || !function_exists('config') || !app()->bound('cache')) {
+            return null;
+        }
+
+        try {
+            return app('cache')->store();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /** 命中缓存则把 cookie + csrf 还原到本实例，返回是否命中。任何异常都算未命中。 */
+    protected function restoreAuthFromCache(): bool
+    {
+        $cache = self::cacheRepository();
+        if ($cache === null) {
+            return false;
+        }
+
+        try {
+            $payload = $cache->get($this->authCacheKey());
+        } catch (\Throwable) {
+            return false;
+        }
+
+        if (!is_array($payload) || !is_array($payload['cookies'] ?? null) || $payload['cookies'] === []) {
+            return false;
+        }
+
+        try {
+            $this->cookieJar = new CookieJar(false, $payload['cookies']);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $csrf = $payload['csrf'] ?? null;
+        $this->csrfToken = is_string($csrf) && $csrf !== '' ? $csrf : null;
+
+        return true;
+    }
+
+    /** 登录成功后写缓存；写失败只影响下次是否重登，绝不影响本次请求。 */
+    protected function storeAuthToCache(): void
+    {
+        $cache = self::cacheRepository();
+        if ($cache === null) {
+            return;
+        }
+
+        $ttl = (int) self::panelConfig('auth_cache_ttl', 300);
+        if ($ttl <= 0) {
+            return;
+        }
+
+        $cookies = $this->cookieJar->toArray();
+        if ($cookies === []) {
+            // 没拿到任何 cookie：缓存了也没用（下次照样过不了鉴权）
+            return;
+        }
+
+        try {
+            $cache->put($this->authCacheKey(), [
+                'cookies' => $cookies,
+                'csrf' => $this->csrfToken,
+            ], $ttl);
+        } catch (\Throwable) {
+            // 静默降级：下次重新登录即可
+        }
+    }
+
+    /** 清本实例登录态 + 清缓存（401/403 后调用）。 */
+    protected function forgetAuth(): void
+    {
+        $this->authenticated = false;
+        $this->csrfToken = null;
+        $this->cookieJar = new CookieJar();
+
+        $cache = self::cacheRepository();
+        if ($cache === null) {
+            return;
+        }
+
+        try {
+            $cache->forget($this->authCacheKey());
+        } catch (\Throwable) {
+            // 清不掉也无妨：下次登录会覆盖
+        }
+    }
+
+    /** 纯单元测试（未引导 Laravel 应用、Facade 无根）下静默跳过，保证本类可脱离框架使用。 */
+    private static function debugLog(string $message, array $context = []): void
+    {
+        if (function_exists('app') && app()->bound('log')) {
+            Log::debug($message, $context);
+        }
     }
 
     private function unhealthy(int $latencyMs, string $error): array

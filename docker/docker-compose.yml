@@ -31,6 +31,8 @@ services:
       - DB_PASSWORD=
       - QUEUE_CONNECTION=database
       - DB_QUEUE_RETRY_AFTER=180
+      # 节点类 Job 走独立队列，由 supervisord 的 queue-node-1/2 消费
+      - PANEL_NODE_OPS_QUEUE=node-ops
       - APP_KEY=${APP_KEY:-}
       - APP_URL=${APP_URL:-http://localhost:8080}
     healthcheck:

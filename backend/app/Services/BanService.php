@@ -73,9 +73,59 @@ class BanService
     {
         if (!$user) return;
 
+        // 与 BanCheckJob / SyncTrafficCommand 保持同一规则：
+        // 已确认关闭且未超时效 → 早退，0 次 HTTP 请求。
+        if ($this->isRecentlyDisabled($user)) {
+            return;
+        }
+
         $reason = $this->banReason($user);
         if ($reason !== false) {
             $this->toggleClient($user, false);
+        }
+    }
+
+    /**
+     * 扫描器（BanCheckJob / SyncTrafficCommand）是否还应对该用户执行关闭动作。
+     *
+     * 跳过依据：users.traffic_disabled_at 记录「上一次确认把 client 关掉」的时间。
+     * 已关闭且未超时效（config('ban.recheck_after_hours')）→ 不再重复发请求，
+     * 这正是「同一批超量用户每 5 分钟被重关一遍」的止血点。
+     * 超时效后仍会重新校验一次，用于兜住「面板上被人工开回来」的状态漂移。
+     */
+    public function needsDisable(User $user): bool
+    {
+        return $this->banReason($user) !== false && !$this->isRecentlyDisabled($user);
+    }
+
+    /**
+     * 该用户是否处于「已确认关闭且仍在时效内」状态（此时扫描器零 HTTP 请求跳过）。
+     * 时效配 0 表示关闭该优化（每轮都重新校验）。
+     */
+    public function isRecentlyDisabled(User $user): bool
+    {
+        $disabledAt = $user->traffic_disabled_at;
+        if ($disabledAt === null) {
+            return false;
+        }
+
+        $hours = (int) config('ban.recheck_after_hours', 6);
+        if ($hours <= 0) {
+            return false;
+        }
+
+        return $disabledAt->gt(now()->subHours($hours));
+    }
+
+    /**
+     * 外部路径（provision / 新建节点同步等）把 client 以 enable=true 写回 3x-ui 时调用：
+     * 面板状态已不再是「已关闭」，必须撤销 traffic_disabled_at，
+     * 否则扫描器会以为用户仍处于关闭态而跳过校验（最长 config('ban.recheck_after_hours')）。
+     */
+    public function forgetDisabledState(User $user): void
+    {
+        if ($user->traffic_disabled_at !== null) {
+            $user->forceFill(['traffic_disabled_at' => null])->save();
         }
     }
 
@@ -106,38 +156,107 @@ class BanService
         return $clientData;
     }
 
-    public function toggleClient(User $user, bool $enable): void
+    /**
+     * 开关 3x-ui client（所有开关流量路径的唯一汇聚点）。
+     *
+     * 请求量（每用户每轮，生产 5 节点 / 9 入站）：
+     * - getClient 提到入站循环外，每节点只发 1 次：同一 email 在同一节点上 client 数据
+     *   相同，入站维度的差异只体现在 updateClient 的 inboundId 参数上；
+     *   入站循环与「兜底不带 inboundId」的更新复用同一份响应。
+     * - 改前 28 次（9 入站 ×（1 get + 1 update）+ 5 节点 ×（1 get + 1 update））
+     *   → 改后 19 次（5 get + 9 入站 update + 5 兜底 update）。
+     *
+     * 返回值：本次调用是否已确认生效（为 true 时 users.traffic_disabled_at 已同步落库）。
+     * 判定口径：
+     * - 关闭（enable=false）：要求【全部启用节点】确认，才写 traffic_disabled_at。
+     *   少关掉一个节点，用户就能从那个节点继续跑流量；宁可下一轮重试，
+     *   也不能标记成「已关闭」而被扫描器跳过 —— 保住「兜底不漏关」的既有语义。
+     * - 开启（enable=true）：只要有【任一节点】确认就清空标记。清空是更宽松的方向，
+     *   最坏结果只是下一轮多做一次校验，不会漏关。
+     */
+    public function toggleClient(User $user, bool $enable): bool
     {
         $email = $user->clientEmail();
+        $nodes = Node::where('enabled', true)->get();
 
-        foreach (Node::where('enabled', true)->get() as $node) {
-            try {
-                $driver = $this->driverFactory->make($node);
-                // 逐个入站更新 enable 状态
-                $inboundIds = $node->inboundIdsFor($user->protocol);
-                foreach ($inboundIds as $inboundId) {
-                    try {
-                        $resp = $driver->getClient($email);
-                        if ($resp === null) continue;
-                        $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
-                        $clientData['enable'] = $enable;
-                        $driver->updateClient($email, $clientData, $inboundId);
-                    } catch (\Throwable) {
-                        // 入站不存在或 client 不存在，忽略
-                    }
-                }
-                // 兜底不带 inboundId 再更新一次
-                try {
-                    $resp = $driver->getClient($email);
-                    if ($resp !== null) {
-                        $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
-                        $clientData['enable'] = $enable;
-                        $driver->updateClient($email, $clientData);
-                    }
-                } catch (\Throwable) {}
-            } catch (\Throwable $e) {
-                report($e);
+        if ($nodes->isEmpty()) {
+            return false; // 无节点可操作：不写标记，下一轮继续尝试
+        }
+
+        $confirmed = 0;
+        foreach ($nodes as $node) {
+            if ($this->applyEnableOnNode($node, $user->protocol, $email, $enable)) {
+                $confirmed++;
             }
+        }
+
+        if ($enable) {
+            if ($confirmed > 0) {
+                $this->forgetDisabledState($user);
+            }
+
+            return $confirmed > 0;
+        }
+
+        $applied = $confirmed === $nodes->count();
+        if ($applied) {
+            $user->forceFill(['traffic_disabled_at' => now()])->save();
+        }
+
+        return $applied;
+    }
+
+    /**
+     * 在单个节点上把 client 的 enable 改成 $enable。
+     *
+     * @return bool 该节点是否【确认】已生效：getClient 取到了 client，且所有
+     *              updateClient 调用都没抛异常。
+     *              getClient 返回 null 既可能是 client 不存在，也可能是节点不可达 /
+     *              鉴权失败（ThreeXUiClient::requestNullable 对两类失败一律返回 null），
+     *              无法区分，故一律按「未确认」处理，交给下一轮重试。
+     *              例外：该节点本来就没有该协议的入站（provisionClient 同样会跳过这类节点，
+     *              用户在本节点无挂载点可关）→ 视为「无需操作」而非失败，否则这类用户
+     *              永远确认不了、每轮都要被重发一遍请求，优化对他们等于失效。
+     */
+    private function applyEnableOnNode(Node $node, string $protocol, string $email, bool $enable): bool
+    {
+        try {
+            $driver = $this->driverFactory->make($node);
+            $inboundIds = $node->inboundIdsFor($protocol);
+
+            // 每节点只取一次 client 数据，入站循环与兜底共用
+            $resp = $driver->getClient($email);
+            if ($resp === null) {
+                return $inboundIds === [];
+            }
+
+            $clientData = $this->normalizeForUpdate($resp['client'] ?? $resp);
+            $clientData['enable'] = $enable;
+
+            $ok = true;
+
+            // 逐个入站更新 enable 状态
+            foreach ($inboundIds as $inboundId) {
+                try {
+                    $driver->updateClient($email, $clientData, $inboundId);
+                } catch (\Throwable) {
+                    // 入站不存在或 client 不存在，忽略；但该节点不再算「确认生效」
+                    $ok = false;
+                }
+            }
+
+            // 兜底不带 inboundId 再更新一次
+            try {
+                $driver->updateClient($email, $clientData);
+            } catch (\Throwable) {
+                $ok = false;
+            }
+
+            return $ok;
+        } catch (\Throwable $e) {
+            report($e);
+
+            return false;
         }
     }
 }

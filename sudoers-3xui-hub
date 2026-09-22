@@ -1,0 +1,10 @@
+# 3xui-hub 多域名助手 — 受限 sudoers
+# 安装：visudo -f /etc/sudoers.d/3xui-hub  （或把本文件内容并入 /etc/sudoers.d/3xui-hub，权限 0440）
+#
+# 面板（www-data）只能免密跑 3hub-domain 这一个脚本 + 四个子命令 + 合法域名字符集，
+# 拿不到其它 root 命令。
+#
+# 注意：sudoers 的 glob 不是正则，[a-z0-9.-]* 表示「该字符集出现 0 次或多次」。
+# 真正的域名格式校验在 3hub-domain 脚本内再做一遍（DOMAIN_RE），不合法直接退出。
+
+www-data ALL=(root) NOPASSWD: /usr/local/bin/3hub-domain apply [a-z0-9.-]*, /usr/local/bin/3hub-domain renew [a-z0-9.-]*, /usr/local/bin/3hub-domain remove [a-z0-9.-]*, /usr/local/bin/3hub-domain status [a-z0-9.-]*

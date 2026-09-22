@@ -234,6 +234,32 @@ remove_cron() {
 }
 
 # ------------------------------------------------------------
+# 停止并删除队列 Worker 服务
+# install.sh / 3hub 会生成：
+#   3xui-hub-queue.service          （default 队列，定时任务）
+#   3xui-hub-queue-node@.service    （node-ops 队列，模板单元，实例 1/2）
+# 必须在删除项目目录之前执行：worker 是 Restart=always，项目目录被删后
+# 它会不停重启失败、刷满 journal 日志，留下指向空目录的僵尸服务。
+# ------------------------------------------------------------
+remove_queue_services() {
+    info "停止队列 Worker 服务..."
+    local unit
+    # 模板实例的 enable 只写 multi-user.target.wants/ 下的符号链接，
+    # /etc/systemd/system/ 下并不存在 @1.service 文件，所以不看文件在不在，
+    # 直接 stop/disable，服务不存在时由 2>/dev/null || true 兜底
+    for unit in "3xui-hub-queue.service" "3xui-hub-queue-node@1.service" "3xui-hub-queue-node@2.service"; do
+        systemctl stop "$unit" 2>/dev/null || true
+        systemctl disable "$unit" 2>/dev/null || true
+    done
+    # 单元文件本体（模板单元只有一份）
+    rm -f /etc/systemd/system/3xui-hub-queue.service 2>/dev/null || true
+    rm -f /etc/systemd/system/3xui-hub-queue-node@.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    success "队列 Worker 服务已清理"
+    log "已清理队列 Worker 服务"
+}
+
+# ------------------------------------------------------------
 # 删除项目目录
 # /www/wwwroot/3xui-hub 整个删掉，包括 backend、frontend、.git 等
 # ------------------------------------------------------------
@@ -517,10 +543,11 @@ do_uninstall() {
 
     # === 所有模式都执行的基础清理 ===
     stop_php_fpm         # 1. 停 PHP-FPM，释放项目文件占用
-    remove_nginx_conf    # 2. 删 Nginx 站点配置 + reload
-    remove_hub_bin       # 3. 删 /usr/local/bin/3hub 命令
-    remove_cron          # 4. 清理 cron 定时任务
-    remove_project       # 5. 删 /www/wwwroot/3xui-hub 项目目录
+    remove_queue_services # 2. 停并删队列 Worker 服务（先于删目录，避免僵尸服务）
+    remove_nginx_conf    # 3. 删 Nginx 站点配置 + reload
+    remove_hub_bin       # 4. 删 /usr/local/bin/3hub 命令
+    remove_cron          # 5. 清理 cron 定时任务
+    remove_project       # 6. 删 /www/wwwroot/3xui-hub 项目目录
 
     # === --app / --all：额外删数据库 ===
     if [ "$MODE" = "app" ] || [ "$MODE" = "all" ]; then
@@ -559,11 +586,11 @@ show_result() {
     # 按模式分别列出已删除/已保留的内容，让用户一目了然
     case "$MODE" in
         panel)
-            echo -e "  ${GREEN}已删除：${NC}项目文件、Nginx 配置、3hub 命令、cron 任务"
+            echo -e "  ${GREEN}已删除：${NC}项目文件、Nginx 配置、3hub 命令、cron 任务、队列 Worker 服务"
             echo -e "  ${YELLOW}已保留：${NC}PHP、Nginx、MySQL/MariaDB、数据库 $DB_NAME"
             ;;
         app)
-            echo -e "  ${GREEN}已删除：${NC}项目文件、Nginx 配置、3hub 命令、cron 任务、数据库 $DB_NAME"
+            echo -e "  ${GREEN}已删除：${NC}项目文件、Nginx 配置、3hub 命令、cron 任务、队列 Worker 服务、数据库 $DB_NAME"
             echo -e "  ${YELLOW}已保留：${NC}PHP、Nginx、MySQL/MariaDB（运行环境）"
             ;;
         all)

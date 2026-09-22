@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+#
+# 3hub-domain — 多域名 SSL / Nginx 一键应用助手（root）
+#
+# 安装位置：/usr/local/bin/3hub-domain
+# 调用方：www-data 通过受限 sudoers 免密执行，仅四个子命令 + 合法域名：
+#   sudo -n /usr/local/bin/3hub-domain {apply|renew|remove|status} <域名>
+#
+# 设计：表驱动、幂等。加/删域名都走「读 domains 表 → 整份重写 conf → nginx -t → reload」，
+# 不会加一个丢一个。acme.sh 走 webroot（${INSTALL_DIR}/backend/public/，/.well-known 挑战）。
+#
+# 环境：自动检测宝塔(BT)面板 / 标准 nginx，路径与 reload 命令双路径切换（见 detect_env）。
+# 我们的 conf 始终是独立自有文件 <conf目录>/3xui-hub-domains.conf，幂等整份重建；
+# 生成前检查其它 *.conf 是否已声明同名 server_name，已占用则跳过该域名（不碰 domains 表）。
+#
+# 输出：stdout 固定一行 JSON；人类日志一律走 stderr。
+#
+set -euo pipefail
+
+# 与 install.sh / 3hub 的 INSTALL_DIR 保持一致
+INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/3xui-hub}"
+WEBROOT="${WEBROOT:-${INSTALL_DIR}/backend/public}"
+ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/backend/.env}"
+ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
+ACME_BIN="${ACME_BIN:-${ACME_HOME}/acme.sh}"
+PHP_FPM_PASS="${PHP_FPM_PASS:-unix:/run/php/php8.4-fpm.sock}"
+ACME_SERVER="${ACME_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
+EXPIRING_DAYS="${EXPIRING_DAYS:-14}"
+# 续签：证书剩余天数 < 此值才真正签发；否则只校验+重建 conf 后正常返回（省 LE 额度）
+RENEW_THRESHOLD_DAYS="${RENEW_THRESHOLD_DAYS:-10}"
+# 签发失败重试次数（每次失败记日志，退避 3s×次数）
+ISSUE_RETRY_TIMES="${ISSUE_RETRY_TIMES:-3}"
+# 失败/重试/跳过 的落盘日志（助手 stderr 另走调用方）
+HELPER_LOG="${HELPER_LOG:-/var/log/3hub-domain.log}"
+
+# 宝塔标记目录（可注入覆盖，便于本地单测 mock）
+BT_PANEL_MARKER="${BT_PANEL_MARKER:-/www/server/panel}"
+BT_NGINX_MARKER="${BT_NGINX_MARKER:-/www/server/nginx}"
+
+# 我们自有的整份重建 conf 文件名（不碰其它站点 conf）
+OWN_CONF_NAME="3xui-hub-domains.conf"
+
+# detect_env 填充（bt | standard）；${VAR:-} 形式保留预注入值，便于单测 mock
+NGINX_ENV="${NGINX_ENV:-}"
+CONF_DIR="${CONF_DIR:-}"      # 站点 conf 目录（带尾 /）
+CERT_DIR="${CERT_DIR:-}"      # 证书根目录（带尾 /；宝塔下每域名再套一层 <域名>/）
+NGINX_BIN="${NGINX_BIN:-}"    # nginx 可执行文件（宝塔可能是 /www/server/nginx/sbin/nginx）
+RELOAD_CMD="${RELOAD_CMD:-}"  # reload 命令（acme --reloadcmd / 手动 reload 共用）
+NGINX_CONF="${NGINX_CONF:-}"  # 我们的 conf 完整路径
+
+# 合法域名（与 DomainService / DomainController 同源）
+DOMAIN_RE='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+
+ACTION=""
+DOMAIN=""
+
+log() { echo "[3hub-domain] $*" >&2; }
+
+# 落盘日志（失败/重试/跳过审计）。写不进去也绝不影响主流程
+alog() {
+  { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; } >>"${HELPER_LOG}" 2>/dev/null || true
+}
+
+json_escape() {
+  local s="${1-}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+die_json() {
+  # die_json <error>
+  local err="${1-}"
+  log "ERROR: ${err}"
+  alog "ERROR ${ACTION} ${DOMAIN}: ${err}"
+  printf '{"ok":false,"action":"%s","domain":"%s","ssl_status":"failed","cert_expires_at":null,"error":"%s"}\n' \
+    "$(json_escape "${ACTION}")" "$(json_escape "${DOMAIN}")" "$(json_escape "${err}")"
+  exit 1
+}
+
+ok_json() {
+  # ok_json <ssl_status> <cert_expires_at>
+  local ssl="${1-}" expires="${2-}"
+  if [[ -n "${expires}" ]]; then
+    printf '{"ok":true,"action":"%s","domain":"%s","ssl_status":"%s","cert_expires_at":"%s","error":null}\n' \
+      "$(json_escape "${ACTION}")" "$(json_escape "${DOMAIN}")" "$(json_escape "${ssl}")" "$(json_escape "${expires}")"
+  else
+    printf '{"ok":true,"action":"%s","domain":"%s","ssl_status":"%s","cert_expires_at":null,"error":null}\n' \
+      "$(json_escape "${ACTION}")" "$(json_escape "${DOMAIN}")" "$(json_escape "${ssl}")"
+  fi
+  exit 0
+}
+
+usage() {
+  echo "usage: 3hub-domain {apply|renew|remove|status} <domain>" >&2
+  exit 2
+}
+
+require_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "3hub-domain: must run as root" >&2
+    exit 1
+  fi
+}
+
+# 脚本内再校验一遍域名格式，不合法直接退出
+validate_domain() {
+  local d="${1-}"
+  if [[ -z "${d}" || ${#d} -gt 253 ]]; then
+    die_json "invalid domain"
+  fi
+  if [[ ! "${d}" =~ ${DOMAIN_RE} ]]; then
+    die_json "invalid domain: ${d}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 环境检测：宝塔(BT)面板 vs 标准 nginx。路径/命令全部走变量，不散落硬编码。
+# 标准 nginx 分支的路径与命令与原批2 行为完全一致（回归不破）。
+# ---------------------------------------------------------------------------
+detect_env() {
+  if [[ -d "${BT_PANEL_MARKER}" || -d "${BT_NGINX_MARKER}" ]]; then
+    # ---- 宝塔面板 ----
+    NGINX_ENV="bt"
+    CONF_DIR="${CONF_DIR:-/www/server/panel/vhost/nginx/}"
+    CERT_DIR="${CERT_DIR:-/www/server/panel/vhost/cert/}"
+    if [[ -x "${BT_NGINX_MARKER}/sbin/nginx" ]]; then
+      NGINX_BIN="${BT_NGINX_MARKER}/sbin/nginx"
+      RELOAD_CMD="${NGINX_BIN} -s reload"
+    elif [[ -x /www/server/nginx/sbin/nginx ]]; then
+      NGINX_BIN="/www/server/nginx/sbin/nginx"
+      RELOAD_CMD="${NGINX_BIN} -s reload"
+    else
+      NGINX_BIN="nginx"
+      RELOAD_CMD="/etc/init.d/nginx reload"
+    fi
+  else
+    # ---- 标准 nginx（与批2 现状一致）----
+    NGINX_ENV="standard"
+    CONF_DIR="${CONF_DIR:-/etc/nginx/conf.d/}"
+    CERT_DIR="${CERT_DIR:-/etc/nginx/ssl/}"
+    NGINX_BIN="nginx"
+    RELOAD_CMD="systemctl reload nginx"
+  fi
+  NGINX_CONF="${NGINX_CONF:-${CONF_DIR}${OWN_CONF_NAME}}"
+  log "detect_env: env=${NGINX_ENV} conf_dir=${CONF_DIR} cert_dir=${CERT_DIR} nginx_bin=${NGINX_BIN} reload=${RELOAD_CMD}"
+}
+
+# 证书目录（宝塔：/www/server/panel/vhost/cert/<域名>/；标准：/etc/nginx/ssl/）
+cert_dir_for() {
+  local d="$1"
+  if [[ "${NGINX_ENV}" == "bt" ]]; then
+    printf '%s' "${CERT_DIR}${d}/"
+  else
+    printf '%s' "${CERT_DIR}"
+  fi
+}
+
+# fullchain / 私钥路径
+#   宝塔：  <cert>/<域名>/fullchain.pem + <cert>/<域名>/privkey.pem
+#   标准：  /etc/nginx/ssl/<域名>.pem   + /etc/nginx/ssl/<域名>.key
+cert_fullchain_file() {
+  local d="$1"
+  if [[ "${NGINX_ENV}" == "bt" ]]; then
+    printf '%s' "${CERT_DIR}${d}/fullchain.pem"
+  else
+    printf '%s' "${CERT_DIR}${d}.pem"
+  fi
+}
+
+cert_key_file() {
+  local d="$1"
+  if [[ "${NGINX_ENV}" == "bt" ]]; then
+    printf '%s' "${CERT_DIR}${d}/privkey.pem"
+  else
+    printf '%s' "${CERT_DIR}${d}.key"
+  fi
+}
+
+# 从 Laravel .env 读一个键（无则用默认值）
+env_get() {
+  local key="$1" default="${2-}" val=""
+  if [[ -f "${ENV_FILE}" ]]; then
+    val="$(grep -E "^${key}=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//")"
+  fi
+  printf '%s' "${val:-$default}"
+}
+
+# 读 domains 表：全部 enabled 域名（主域优先，再按字典序）
+# 可注入 ENABLED_DOMAINS（换行分隔）跳过 DB，便于本地单测
+list_enabled_domains() {
+  if [[ -n "${ENABLED_DOMAINS+set}" ]]; then
+    printf '%s\n' "${ENABLED_DOMAINS}"
+    return 0
+  fi
+
+  local db user pass host port
+  db="$(env_get DB_DATABASE controlhub)"
+  user="$(env_get DB_USERNAME root)"
+  pass="$(env_get DB_PASSWORD '')"
+  host="$(env_get DB_HOST 127.0.0.1)"
+  port="$(env_get DB_PORT 3306)"
+
+  local args=(-N -B -h"${host}" -P"${port}" -u"${user}")
+  if [[ -n "${pass}" ]]; then
+    args+=(-p"${pass}")
+  fi
+  args+=("${db}")
+
+  mysql "${args[@]}" -e "SELECT domain FROM domains WHERE enabled = 1 ORDER BY is_primary DESC, domain ASC" 2>/dev/null
+}
+
+# 证书到期时间（ISO8601 UTC；无证书输出空）
+cert_expiry() {
+  local domain="$1" pem end
+  pem="$(cert_fullchain_file "${domain}")"
+  if [[ ! -f "${pem}" ]]; then
+    printf ''
+    return 0
+  fi
+  end="$(openssl x509 -enddate -noout -in "${pem}" 2>/dev/null | cut -d= -f2- || true)"
+  if [[ -z "${end}" ]]; then
+    printf ''
+    return 0
+  fi
+  date -u -d "${end}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "${end}"
+}
+
+# 证书是否还够 RENEW_THRESHOLD_DAYS 天（返回 0=够；1=不够或无证书）
+cert_days_enough() {
+  local domain="$1" pem
+  pem="$(cert_fullchain_file "${domain}")"
+  [[ -f "${pem}" ]] || return 1
+  openssl x509 -checkend $(( RENEW_THRESHOLD_DAYS * 86400 )) -noout -in "${pem}" >/dev/null 2>&1
+}
+
+# 有证书且未临期 → ok；有证书但临期 → expiring；无证书 → none
+ssl_status_for() {
+  local domain="$1" pem
+  pem="$(cert_fullchain_file "${domain}")"
+  if [[ ! -f "${pem}" ]]; then
+    printf 'none'
+    return 0
+  fi
+  if openssl x509 -checkend $((EXPIRING_DAYS * 86400)) -noout -in "${pem}" >/dev/null 2>&1; then
+    printf 'ok'
+  else
+    printf 'expiring'
+  fi
+}
+
+# acme.sh 签发/续签 + 装证（单次；不直接退出，返回码交给调用方做重试）
+# 成功/未到期跳过(=2) 都算成功
+issue_cert_once() {
+  local domain="$1" force="${2:-0}"
+  local cdir fullchain key rc=0
+
+  if [[ ! -x "${ACME_BIN}" ]]; then
+    log "acme.sh not found: ${ACME_BIN}"
+    return 1
+  fi
+
+  local args=(--issue -d "${domain}" -w "${WEBROOT}" --server "${ACME_SERVER}")
+  if [[ "${force}" == "1" ]]; then
+    args+=(--force)
+  fi
+
+  log "acme.sh issue ${domain} (force=${force})"
+  # acme.sh 退出码：0=签发成功；2=证书未到期跳过（正常流程，不是失败）；其它=真失败
+  "${ACME_BIN}" "${args[@]}" >&2 || rc=$?
+  if [[ "${rc}" -ne 0 && "${rc}" -ne 2 ]]; then
+    log "acme.sh issue 失败 (exit=${rc})"
+    return 1
+  fi
+  [[ "${rc}" -eq 2 ]] && log "acme.sh 跳过签发（证书未到期）"
+
+  cdir="$(cert_dir_for "${domain}")"
+  fullchain="$(cert_fullchain_file "${domain}")"
+  key="$(cert_key_file "${domain}")"
+  mkdir -p "${cdir}"
+  rc=0
+  "${ACME_BIN}" --install-cert -d "${domain}" \
+    --fullchain-file "${fullchain}" \
+    --key-file "${key}" \
+    --reloadcmd "${RELOAD_CMD}" >&2 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    log "acme.sh install-cert 失败 (exit=${rc})"
+    return 1
+  fi
+  [[ -f "${fullchain}" ]] && chmod 644 "${fullchain}"
+  [[ -f "${key}" ]] && chmod 600 "${key}"
+  return 0
+}
+
+# 带重试的签发：失败重试 ISSUE_RETRY_TIMES 次（退避 3s×次数），每次失败写日志；全失败才 die_json
+issue_cert_retry() {
+  local domain="$1" force="${2:-0}" times="${3:-3}"
+  local i=1 rc=0
+
+  while [[ "${i}" -le "${times}" ]]; do
+    rc=0
+    issue_cert_once "${domain}" "${force}" || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then
+      [[ "${i}" -gt 1 ]] && alog "issue ${domain}: 第 ${i} 次重试成功"
+      return 0
+    fi
+    log "acme.sh 第 ${i}/${times} 次失败 (exit=${rc})"
+    alog "issue ${domain}: 第 ${i}/${times} 次失败 (exit=${rc})"
+    if [[ "${i}" -lt "${times}" ]]; then
+      sleep $(( i * 3 ))
+    fi
+    i=$(( i + 1 ))
+  done
+
+  alog "issue ${domain}: 重试 ${times} 次仍失败，放弃"
+  die_json "acme.sh issue failed for ${domain}（重试 ${times} 次仍失败）"
+}
+
+# 冲突检测：conf 目录下其它 *.conf（排除我们自有文件）是否已声明该域名的 server_name
+# 命中则输出冲突文件路径并返回 0；未命中返回 1
+find_conf_conflict() {
+  local domain="$1" f names
+  [[ -d "${CONF_DIR}" ]] || return 1
+  for f in "${CONF_DIR}"*.conf; do
+    [[ -f "${f}" ]] || continue
+    [[ "$(basename "${f}")" == "${OWN_CONF_NAME}" ]] && continue
+    # 抽出所有 server_name 参数（一行可多个），整词精确匹配该域名
+    names="$(grep -E 'server_name[[:space:]]' "${f}" 2>/dev/null \
+      | sed -e 's/.*server_name[[:space:]]*//' -e 's/;.*//' \
+      | tr ' \t,' '\n' \
+      | sed 's/;$//' \
+      | tr '[:upper:]' '[:lower:]' \
+      | grep -Ev '^$|^_$' || true)"
+    if printf '%s\n' "${names}" | grep -qxF "${domain}"; then
+      printf '%s' "${f}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 按 domains 表整份重写自有 conf（每个 enabled 域名：80→443 跳转 + 443 块）
+# 已被其它站点 conf 占用 server_name 的域名跳过（不影响 domains 表记录）
+rebuild_nginx_conf() {
+  local domains tmp d conflict fullchain key
+  domains="$(list_enabled_domains || true)"
+  tmp="$(mktemp)"
+
+  {
+    echo "# Generated by 3hub-domain — DO NOT EDIT（表驱动整份重建）"
+    echo "# generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "# env: ${NGINX_ENV}"
+    echo ""
+
+    if [[ -z "${domains}" ]]; then
+      log "domains 表无 enabled 行，写入空 conf"
+    fi
+
+    while IFS= read -r d; do
+      [[ -z "${d}" ]] && continue
+      [[ "${d}" =~ ${DOMAIN_RE} ]] || { log "skip invalid domain in table: ${d}"; continue; }
+
+      conflict="$(find_conf_conflict "${d}" || true)"
+      if [[ -n "${conflict}" ]]; then
+        log "域名 ${d} 已由 ${conflict} 提供，跳过"
+        continue
+      fi
+
+      fullchain="$(cert_fullchain_file "${d}")"
+      key="$(cert_key_file "${d}")"
+
+      cat <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${d};
+
+    location /.well-known/acme-challenge/ {
+        root ${WEBROOT};
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${d};
+
+    ssl_certificate     ${fullchain};
+    ssl_certificate_key ${key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+
+    root ${WEBROOT};
+    index index.html index.php;
+
+    location /.well-known/acme-challenge/ {
+        root ${WEBROOT};
+    }
+
+    location ~ ^/(api|admin-api) {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    location ~ \.php\$ {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_pass ${PHP_FPM_PASS};
+    }
+}
+
+EOF
+    done <<< "${domains}"
+  } > "${tmp}"
+
+  mkdir -p "${CONF_DIR}"
+  mv "${tmp}" "${NGINX_CONF}"
+  chmod 644 "${NGINX_CONF}"
+  log "rebuilt ${NGINX_CONF}"
+}
+
+nginx_test_and_reload() {
+  log "nginx -t"
+  if ! "${NGINX_BIN}" -t >&2; then
+    die_json "nginx -t failed"
+  fi
+  log "reload nginx"
+  if [[ "${NGINX_ENV}" == "bt" ]]; then
+    # shellcheck disable=SC2086
+    if ! ${RELOAD_CMD} >&2; then
+      die_json "nginx reload failed"
+    fi
+  else
+    # 标准 nginx：保持批2 原逻辑（systemctl 优先，失败退 nginx -s reload）
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl reload nginx >&2 || nginx -s reload >&2
+    else
+      nginx -s reload >&2
+    fi
+  fi
+}
+
+main() {
+  require_root
+
+  [[ $# -ge 2 ]] || usage
+  ACTION="$1"
+  DOMAIN="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+
+  case "${ACTION}" in
+    apply|renew|remove|status) ;;
+    *) usage ;;
+  esac
+
+  validate_domain "${DOMAIN}"
+  detect_env
+
+  mkdir -p "${CONF_DIR}" "${WEBROOT}/.well-known/acme-challenge"
+
+  case "${ACTION}" in
+    apply)
+      # 签发/续签（acme.sh 幂等）→ 装证 → 按表重建 conf → nginx -t → reload → 输出到期时间
+      issue_cert_retry "${DOMAIN}" 0 "${ISSUE_RETRY_TIMES}"
+      rebuild_nginx_conf
+      nginx_test_and_reload
+      ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
+      ;;
+    renew)
+      # 先看剩余天数：还够 RENEW_THRESHOLD_DAYS 天 → 不重签，校验+重建后正常返回（不消耗 LE 额度）
+      if cert_days_enough "${DOMAIN}"; then
+        log "证书剩余 ≥ ${RENEW_THRESHOLD_DAYS} 天，无需重签（到期 $(cert_expiry "${DOMAIN}")）"
+        alog "renew ${DOMAIN}: 跳过（剩余 ≥ ${RENEW_THRESHOLD_DAYS} 天，到期 $(cert_expiry "${DOMAIN}")）"
+        rebuild_nginx_conf
+        nginx_test_and_reload
+        ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
+      fi
+      # 剩余不足（或无证书）→ 强制签发，失败重试
+      issue_cert_retry "${DOMAIN}" 1 "${ISSUE_RETRY_TIMES}"
+      rebuild_nginx_conf
+      nginx_test_and_reload
+      ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
+      ;;
+    remove)
+      # 该域已从表中删除：按剩余 enabled 域名重建 conf，其 80/443 块随之消失
+      rebuild_nginx_conf
+      nginx_test_and_reload
+      ok_json "none" ""
+      ;;
+    status)
+      ok_json "$(ssl_status_for "${DOMAIN}")" "$(cert_expiry "${DOMAIN}")"
+      ;;
+  esac
+}
+
+# 被 source 时只导出函数/变量（供本地单测），不执行 main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

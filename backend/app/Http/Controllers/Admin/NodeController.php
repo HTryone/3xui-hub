@@ -7,7 +7,8 @@ use App\Http\Controllers\Controller;
 use App\Models\AsyncTask;
 use App\Models\Node;
 use App\Models\NodeInbound;
-use App\Models\User;
+use App\Services\NodeCleanupService;
+use App\Services\NodeInboundSyncService;
 use App\Services\NodeInitService;
 use App\Services\ThreeXUi\ThreeXUiClient;
 use App\Traits\ApiResponse;
@@ -26,6 +27,8 @@ class NodeController extends Controller
     public function __construct(
         private NodeDriverFactory $driverFactory,
         private NodeInitService $nodeInit,
+        private NodeInboundSyncService $inboundSync,
+        private NodeCleanupService $nodeCleanup,
     ) {
     }
 
@@ -72,12 +75,17 @@ class NodeController extends Controller
         });
 
         // P1-1/P1-2 修复：初始化异步化——按用户逐条派发，单用户失败不影响其余；
-        // 全部成功（且勾选启用）才由 maybeFinalize 启用节点，有失败则保持禁用可重试。
+        // 全部成功（且勾选启用）才由 maybeFinalize 启用节点；有失败只标 offline，不改 enabled。
         $task = $this->nodeInit->submit($node, $shouldEnable);
+        $message = '创建成功，接入初始化进行中（日志页可跟踪进度）';
 
         return $this->success(
-            $this->present($node->fresh(), true) + ['init_task_id' => $task->id, 'init_status' => $task->status],
-            '创建成功，接入初始化进行中（日志页可跟踪进度）'
+            $this->present($node->fresh(), true) + [
+                'init_task_id' => $task->id,
+                'init_status' => $task->status,
+                'message' => $message,
+            ],
+            $message
         );
     }
 
@@ -108,7 +116,8 @@ class NodeController extends Controller
             }
         }
 
-        DB::transaction(function () use ($node, $data) {
+        $syncTask = null;
+        DB::transaction(function () use ($node, $data, &$syncTask) {
             $node->forceFill([
                 'name' => $data['name'] ?? $node->name,
                 'host' => $data['host'] ?? $node->host,
@@ -123,37 +132,40 @@ class NodeController extends Controller
             ])->save();
 
             if (array_key_exists('inbounds', $data)) {
-                $this->syncInbounds($node, $data['inbounds'] ?? []);
+                $syncTask = $this->syncInbounds($node, $data['inbounds'] ?? []);
             }
         });
 
-        return $this->success($this->present($node->fresh(), true), '更新成功');
-    }
+        $payload = $this->present($node->fresh(), true);
 
-    public function destroy(Node $node): \Illuminate\Http\JsonResponse
-    {
-        $emails = User::query()->get()->map(fn (User $user) => $user->clientEmail())->all();
-        $node->delete();
+        // 入站变了且真有用户要搬：请求内一个面板请求都不发，只回报任务 id 让前端提示
+        if ($syncTask !== null) {
+            $message = '已更新，用户正在后台同步到新入站（日志页可看进度）';
 
-        $remoteCleaned = false;
-        try {
-            $driver = $this->driverFactory->make($node);
-            $health = $driver->healthCheck();
-            if (($health['ok'] ?? false) === true) {
-                foreach ($emails as $email) {
-                    try {
-                        $driver->deleteClient($email, false);
-                    } catch (\Throwable) {
-                        // client 已删除或不存在时继续清理其它用户
-                    }
-                }
-                $remoteCleaned = true;
-            }
-        } catch (\Throwable $e) {
-            report($e);
+            return $this->success($payload + ['sync_task_id' => $syncTask->id, 'message' => $message], $message);
         }
 
-        return $this->success(null, $remoteCleaned ? '已删除，已尝试清理远程托管客户端' : '已删除，节点不可达，已跳过远程清理');
+        return $this->success($payload, '更新成功');
+    }
+
+    /**
+     * 删除节点：本地行立刻删，远端 client 清理交给后台任务。
+     *
+     * 旧实现在请求里先 healthCheck 再逐用户 deleteClient（100 用户 = 100+ 次串行 HTTPS）。
+     * 现在清理任务自带可达性判断，不可达/部分失败都会写进任务结果（日志页可见、可重试）。
+     * 连接快照必须在 $node->delete() 之前取。
+     */
+    public function destroy(Node $node): \Illuminate\Http\JsonResponse
+    {
+        $task = $this->nodeCleanup->submit($node);
+        $node->delete();
+
+        $message = '已删除，正在后台清理远端客户端（日志页可看进度）';
+
+        return $this->success([
+            'cleanup_task_id' => $task->id,
+            'message' => $message,
+        ], $message);
     }
 
     /** M4.4 测试连接：healthCheck 并更新节点状态/延迟。 */
@@ -297,7 +309,16 @@ class NodeController extends Controller
         return false;
     }
 
-    private function syncInbounds(Node $node, array $inbounds, bool $syncUsers = true): void
+    /**
+     * 落库节点入站；协议入站集合发生变化时，把用户搬迁工作派发成后台任务。
+     *
+     * 与旧实现的差异只在「谁来发面板请求」：旧的在请求里逐用户 getClient + attachClient，
+     * 现在只算差异 + 派发（update() 请求内零面板请求）。
+     *
+     * @param bool $syncUsers false 表示只落库不搬用户（新建节点走初始化流程，见 store()）
+     * @return AsyncTask|null 派发出的用户同步任务；无需搬用户时为 null
+     */
+    private function syncInbounds(Node $node, array $inbounds, bool $syncUsers = true): ?AsyncTask
     {
         $oldInbounds = $node->inbounds()
             ->get()
@@ -306,6 +327,7 @@ class NodeController extends Controller
 
         $node->inbounds()->delete();
 
+        $changed = [];
         foreach (['vless', 'trojan'] as $proto) {
             $ids = $inbounds[$proto] ?? [];
             // 兼容单值（旧数据/前端过渡）
@@ -320,35 +342,17 @@ class NodeController extends Controller
                 ]);
             }
 
-            // 入站变化时，把用户同步到新入站
+            // 入站变化时，把用户同步到新入站（判定条件与拆分前逐一保持）
             $oldIds = $oldInbounds->get($proto, []);
             sort($oldIds);
             $newIds = array_map('intval', $ids);
             sort($newIds);
             if ($syncUsers && $oldIds !== $newIds && !empty($newIds)) {
-                $this->syncUsersToInbounds($node, $proto, $newIds);
+                $changed[$proto] = $newIds;
             }
         }
-    }
 
-    /**
-     * 把指定协议的所有用户 attach 到新入站列表。
-     */
-    private function syncUsersToInbounds(Node $node, string $proto, array $inboundIds): void
-    {
-        $users = \App\Models\User::where('protocol', $proto)->whereNotNull('plan_id')->get();
-        $driver = $this->driverFactory->make($node);
-
-        foreach ($users as $user) {
-            try {
-                $existing = $driver->getClient($user->clientEmail());
-                if ($existing) {
-                    $driver->attachClient($user->clientEmail(), $inboundIds);
-                }
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        }
+        return $changed === [] ? null : $this->inboundSync->submit($node, $changed);
     }
 
     private function present(Node $n, bool $full = false): array

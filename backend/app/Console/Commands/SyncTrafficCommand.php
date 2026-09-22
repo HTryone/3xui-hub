@@ -64,11 +64,19 @@ class SyncTrafficCommand extends Command
                 $fresh = $user->fresh();
                 $fresh->load('plan');
                 $reason = $banService->banReason($fresh);
-                if ($reason !== false && $fresh->enabled) {
-                    $banService->toggleClient($fresh, false);
-                    $banned++;
-                    $this->line("  关闭流量 #{$fresh->id} ({$fresh->email}): {$reason}");
+                if ($reason === false || !$fresh->enabled) {
+                    continue;
                 }
+
+                // 已确认关闭且未超时效 → 跳过（0 次 HTTP）。
+                // 同时也消掉了「同一轮里既被本命令关、又被 BanCheckJob 关」的重复关闭。
+                if ($banService->isRecentlyDisabled($fresh)) {
+                    continue;
+                }
+
+                $banService->toggleClient($fresh, false);
+                $banned++;
+                $this->line("  关闭流量 #{$fresh->id} ({$fresh->email}): {$reason}");
             }
         }
 

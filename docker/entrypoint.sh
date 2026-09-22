@@ -77,6 +77,8 @@ BROADCAST_CONNECTION=log
 FILESYSTEM_DISK=local
 QUEUE_CONNECTION=database
 DB_QUEUE_RETRY_AFTER=180
+# 节点类 Job 走独立队列 node-ops，与 supervisord 里的 queue-node-1/2 配套
+PANEL_NODE_OPS_QUEUE=node-ops
 
 CACHE_STORE=file
 
@@ -99,6 +101,13 @@ if [ -w .env ]; then
         sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' .env
     else
         echo 'DB_QUEUE_RETRY_AFTER=180' >> .env
+    fi
+    # 已有该行则改写，没有才追加（不重复追加）。必须与 supervisord 的
+    # queue-node-* 同时成立：只开 .env 没起 worker，节点任务会派进空队列永不执行。
+    if grep -q '^PANEL_NODE_OPS_QUEUE=' .env; then
+        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' .env
+    else
+        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> .env
     fi
 fi
 

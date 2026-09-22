@@ -124,16 +124,18 @@ class AuthController extends Controller
             'enabled' => true,
         ]);
 
-        // 同步到各 3x-ui 节点
+        // 建号改为异步：按「用户 × enabled 节点」派发 Job，注册请求不再等面板 HTTPS。
+        // 派发失败与原来的 provisionClient 失败同语义：只记日志，注册照样成功。
         try {
-            app(UserAdminService::class)->provisionClient($user);
+            app(UserAdminService::class)->dispatchProvisionClient($user);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::error('provisionClient failed on register', ['error' => $e->getMessage()]);
+            \Illuminate\Support\Facades\Log::error('dispatchProvisionClient failed on register', ['error' => $e->getMessage()]);
         }
 
         return $this->success([
             'access_token' => $this->createAccessToken($user),
             'token' => $user->token,
+            'provisioning' => true,
         ], '注册成功');
     }
 

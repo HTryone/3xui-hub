@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Jobs\NodeClientsCleanupJob;
+use App\Jobs\NodeInboundScanJob;
+use App\Jobs\NodeInboundSyncJob;
 use App\Jobs\SyncNodeTrafficJob;
 use App\Jobs\NodeInitUserJob;
 use App\Models\AsyncTask;
@@ -280,20 +283,131 @@ class AsyncTaskService
             return [$locked->refresh(), $failedKeys];
         });
 
-        DB::afterCommit(fn () => $this->dispatch($retryTask, $failedKeys));
+        DB::afterCommit(function () use ($retryTask, $failedKeys) {
+            // 入站同步的重试重新走一遍【扫描 + 差异】，而不是重放逐用户 Job。
+            // 这个任务的定义就是「算差异」，逐用户 attach 只是执行手段：重放逐用户 Job 会对
+            // 「面板上根本没有 client」的用户直接 attach 并报错（首次跑时这些项由扫描判为无需处理），
+            // 重扫则以 1 次面板请求重新得出同样的结论，顺带把节点已经恢复的情况一次修好。
+            if (self::isInboundSync($retryTask)) {
+                NodeInboundScanJob::dispatch((int) $retryTask->subject_id, $retryTask->id);
+
+                return;
+            }
+            $this->dispatch($retryTask, $failedKeys);
+        });
         return $retryTask;
+    }
+
+    /** 判定任务是否为「节点入站同步」（type=node_action 且 meta.action=sync_inbounds）。 */
+    private static function isInboundSync(AsyncTask $task): bool
+    {
+        return $task->type === 'node_action' && (string) ($task->meta['action'] ?? '') === 'sync_inbounds';
+    }
+
+    /**
+     * 把「user:{id}」形状的 item 按批分组，产出每批的 [userIds, itemKeys]。
+     *
+     * 批大小统一读 config('tasks.node_sync_batch')：node_init 与 sync_inbounds 的 item 都是
+     * 「1 个用户 × 1 台节点」，单个 Job 的成本结构完全一样（固定开销摊薄 + 面板往返不变），
+     * 收益与失败半径的权衡因此一致，没有理由各配一套（多一个配置项就多一个会配歪的地方）。
+     *
+     * @param list<string> $itemKeys
+     * @return list<array{userIds: list<int>, itemKeys: list<string>}>
+     */
+    private function userItemBatches(array $itemKeys): array
+    {
+        $batchSize = max(1, (int) config('tasks.node_sync_batch', 2));
+        $batches = [];
+
+        foreach (array_chunk(array_values($itemKeys), $batchSize) as $chunk) {
+            $userIds = [];
+            foreach ($chunk as $itemKey) {
+                [, $id] = array_pad(explode(':', (string) $itemKey, 2), 2, null);
+                $userIds[] = (int) $id;
+            }
+
+            $batches[] = ['userIds' => $userIds, 'itemKeys' => array_values($chunk)];
+        }
+
+        return $batches;
+    }
+
+    /**
+     * 入站同步：把 item 按批分组，一个 Job 处理 1~2 个用户（批大小见 config/tasks.php）。
+     *
+     * 批处理只为摊薄「每个 Job 的固定开销」，每个用户该发的 attach 一次不少；
+     * item 粒度不变，日志页仍然是逐用户一行、失败可单条重试。
+     */
+    private function dispatchSyncInboundBatches(AsyncTask $task, array $itemKeys): void
+    {
+        foreach ($this->userItemBatches($itemKeys) as $batch) {
+            NodeInboundSyncJob::dispatch((int) $task->subject_id, $batch['userIds'], $task->id, $batch['itemKeys']);
+        }
+    }
+
+    /**
+     * 节点初始化：把 item 按批分组，一个 Job 初始化 1~2 个用户。
+     *
+     * 与入站同步同形：item 仍是 user:{id}，节点 id 在任务行 subject_id 上。
+     * 102 个用户 = 51 个 Job（批大小 2），单 worker 下的串行等待减半；
+     * 逐用户的可见性与重试粒度不变（每个 item 仍单独 claim/complete/fail）。
+     */
+    private function dispatchNodeInitBatches(AsyncTask $task, array $itemKeys): void
+    {
+        foreach ($this->userItemBatches($itemKeys) as $batch) {
+            NodeInitUserJob::dispatch((int) $task->subject_id, $batch['userIds'], $task->id, $batch['itemKeys']);
+        }
     }
 
     public function dispatch(AsyncTask $task, ?array $onlyKeys = null): void
     {
         $keys = $onlyKeys ?? $task->items()->where('status', AsyncTaskItem::STATUS_PENDING)->pluck('item_key')->all();
         $meta = $task->meta ?? [];
+
+        // sync_inbounds 按批派发（见上），不走下面的逐 item 循环
+        if (self::isInboundSync($task)) {
+            if ($keys !== []) {
+                $this->dispatchSyncInboundBatches($task, $keys);
+            }
+
+            return;
+        }
+
+        // node_init 同样按批派发（102 个用户 = 51 个 Job）；item_key=user:{userId}，
+        // 节点 id 在任务行 subject_id 上。retry() 只重放失败项，走的也是这里 ——
+        // 失败项按同样的批大小重新分组，重试路径与首跑同形，不额外分支。
+        if ($task->type === 'node_init') {
+            if ($keys !== []) {
+                $this->dispatchNodeInitBatches($task, $keys);
+            }
+
+            return;
+        }
+
         foreach ($keys as $itemKey) {
             [, $id] = array_pad(explode(':', $itemKey, 2), 2, null);
             match ($task->type) {
                 'traffic_sync' => SyncNodeTrafficJob::dispatch((int) $id, $task->id, isset($meta['user_id']) ? (int) $meta['user_id'] : null, $itemKey),
-                // node_init 的 item_key 是 user:{userId}，节点 id 在任务行 subject_id 上
-                'node_init' => NodeInitUserJob::dispatch((int) $task->subject_id, (int) $id, $task->id, $itemKey),
+                // domain_action：item_key=domain:{id}，动作在 meta.action；remove 时行已删，带 meta.domain 供助手用
+                'domain_action' => \App\Jobs\ApplyDomainJob::dispatch(
+                    (int) $task->subject_id,
+                    (string) ($meta['action'] ?? 'apply'),
+                    $task->id,
+                    $itemKey,
+                    isset($meta['domain']) ? (string) $meta['domain'] : null,
+                ),
+                // node_action：动作在 meta.action；节点 id 在任务行 subject_id 上
+                // - sync_inbounds：item_key=user:{id}，已在方法开头按批派发（见 dispatchSyncInboundBatches）
+                // - cleanup_clients：item_key=node:{id}，整台节点一个 item（行已删，靠 meta 快照）
+                'node_action' => match ((string) ($meta['action'] ?? '')) {
+                    'cleanup_clients' => NodeClientsCleanupJob::dispatch(
+                        (int) $task->subject_id,
+                        $task->id,
+                        $itemKey,
+                        is_array($meta['node_snapshot'] ?? null) ? $meta['node_snapshot'] : null,
+                    ),
+                    default => throw new InvalidArgumentException('不支持的节点操作：' . ($meta['action'] ?? 'unknown')),
+                },
                 default => throw new InvalidArgumentException("不支持任务类型：{$task->type}"),
             };
         }
@@ -309,6 +423,8 @@ class AsyncTaskService
         return match ($type) {
             'traffic_sync' => '节点同步失败',
             'node_init' => '节点接入初始化失败',
+            'node_action' => '节点操作失败',
+            'domain_action' => '域名操作失败',
             default => '任务执行失败',
         };
     }

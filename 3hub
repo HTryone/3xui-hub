@@ -7,6 +7,12 @@ VERSION="1.0.0"
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 BACKEND_DIR="${INSTALL_DIR}/backend"
 QUEUE_SERVICE="3xui-hub-queue.service"
+# 节点任务专用队列（node-ops）的 worker：模板单元 + 实例编号，命令只写一份。
+# 要增减并发实例，改 NODE_QUEUE_INSTANCES 并照 configure_queue_worker 里的
+# systemctl enable/disable 操作即可（详见 INSTALL.md「队列与并发」）。
+NODE_QUEUE_TEMPLATE="3xui-hub-queue-node@"
+NODE_QUEUE_UNIT_FILE="/etc/systemd/system/3xui-hub-queue-node@.service"
+NODE_QUEUE_INSTANCES="1 2"
 
 # 颜色
 RED='\033[0;31m'
@@ -22,6 +28,14 @@ check_install() {
         echo -e "${RED}错误: 3xui-hub 未安装或安装目录不正确${NC}"
         exit 1
     fi
+}
+
+# 展开 node-ops worker 的实例单元名（3xui-hub-queue-node@1.service ...）
+node_queue_units() {
+    local i
+    for i in $NODE_QUEUE_INSTANCES; do
+        echo "${NODE_QUEUE_TEMPLATE}${i}.service"
+    done
 }
 
 # artisan 必须以网站运行用户执行：root 跑会往 storage/bootstrap/cache
@@ -46,6 +60,16 @@ configure_queue_worker() {
         sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' "$BACKEND_DIR/.env"
     else
         echo 'DB_QUEUE_RETRY_AFTER=180' >> "$BACKEND_DIR/.env"
+    fi
+
+    # 节点类 Job 走独立队列 node-ops。已有该行则改写，没有才追加（不重复追加：
+    # dotenv 以最后一行为准，重复行会让旧值残留在文件里，排查时极易看错）。
+    # 顺序上必须排在下面启动 worker 之前，否则会先出现「worker 监听 node-ops、
+    # Job 仍往 default 派」的空转窗口。
+    if grep -q '^PANEL_NODE_OPS_QUEUE=' "$BACKEND_DIR/.env"; then
+        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' "$BACKEND_DIR/.env"
+    else
+        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> "$BACKEND_DIR/.env"
     fi
 
     chown "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/.env" 2>/dev/null || true
@@ -73,9 +97,41 @@ TimeoutStopSec=130
 WantedBy=multi-user.target
 EOF
 
+    # node-ops worker：模板单元 + 实例编号，命令行只写一份，实例共用，
+    # 避免两份文件只改一份导致某个实例漏掉 --queue=node-ops 而和 default worker 抢同一条队列。
+    cat > "$NODE_QUEUE_UNIT_FILE" << EOF
+[Unit]
+Description=3xui-hub Node Ops Queue Worker (instance %i)
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${BACKEND_DIR}
+ExecStart=/usr/bin/php artisan queue:work database --queue=node-ops --sleep=2 --tries=5 --timeout=120 --max-time=3600
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=130
+# 小机器上让队列任务给 Web 请求让路（只用优先级，不设内存硬上限，
+# 上限会在内存吃紧时杀掉跑到一半的节点任务）
+Nice=10
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     systemctl daemon-reload
     systemctl enable "$QUEUE_SERVICE" >/dev/null 2>&1
     systemctl restart "$QUEUE_SERVICE"
+
+    local u
+    for u in $(node_queue_units); do
+        systemctl enable "$u" >/dev/null 2>&1
+        systemctl restart "$u"
+    done
 }
 
 # 命令列表（编号对应）
@@ -91,6 +147,7 @@ CMDS=(
     "log"
     "restart"
     "ssl"
+    "domain"
 )
 
 CMD_LABELS=(
@@ -103,8 +160,9 @@ CMD_LABELS=(
     "查看自动同步状态"
     "导出数据库备份"
     "查看最近错误日志"
-    "重启 PHP-FPM 和 Nginx"
+    "重启 PHP-FPM、Nginx 和队列 Worker"
     "配置域名和 SSL 证书"
+    "多域名管理 (add/renew/remove/status)"
 )
 
 # 显示帮助
@@ -121,6 +179,7 @@ show_help() {
     echo "示例:"
     echo "  3hub status"
     echo "  3hub 1          # 等同于 3hub status"
+    echo "  3hub domain add example.com"
 }
 
 # 查看状态
@@ -174,9 +233,28 @@ cmd_status() {
     fi
 
     if systemctl is-active "$QUEUE_SERVICE" &>/dev/null; then
-        echo -e "队列 Worker: ${GREEN}运行中${NC}"
+        echo -e "队列 Worker: ${GREEN}运行中${NC}（default，定时任务）"
     else
-        echo -e "队列 Worker: ${RED}未运行${NC}"
+        echo -e "队列 Worker: ${RED}未运行${NC}（default，定时任务）"
+    fi
+
+    # 节点任务 Worker（node-ops）：按实例统计，可能被人工增减
+    local NODE_TOTAL=0 NODE_ACTIVE=0 u
+    for u in $(node_queue_units); do
+        NODE_TOTAL=$((NODE_TOTAL + 1))
+        if systemctl is-active "$u" &>/dev/null; then
+            NODE_ACTIVE=$((NODE_ACTIVE + 1))
+        fi
+    done
+    if [ "$NODE_TOTAL" -eq 0 ]; then
+        echo -e "节点 Worker: ${YELLOW}未配置${NC}（node-ops）"
+    elif [ "$NODE_ACTIVE" -eq "$NODE_TOTAL" ]; then
+        echo -e "节点 Worker: ${GREEN}运行中${NC}（node-ops，${NODE_ACTIVE}/${NODE_TOTAL}）"
+    elif [ "$NODE_ACTIVE" -eq 0 ]; then
+        echo -e "节点 Worker: ${RED}未运行${NC}（node-ops，0/${NODE_TOTAL}）"
+        echo -e "  ${YELLOW}节点任务会一直停在 pending，修复: 3hub update${NC}"
+    else
+        echo -e "节点 Worker: ${YELLOW}部分运行${NC}（node-ops，${NODE_ACTIVE}/${NODE_TOTAL}）"
     fi
 }
 
@@ -240,6 +318,18 @@ cmd_update() {
         return 1
     fi
 
+    # 节点任务 Worker：上面的 configure_queue_worker 会重新生成模板单元并 enable，
+    # 所以从老版本（那时还没有这个服务）升级上来也会被装上，这里再逐个 restart + 自检。
+    # 必须自检：.env 开了 node-ops 而没有 worker 监听时，节点任务会被派进空队列，
+    # 永远不执行且不报错（面板上一直 pending），比两类任务抢队列严重得多。
+    for u in $(node_queue_units); do
+        systemctl restart "$u"
+        if ! systemctl is-active --quiet "$u"; then
+            echo -e "${RED}节点任务 Worker ($u) 启动失败，请运行: systemctl status $u${NC}"
+            return 1
+        fi
+    done
+
     # 复制前端文件
     cp -r "$INSTALL_DIR/frontend/dist/"* "$BACKEND_DIR/public/" 2>/dev/null || true
 
@@ -249,6 +339,18 @@ cmd_update() {
     # 更新 3hub 命令本身
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
     chmod +x /usr/local/bin/3hub
+
+    # 同步多域名助手（与 install.sh 的 install_domain_support 一致，覆盖更新）
+    if [ -f "$INSTALL_DIR/3hub-domain" ]; then
+        cp "$INSTALL_DIR/3hub-domain" /usr/local/bin/3hub-domain
+        chmod +x /usr/local/bin/3hub-domain
+        chown root:root /usr/local/bin/3hub-domain 2>/dev/null || true
+    fi
+    if [ -f "$INSTALL_DIR/sudoers-3xui-hub" ] && visudo -cf "$INSTALL_DIR/sudoers-3xui-hub" >/dev/null 2>&1; then
+        cp "$INSTALL_DIR/sudoers-3xui-hub" /etc/sudoers.d/3xui-hub
+        chmod 0440 /etc/sudoers.d/3xui-hub
+        chown root:root /etc/sudoers.d/3xui-hub 2>/dev/null || true
+    fi
 
     echo -e "${GREEN}更新完成！${NC}"
 }
@@ -389,6 +491,18 @@ cmd_log() {
 
     if [ ! -s "$LOG_FILE" ]; then
         echo -e "${GREEN}暂无错误${NC}"
+    fi
+
+    # 队列 Worker 的单元日志：worker 被 OOM/超时杀掉后自动重启这类事只记在 journal 里，
+    # laravel.log 上看不到（Job 失败栈在 laravel.log，进程级问题在这里）
+    if command -v journalctl &>/dev/null; then
+        local JOURNAL_ARGS=(-u "$QUEUE_SERVICE") u
+        for u in $(node_queue_units); do
+            JOURNAL_ARGS+=(-u "$u")
+        done
+        echo ""
+        echo -e "${CYAN}=== 队列 Worker 最近日志（default + node-ops） ===${NC}"
+        journalctl "${JOURNAL_ARGS[@]}" --no-pager -n 20 2>/dev/null || true
     fi
 }
 
@@ -559,7 +673,86 @@ cmd_restart() {
         echo -e "Nginx:   ${GREEN}已重启${NC}"
     fi
 
+    # 队列 Worker：default（定时任务）+ node-ops（节点任务）
+    if systemctl is-active "$QUEUE_SERVICE" &>/dev/null; then
+        systemctl restart "$QUEUE_SERVICE"
+        echo -e "队列 Worker: ${GREEN}已重启${NC}（default）"
+    fi
+    if [ ! -f "$NODE_QUEUE_UNIT_FILE" ]; then
+        echo -e "节点 Worker: ${YELLOW}未安装${NC}（运行 3hub update 安装 node-ops worker）"
+    else
+        for u in $(node_queue_units); do
+            # restart 会顺带拉起已停止的实例，这正是这里想要的语义
+            systemctl restart "$u"
+            echo -e "节点 Worker: ${GREEN}已重启${NC}（$u）"
+        done
+    fi
+
     echo -e "${GREEN}服务重启完成${NC}"
+}
+
+# 多域名管理用法
+cmd_domain_usage() {
+    echo -e "${CYAN}用法:${NC} 3hub domain {add|renew|remove|status} <域名>"
+    echo ""
+    echo -e "  ${GREEN}add${NC}    <域名>  申请/续签证书并写入 Nginx 多域名配置"
+    echo -e "  ${GREEN}renew${NC}  <域名>  强制续签证书"
+    echo -e "  ${GREEN}remove${NC} <域名>  按 domains 表重建 Nginx 配置（需先在面板删除）"
+    echo -e "  ${GREEN}status${NC} <域名>  查看该域名证书状态"
+    echo ""
+    echo "示例:"
+    echo "  3hub domain add example.com"
+}
+
+# 多域名管理（手动兜底，调用 /usr/local/bin/3hub-domain）
+cmd_domain() {
+    local SUB="${1-}"
+    local DOMAIN="${2-}"
+    local DOMAIN_HELPER="/usr/local/bin/3hub-domain"
+    local NGINX_USER
+
+    if [ -z "$SUB" ]; then
+        cmd_domain_usage
+        return 1
+    fi
+
+    case "$SUB" in
+        add|renew|remove|status)
+            ;;
+        *)
+            echo -e "${RED}未知子命令: $SUB${NC}"
+            echo ""
+            cmd_domain_usage
+            return 1
+            ;;
+    esac
+
+    if [ -z "$DOMAIN" ]; then
+        echo -e "${RED}缺少域名参数${NC}"
+        echo ""
+        cmd_domain_usage
+        return 1
+    fi
+
+    if [ ! -x "$DOMAIN_HELPER" ]; then
+        echo -e "${RED}错误: 未找到 ${DOMAIN_HELPER}${NC}"
+        echo -e "请重新运行安装脚本，或执行 ${BLUE}3hub update${NC}"
+        return 1
+    fi
+
+    # 3hub-domain 以 root 执行；非 root 时走 sudo（面板 www-data 走受限 sudoers）
+    if [ "$(id -u)" -eq 0 ]; then
+        "$DOMAIN_HELPER" "$SUB" "$DOMAIN"
+    else
+        NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+        NGINX_USER=${NGINX_USER:-www-data}
+        if [ "$(id -un)" = "$NGINX_USER" ]; then
+            # 网站运行用户：受限 sudoers 免密
+            sudo -n "$DOMAIN_HELPER" "$SUB" "$DOMAIN"
+        else
+            sudo "$DOMAIN_HELPER" "$SUB" "$DOMAIN"
+        fi
+    fi
 }
 
 # 执行命令
@@ -587,6 +780,7 @@ run_cmd() {
         log)          cmd_log ;;
         restart)      cmd_restart ;;
         ssl)          cmd_ssl ;;
+        domain)       shift; cmd_domain "$@" ;;
         help|--help|-h) show_help ;;
         *)
             echo -e "${RED}未知命令: $CMD${NC}"
@@ -599,8 +793,8 @@ run_cmd() {
 
 # 主逻辑
 if [ -n "$1" ]; then
-    # 有参数：直接执行
-    run_cmd "$1"
+    # 有参数：直接执行（透传全部参数，domain 子命令需要）
+    run_cmd "$@"
     exit $?
 else
     # 无参数：交互式菜单

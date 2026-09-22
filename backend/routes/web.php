@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Admin\AsyncTaskController as AdminAsyncTaskController;
 use App\Http\Controllers\Admin\BackupController as AdminBackupController;
+use App\Http\Controllers\Admin\DomainController as AdminDomainController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
@@ -81,6 +82,14 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/email', [AdminEmailController::class, 'show']);
     Route::put('/email', [AdminEmailController::class, 'save']);
     Route::post('/email/test', [AdminEmailController::class, 'test']);
+
+    // 多域名管理
+    Route::get('/domains', [AdminDomainController::class, 'index']);
+    Route::post('/domains', [AdminDomainController::class, 'store']);
+    Route::post('/domains/{id}/primary', [AdminDomainController::class, 'setPrimary']);
+    Route::post('/domains/{id}/apply', [AdminDomainController::class, 'apply']);
+    Route::post('/domains/{id}/renew', [AdminDomainController::class, 'renew']);
+    Route::delete('/domains/{id}', [AdminDomainController::class, 'destroy']);
 
     // 支付配置管理
     Route::get('/payments', [AdminPaymentController::class, 'index']);

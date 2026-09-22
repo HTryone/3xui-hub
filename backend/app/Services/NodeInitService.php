@@ -13,7 +13,11 @@ use Illuminate\Support\Facades\DB;
  * 节点接入（NodeController::store）时同步完成节点+入站落库，
  * 再按用户逐条派发初始化 Job（AsyncTask，item_key=user:{id}）：
  * - 单用户失败：队列重试 3 次后仅该项标失败，不影响其余用户
- * - 全部成功 → 启用节点；有失败 → 节点保持禁用，管理端日志页可整任务重试
+ * - 全部成功 → 按 should_enable 启用节点；有失败 → 仅把节点标为 offline（不碰 enabled），
+ *   管理端日志页可整任务重试
+ *
+ * enabled 是管理员的开关，初始化流程无权改写：否则 1 个用户建号失败会把整个节点
+ * （连同其余已建号成功的用户）一起踢出订阅，且因 HealthCheckJob 只扫 enabled 节点而无法自愈。
  */
 class NodeInitService
 {
@@ -87,7 +91,9 @@ class NodeInitService
             }
 
             if ($task->status !== AsyncTask::STATUS_SUCCEEDED || $task->failed > 0) {
-                $node->forceFill(['enabled' => false, 'status' => 'offline'])->save();
+                // 初始化有失败：只标 offline 让订阅暂时跳过它，绝不改 enabled
+                // （部分用户未建号是"半初始化"而非"节点不可用"，改 enabled 会连坐其余用户）。
+                $node->forceFill(['status' => 'offline'])->save();
                 return;
             }
 

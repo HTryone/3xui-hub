@@ -18,6 +18,9 @@ INSTALL_DIR="/www/wwwroot/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
 REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
 VERSION="1.0.0"
+# nginx 环境（detect_nginx_env 填充）：bt | standard
+NGINX_ENV_TYPE=""
+NGINX_CONF_DIR=""
 
 # 日志函数
 log() {
@@ -195,6 +198,7 @@ install_php() {
             ;;
         apt)
             apt-get update -y
+            mkdir -p /etc/apt/sources.list.d
             if [ "$OS" = "debian" ]; then
                 apt-get install -y apt-transport-https lsb-release ca-certificates curl gnupg
                 curl -sSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null
@@ -204,7 +208,7 @@ install_php() {
                 add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
             fi
             apt-get update -y
-            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo
+            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo cron
             ;;
     esac
 
@@ -415,6 +419,11 @@ SESSION_LIFETIME=120
 CACHE_STORE=file
 QUEUE_CONNECTION=database
 DB_QUEUE_RETRY_AFTER=180
+
+# 节点类 Job（新建节点初始化/扫描/流量同步）派到独立队列 node-ops，
+# 避免它们把定时任务（封禁检查、健康检查）堵在 default 队列后面。
+# 必须与 setup_node_ops_worker 里起的 node-ops worker 配套：只开一边的任务会丢（见该函数注释）。
+PANEL_NODE_OPS_QUEUE=node-ops
 EOF
 
     # 生成 APP_KEY
@@ -485,12 +494,28 @@ detect_fpm_sock() {
     return 0
 }
 
+# 检测 nginx 环境（宝塔 vs 标准），设置 conf 目录变量
+# 宝塔：/www/server/panel 或 /www/server/nginx 存在 → vhost 目录
+# 标准：否则 → /etc/nginx/conf.d/
+detect_nginx_env() {
+    if [ -d /www/server/panel ] || [ -d /www/server/nginx ]; then
+        NGINX_ENV_TYPE="bt"
+        NGINX_CONF_DIR="${NGINX_CONF_DIR:-/www/server/panel/vhost/nginx/}"
+    else
+        NGINX_ENV_TYPE="standard"
+        NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/conf.d/}"
+    fi
+    info "Nginx 环境: ${NGINX_ENV_TYPE} (conf 目录: ${NGINX_CONF_DIR})"
+}
+
 # 配置 Nginx
 setup_nginx() {
     info "配置 Nginx..."
 
+    detect_nginx_env
+
     # 检查是否已有 Nginx 配置（避免覆盖用户的 SSL 配置）
-    NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
+    NGINX_CONF="${NGINX_CONF_DIR}3xui-hub.conf"
     if [ -f "$NGINX_CONF" ]; then
         # 检查是否已有 SSL 配置
         if grep -q "listen 443 ssl" "$NGINX_CONF" 2>/dev/null; then
@@ -502,6 +527,8 @@ setup_nginx() {
                 sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
                 info "APP_URL 已更新为: ${PROTO}://${DOMAIN}"
             fi
+            # 把现有 nginx server_name 回填 domains 表（多域名：第一个设主域）
+            backfill_domains_from_nginx "$NGINX_CONF"
             return 0
         fi
     fi
@@ -521,7 +548,8 @@ setup_nginx() {
     info "PHP-FPM socket: $FPM_SOCK"
 
     # 生成 Nginx 配置
-    NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"
+    NGINX_CONF="${NGINX_CONF_DIR}3xui-hub.conf"
+    mkdir -p "$NGINX_CONF_DIR"
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
@@ -656,6 +684,86 @@ EOF
     success "后台任务 Worker 已启动"
 }
 
+# 配置节点任务专用队列 Worker（node-ops，2 实例）
+#
+# 为什么要有第二条队列：
+#   一条 `queue:work` 进程同一时刻只跑一个 Job（单线程）。节点任务（如新建节点初始化，
+#   一次派 100+ 个 Job）会把定时任务（封禁检查、健康检查）的 Job 堵在同一条队列后面，
+#   导致封禁/健康检查延迟几分钟到几十分钟。拆成两条队列后各排各的，互不影响。
+#   default 队列仍由上面的 setup_queue_worker 负责，那条不加 --queue（默认就是 default）。
+#
+# 下面三段的顺序不能调换，理由见各段注释。
+setup_node_ops_worker() {
+    info "配置节点任务 Worker (node-ops)..."
+
+    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    # ---------- 1. 先写 .env：让节点类 Job 派到 node-ops ----------
+    # 必须排在启动 worker 之前：反过来的话会先有一段「worker 在监听 node-ops、
+    # 但 Job 还往 default 派」的空转窗口，人工排查时很难判断到底生效没有。
+    # 幂等：已有该行就改写成 node-ops，没有才追加，绝不重复追加
+    #（dotenv 同名变量以最后一行为准，重复追加会让旧值留在文件里，看着像没生效）。
+    if grep -q '^PANEL_NODE_OPS_QUEUE=' "${INSTALL_DIR}/backend/.env"; then
+        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' "${INSTALL_DIR}/backend/.env"
+    else
+        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> "${INSTALL_DIR}/backend/.env"
+    fi
+
+    # ---------- 2. 安装并启动 node-ops worker ----------
+    # 用模板单元 + 实例编号（@1/@2）而不是两份独立的服务文件：
+    # 命令行只写一份，实例 1 和 2 共用，杜绝「两份文件只改了一份」导致某个实例漏掉
+    # --queue=node-ops 而去和 default worker 抢同一条队列（那样等于白开一个进程）。
+    # 加减实例也只需 systemctl enable/disable，不用重新生成文件。
+    cat > /etc/systemd/system/3xui-hub-queue-node@.service << EOF
+[Unit]
+Description=3xui-hub Node Ops Queue Worker (instance %i)
+After=network.target mysql.service mariadb.service
+
+[Service]
+Type=simple
+User=${NGINX_USER}
+Group=${NGINX_USER}
+WorkingDirectory=${INSTALL_DIR}/backend
+ExecStart=/usr/bin/php artisan queue:work database --queue=node-ops --sleep=2 --tries=5 --timeout=120 --max-time=3600
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=130
+# 小机器（1 核/473MB 这类）上让队列任务给 Web 请求让路：Nice 降优先级、
+# CPUWeight 压低 cgroup 权重。这里只用优先级手段，不设内存硬上限 ——
+# 硬上限会在内存吃紧时把 worker 杀掉，一个跑到一半的节点初始化任务会中断重跑。
+Nice=10
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    # enable --now 失败不在这里中断：交给下面第 3 步自检统一报错。
+    # 本脚本是 set -e，让 enable 自己失败会变成一句没有上下文的退出，
+    # 而 error_exit 会带上系统信息、日志尾巴和可复制给开发者的报告。
+    for i in 1 2; do
+        systemctl enable --now "3xui-hub-queue-node@${i}.service" || true
+    done
+
+    # ---------- 3. 启动后自检 ----------
+    # 为什么必须自检：.env 里开了 PANEL_NODE_OPS_QUEUE=node-ops、但没有 worker 监听
+    # node-ops 时，节点类 Job 会被派进一条没人消费的队列 —— 任务永远不执行，而且不报错，
+    # 面板上一直停在 pending 直到被判超时失败。这比「两类任务抢一条队列」严重得多，
+    # 所以「两边都到位」才算装好，这里检查不过就直接中断安装，而不是留下一个静默坏掉的面板。
+    # active 和 enabled 都要查：active 只证明「现在在跑」，enabled 才保证重启后还在
+    #（enable 失败但被 --now 拉起来的边界情况，只查 active 会漏过去）。
+    for i in 1 2; do
+        systemctl is-active --quiet "3xui-hub-queue-node@${i}.service" || \
+            error_exit "节点任务 Worker (实例 ${i}) 未在运行，请查看: systemctl status 3xui-hub-queue-node@${i}.service"
+        systemctl is-enabled --quiet "3xui-hub-queue-node@${i}.service" || \
+            error_exit "节点任务 Worker (实例 ${i}) 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-node@${i}.service"
+    done
+    success "节点任务 Worker 已启动（node-ops 队列，2 实例）"
+}
+
 # 安装 3hub 命令
 install_3hub() {
     info "安装 3hub 管理命令..."
@@ -664,6 +772,91 @@ install_3hub() {
     chmod +x /usr/local/bin/3hub
 
     success "3hub 命令安装完成"
+}
+
+# 解析 nginx conf 的 server_name → 逐个 INSERT IGNORE 进 domains 表（第一个设主域）
+# 与本脚本其它 DB 访问一致：mysql -u root controlhub
+# conf 来源按环境检测：宝塔 vhost 目录 / 标准 conf.d，不再写死单一文件路径
+# 可选参数 $1：指定 conf 文件；缺省扫描 ${NGINX_CONF_DIR} 下所有 *.conf
+backfill_domains_from_nginx() {
+    local SRC_FILE="${1:-}"
+    local CONF_DOMAINS FIRST IS_PRIMARY d SCAN_DESC
+
+    if ! command -v mysql &>/dev/null; then
+        warn "mysql 命令不可用，跳过 domains 表回填"
+        return 0
+    fi
+
+    if [ -z "$NGINX_CONF_DIR" ]; then
+        detect_nginx_env
+    fi
+
+    # server_name 可能一行多个；去掉空值与默认占位 "_"，统一小写去重
+    if [ -n "$SRC_FILE" ] && [ -f "$SRC_FILE" ]; then
+        SCAN_DESC="$SRC_FILE"
+        CONF_DOMAINS=$(grep -oP 'server_name \K[^;]+' "$SRC_FILE" 2>/dev/null \
+            | tr ' ,\t' '\n' \
+            | sed 's/;$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | grep -Ev '^$|^_$' \
+            | awk '!seen[$0]++' || true)
+    else
+        SCAN_DESC="${NGINX_CONF_DIR}*.conf"
+        CONF_DOMAINS=$(grep -h -oP 'server_name \K[^;]+' "${NGINX_CONF_DIR}"*.conf 2>/dev/null \
+            | tr ' ,\t' '\n' \
+            | sed 's/;$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | grep -Ev '^$|^_$' \
+            | awk '!seen[$0]++' || true)
+    fi
+
+    if [ -z "$CONF_DOMAINS" ]; then
+        info "nginx conf 中未解析到 server_name，跳过 domains 表回填"
+        return 0
+    fi
+
+    info "回填 domains 表（来源: ${SCAN_DESC} 的 server_name）..."
+    FIRST=1
+    for d in $CONF_DOMAINS; do
+        if [ "$FIRST" = "1" ]; then
+            IS_PRIMARY=1
+            FIRST=0
+        else
+            IS_PRIMARY=0
+        fi
+        mysql -u root controlhub -e \
+            "INSERT IGNORE INTO domains (domain, is_primary, enabled, ssl_status, created_at, updated_at) VALUES ('${d}', ${IS_PRIMARY}, 1, 'ok', NOW(), NOW());" \
+            2>/dev/null || warn "domains 回填失败: ${d}"
+    done
+    success "domains 表回填完成"
+}
+
+# 安装多域名助手（3hub-domain + 受限 sudoers）
+# 幂等：已存在则覆盖更新。装 sudoers 前必须 visudo 校验，失败则不装（防止锁死服务器）
+install_domain_support() {
+    info "安装多域名助手 (3hub-domain)..."
+
+    if [ ! -f "$INSTALL_DIR/3hub-domain" ] || [ ! -f "$INSTALL_DIR/sudoers-3xui-hub" ]; then
+        warn "未找到 3hub-domain / sudoers-3xui-hub，跳过多域名助手安装"
+        return 0
+    fi
+
+    cp "$INSTALL_DIR/3hub-domain" /usr/local/bin/3hub-domain
+    chmod +x /usr/local/bin/3hub-domain
+    chown root:root /usr/local/bin/3hub-domain
+
+    # 装 sudoers 前先校验语法，失败则不装并报错
+    if ! visudo -cf "$INSTALL_DIR/sudoers-3xui-hub" >/dev/null 2>&1; then
+        error "sudoers-3xui-hub 校验失败，已跳过安装 /etc/sudoers.d/3xui-hub（防止写坏 sudoers 锁死服务器）"
+        error "请人工检查: $INSTALL_DIR/sudoers-3xui-hub"
+        return 0
+    fi
+
+    cp "$INSTALL_DIR/sudoers-3xui-hub" /etc/sudoers.d/3xui-hub
+    chmod 0440 /etc/sudoers.d/3xui-hub
+    chown root:root /etc/sudoers.d/3xui-hub
+
+    success "多域名助手安装完成 (3hub-domain + sudoers)"
 }
 
 # 输出安装结果
@@ -743,11 +936,19 @@ main() {
     # 配置 cron
     setup_cron
 
-    # 配置后台任务 Worker
+    # 配置后台任务 Worker（default 队列：定时任务类 Job）
     setup_queue_worker
+
+    # 配置节点任务 Worker（node-ops 队列）
+    # 必须排在 setup_env（写 .env）之后：它要先确认 .env 里的 PANEL_NODE_OPS_QUEUE
+    # 已生效再起 worker，顺序反了就成了「worker 监听一条没人投递的队列」
+    setup_node_ops_worker
 
     # 安装 3hub 命令
     install_3hub
+
+    # 安装多域名助手（3hub-domain + sudoers）
+    install_domain_support
 
     # 输出结果
     show_result

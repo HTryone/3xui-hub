@@ -29,6 +29,7 @@ use Illuminate\Notifications\Notifiable;
     'next_traffic_reset_at',
     'expired_at',
     'enabled',
+    'traffic_disabled_at',
 ])]
 #[Hidden(['token', 'uuid'])]
 class User extends Authenticatable
@@ -41,6 +42,7 @@ class User extends Authenticatable
         return [
             'expired_at' => 'datetime',
             'next_traffic_reset_at' => 'datetime',
+            'traffic_disabled_at' => 'datetime',
             'enabled' => 'boolean',
             'traffic_limit' => 'integer',
             'traffic_used' => 'integer',

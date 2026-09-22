@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\BackupEnvService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,10 +16,19 @@ use Illuminate\Support\Facades\Artisan;
  * GET /admin-api/backup/export    → 导出数据库
  * POST /admin-api/backup/import   → 导入数据库
  * POST /admin-api/backup/preview  → 预览差异
+ *
+ * .env 只搬 APP_KEY（跨机迁移解节点凭据用），其余行不动，详见 BackupEnvService。
  */
 class BackupController extends Controller
 {
     use ApiResponse;
+
+    /** 本次导入 .env 恢复的提示信息（给前端显示）。 */
+    private ?string $envNotice = null;
+
+    public function __construct(private readonly BackupEnvService $envs)
+    {
+    }
 
     /**
      * 获取 MySQL 连接配置。
@@ -98,7 +108,7 @@ class BackupController extends Controller
     }
 
     /**
-     * 导出数据库（zip包：dump.sql + .env）。
+     * 导出数据库（zip包：dump.sql + 只含 APP_KEY 的 .env）。
      */
     public function export()
     {
@@ -133,20 +143,12 @@ class BackupController extends Controller
 
         // 打包 zip
         $tmpPath = $tmpDir . '/' . $filename;
-        $zip = new \ZipArchive();
-        if ($zip->open($tmpPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+        try {
+            $this->buildBackupZip($dumpPath, $tmpPath);
+        } catch (\RuntimeException $e) {
             File::delete($dumpPath);
-            return $this->error('无法创建备份文件', 500);
+            return $this->error($e->getMessage(), 500);
         }
-
-        $zip->addFile($dumpPath, 'dump.sql');
-
-        $envPath = base_path('.env');
-        if (File::exists($envPath)) {
-            $zip->addFile($envPath, '.env');
-        }
-
-        $zip->close();
         File::delete($dumpPath);
 
         $content = file_get_contents($tmpPath);
@@ -160,8 +162,34 @@ class BackupController extends Controller
     }
 
     /**
+     * 打包备份 zip：dump.sql + 只含 APP_KEY 的 .env。
+     *
+     * 不再把整份 .env 塞进备份：DB 密码 / QUEUE_CONNECTION / 邮件配置都是本机自己的，
+     * 带出去既泄密，也让"导入整份覆盖 .env"这类误操作有破坏力（曾把队列冲成 sync）。
+     *
+     * @throws \RuntimeException 无法创建 zip 时
+     */
+    public function buildBackupZip(string $dumpPath, string $zipPath): void
+    {
+        $zip = new \ZipArchive();
+        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            throw new \RuntimeException('无法创建备份文件');
+        }
+
+        $zip->addFile($dumpPath, 'dump.sql');
+
+        // 条目名仍是 .env，老的解析逻辑 / 前端 has_env 判断不受影响
+        $envContents = $this->envs->appKeyOnlyContents();
+        if ($envContents !== null) {
+            $zip->addFromString('.env', $envContents);
+        }
+
+        $zip->close();
+    }
+
+    /**
      * 解压备份文件，返回 SQL 文件路径。兼容 .zip 和 .sql。
-     * $restoreEnv: 是否恢复 .env（仅导入时恢复）。
+     * $restoreEnv: 是否从备份恢复 APP_KEY（仅导入时恢复）。
      */
     private function extractBackupFile(string $filePath, bool $restoreEnv = false): string
     {
@@ -174,18 +202,12 @@ class BackupController extends Controller
                 throw new \RuntimeException('无法打开 ZIP 文件');
             }
 
-            // 导入时才恢复 .env
+            // 导入时才恢复 .env：只把备份里的 APP_KEY 搬过来，本机其余行一个字都不动
             if ($restoreEnv) {
                 $envIndex = $zip->locateName('.env');
-                if ($envIndex !== false) {
-                    $envContent = $zip->getFromIndex($envIndex);
-                    $envPath = base_path('.env');
-                    if (File::exists($envPath)) {
-                        File::copy($envPath, $envPath . '.bak');
-                    }
-                    file_put_contents($envPath, $envContent);
-                    \Log::info('Backup import: .env restored');
-                }
+                $this->envNotice = $this->envs->restoreAppKeyFromEnvContents(
+                    $envIndex === false ? null : (string) $zip->getFromIndex($envIndex)
+                );
             }
 
             // 提取 dump.sql
@@ -213,91 +235,6 @@ class BackupController extends Controller
         } else {
             throw new \RuntimeException('不支持的备份文件格式：' . $ext);
         }
-    }
-
-    /**
-     * 解析 .env 文件为键值数组。
-     */
-    private function parseEnv(string $path): array
-    {
-        $result = [];
-        if (!File::exists($path)) return $result;
-        foreach (File::lines($path) as $line) {
-            $line = trim($line);
-            if ($line === '' || $line[0] === '#') continue;
-            $parts = explode('=', $line, 2);
-            if (count($parts) === 2) {
-                $result[trim($parts[0])] = trim($parts[1], " \t\n\r\0\x0B\"");
-            }
-        }
-        return $result;
-    }
-
-    /**
-     * 更新 .env 文件中指定 key 的值。
-     */
-    private function updateEnvKey(string $key, string $value): void
-    {
-        $envPath = base_path('.env');
-        if (!File::exists($envPath)) return;
-
-        $content = File::get($envPath);
-        $pattern = '/^' . preg_quote($key, '/') . '=.*/m';
-        $replacement = $key . '=' . $value;
-
-        if (preg_match($pattern, $content)) {
-            $content = preg_replace($pattern, $replacement, $content);
-        } else {
-            $content = rtrim($content) . "\n" . $replacement . "\n";
-        }
-
-        File::put($envPath, $content);
-        \Log::info("Backup import: {$key} updated to {$value}");
-    }
-
-    /**
-     * 对比备份 .env 与当前 .env，返回服务器相关配置的差异。
-     */
-    private function compareEnv(string $backupPath): array
-    {
-        $zip = new \ZipArchive();
-        if ($zip->open($backupPath) !== true) return [];
-
-        $envIndex = $zip->locateName('.env');
-        if ($envIndex === false) { $zip->close(); return []; }
-
-        $backupEnvContent = $zip->getFromIndex($envIndex);
-        $zip->close();
-
-        $tmpEnv = storage_path('app/tmp/backup_env_compare');
-        file_put_contents($tmpEnv, $backupEnvContent);
-        $backupEnv = $this->parseEnv($tmpEnv);
-        File::delete($tmpEnv);
-
-        $currentEnv = $this->parseEnv(base_path('.env'));
-
-        $serverKeys = [
-            'APP_NAME', 'APP_URL', 'APP_KEY', 'APP_DEBUG', 'APP_ENV',
-            'DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE',
-            'SESSION_DRIVER', 'SESSION_DOMAIN',
-            'MAIL_MAILER', 'MAIL_HOST', 'MAIL_PORT', 'MAIL_FROM_ADDRESS',
-            'REDIS_HOST', 'REDIS_PORT',
-        ];
-
-        $diff = [];
-        foreach ($serverKeys as $key) {
-            $backupVal = $backupEnv[$key] ?? null;
-            $currentVal = $currentEnv[$key] ?? null;
-            if ($backupVal !== null && $backupVal !== $currentVal) {
-                $diff[] = [
-                    'key' => $key,
-                    'current' => $currentVal ?? '（未设置）',
-                    'backup' => $backupVal,
-                ];
-            }
-        }
-
-        return $diff;
     }
 
     /**
@@ -339,10 +276,16 @@ class BackupController extends Controller
             }
         }
 
+        $backupEnv = $hasEnv ? $this->envs->readBackupEnv($savedPath) : null;
+        $currentEnv = $this->envs->parseEnv($this->envs->envPath());
+
         return $this->success([
             'diff' => $diff,
             'has_env' => $hasEnv,
-            'env_diff' => $hasEnv ? $this->compareEnv($savedPath) : [],
+            'env_diff' => $backupEnv ? $this->envs->envDiff($backupEnv) : [],
+            // 站点地址默认填本机当前值；备份里的旧域名只作提示
+            'current_app_url' => $currentEnv['APP_URL'] ?? '',
+            'backup_app_url' => $backupEnv['APP_URL'] ?? '',
         ]);
     }
 
@@ -427,12 +370,13 @@ class BackupController extends Controller
         }
 
         $mode = $data['mode'];
+        $this->envNotice = null;
 
         try {
-            // 导入时恢复 .env（如果是 zip）
+            // 导入时从备份恢复 APP_KEY（如果是 zip）：只改这一行，其余行不动
             $sqlPath = $this->extractBackupFile($backupFile, !empty($data['restore_env']));
 
-            // 恢复 .env 后清配置缓存（确保 APP_KEY 等立即生效）
+            // 改过 .env 后清配置缓存（确保 APP_KEY 等立即生效）
             if (!empty($data['restore_env'])) {
                 \Artisan::call('config:clear');
                 \Artisan::call('cache:clear');
@@ -440,7 +384,7 @@ class BackupController extends Controller
 
             // 如果用户指定了站点地址，更新 .env 中的 APP_URL
             if (!empty($data['site_url']) && !empty($data['restore_env'])) {
-                $this->updateEnvKey('APP_URL', $data['site_url']);
+                $this->envs->updateKey('APP_URL', $data['site_url']);
             }
 
             if ($mode === 'overwrite') {
@@ -455,7 +399,12 @@ class BackupController extends Controller
             File::delete($backupFile);
         }
 
-        return $this->success(null, $mode === 'overwrite' ? '已覆盖导入' : '已增量合并');
+        $msg = $mode === 'overwrite' ? '已覆盖导入' : '已增量合并';
+        if ($this->envNotice) {
+            $msg .= '；' . $this->envNotice;
+        }
+
+        return $this->success(['env_notice' => $this->envNotice], $msg);
     }
 
     /**
