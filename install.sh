@@ -768,12 +768,68 @@ EOF
     success "节点任务 Worker 已启动（node-ops 队列，2 实例）"
 }
 
+# 修复 storage / bootstrap/cache 属主（幂等自愈）
+#
+# 为什么安装末尾要单独修一遍：任何以 root 身份跑过 artisan / composer 的动作，都会在这两个
+# 目录里留下 root 属主文件 —— 本脚本 setup_env 里的 composer install（会以 root 触发
+# package:discover，往 bootstrap/cache 写 packages.php / services.php）、key:generate、
+# migrate、db:seed 全都是 root 跑的。装完之后以网站运行用户跑的调度器 / 队列 worker 再往
+# storage/framework/cache 写缓存就 Permission denied，schedule:run 静默失败 → 定时任务全停
+# + 面板显示 worker 离线（BanCheckJob 不再写心跳缓存）。所以装完必须把属主收回来。
+#
+# 安静且幂等：先扫一遍有没有非目标属主的文件，没有就一声不响地返回，不做多余动作。
+# bootstrap/cache 不能漏 —— composer 的 root 属主文件正写在那里。
+fix_storage_ownership() {
+    local NGINX_USER BAD SCAN_RC=0 d
+    local -a TARGETS=()
+    local BACKEND_DIR="${INSTALL_DIR}/backend"
+
+    # 与 setup_env / setup_queue_worker 同一套判定：nginx worker 用户，兜底 www-data
+    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    for d in "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache"; do
+        if [ -d "$d" ]; then
+            TARGETS+=("$d")
+        fi
+    done
+    if [ ${#TARGETS[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # -print -quit：撞见第一个属主不对的就停，只有干净时才会走完整棵树
+    BAD=$(find "${TARGETS[@]}" ! -user "$NGINX_USER" -print -quit 2>/dev/null) || SCAN_RC=$?
+
+    # 干净：不动、不吭声。扫不出结果（权限不足 / 该用户不存在）时按「脏」处理 ——
+    # 宁可多做一次幂等的 chown，也不要静默放过一次真实的污染。
+    if [ "$SCAN_RC" -eq 0 ] && [ -z "$BAD" ]; then
+        return 0
+    fi
+
+    # 非 root 改不了属主，chown 只会失败刷屏；说明原因后直接返回，不动任何文件
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "存在非 ${NGINX_USER} 属主的缓存文件（如 ${BAD:-扫描失败}），但当前不是 root，跳过属主修复；请以 root 执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
+        return 0
+    fi
+
+    if chown -R "$NGINX_USER":"$NGINX_USER" "${TARGETS[@]}" 2>/dev/null; then
+        info "已修复 storage/bootstrap/cache 属主（此前存在非 ${NGINX_USER} 属主文件，如 ${BAD:-扫描失败}）"
+    else
+        # 修不好也不中断安装：属主问题比起前面报过的错要轻，留提示让人工收尾即可
+        warn "修复 storage/bootstrap/cache 属主失败，请以 root 手工执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
+    fi
+    return 0
+}
+
 # 安装 3hub 命令
 install_3hub() {
     info "安装 3hub 管理命令..."
 
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
     chmod +x /usr/local/bin/3hub
+    # 安装目录里那份也补 x 位：仓库里 3hub 存的是 644（git ls-files -s 3hub 可查），
+    # clone 下来不可执行，用户直接敲 ./3hub 会 Permission denied
+    chmod +x "$INSTALL_DIR/3hub"
 
     success "3hub 命令安装完成"
 }
@@ -953,6 +1009,12 @@ main() {
 
     # 安装多域名助手（3hub-domain + sudoers）
     install_domain_support
+
+    # 属主自愈：必须排在所有以 root 身份跑过 artisan / composer 的步骤之后
+    #（composer install 的 package:discover、key:generate / migrate / db:seed 都会往
+    # storage 和 bootstrap/cache 写 root 属主文件），否则网站运行用户一写缓存就
+    # Permission denied，queue / schedule 静默失效 —— 详见函数注释
+    fix_storage_ownership
 
     # 输出结果
     show_result

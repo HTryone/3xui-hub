@@ -175,6 +175,59 @@ EOF
     done
 }
 
+# 修复 storage / bootstrap/cache 属主（幂等自愈）
+#
+# 为什么更新末尾要单独修一遍：任何以 root 身份跑过 artisan / composer 的动作，都会在这两个
+# 目录里留下 root 属主文件 —— cmd_update 里的 composer install（会以 root 触发
+# package:discover，往 bootstrap/cache 写 packages.php / services.php），以及运维手工敲的
+# php artisan xxx / tinker（排查问题时最容易顺手敲出来）。之后以网站运行用户跑的调度器 /
+# 队列 worker 再往 storage/framework/cache 写缓存就 Permission denied，schedule:run 静默失败
+# → 定时任务全停 + 面板显示 worker 离线（BanCheckJob 不再写心跳缓存）。所以每次更新都要把
+# 属主收回来，否则每更新一次就重新埋一颗雷。
+#
+# 安静且幂等：先扫一遍有没有非目标属主的文件，没有就一声不响地返回，不做多余动作。
+# bootstrap/cache 不能漏 —— composer 的 root 属主文件正写在那里。
+fix_storage_ownership() {
+    local NGINX_USER BAD SCAN_RC=0 d
+    local -a TARGETS=()
+
+    # 用文件顶部的 BACKEND_DIR；与 run_artisan / configure_queue_worker 同一套用户判定
+    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    for d in "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache"; do
+        if [ -d "$d" ]; then
+            TARGETS+=("$d")
+        fi
+    done
+    if [ ${#TARGETS[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # -print -quit：撞见第一个属主不对的就停，只有干净时才会走完整棵树
+    BAD=$(find "${TARGETS[@]}" ! -user "$NGINX_USER" -print -quit 2>/dev/null) || SCAN_RC=$?
+
+    # 干净：不动、不吭声。扫不出结果（权限不足 / 该用户不存在）时按「脏」处理 ——
+    # 宁可多做一次幂等的 chown，也不要静默放过一次真实的污染。
+    if [ "$SCAN_RC" -eq 0 ] && [ -z "$BAD" ]; then
+        return 0
+    fi
+
+    # 非 root 改不了属主，chown 只会失败刷屏；说明原因后直接返回，不动任何文件
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "目录属主: ${YELLOW}跳过修复${NC}（存在非 ${NGINX_USER} 属主的缓存文件，如 ${BAD:-扫描失败}；需要 root 权限，请用 sudo 运行）"
+        return 0
+    fi
+
+    if chown -R "$NGINX_USER":"$NGINX_USER" "${TARGETS[@]}" 2>/dev/null; then
+        echo -e "目录属主: ${GREEN}已修复${NC}（storage/bootstrap/cache → ${NGINX_USER}，此前存在非 ${NGINX_USER} 属主文件，如 ${BAD:-扫描失败}）"
+    else
+        # 修不好也不中断更新：属主问题比起前面报过的错要轻，留提示让人工收尾即可
+        echo -e "目录属主: ${YELLOW}修复失败${NC}，请以 root 手工执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
+    fi
+    return 0
+}
+
 # 命令列表（编号对应）
 CMDS=(
     "status"
@@ -397,6 +450,12 @@ cmd_update() {
         chmod 0440 /etc/sudoers.d/3xui-hub
         chown root:root /etc/sudoers.d/3xui-hub 2>/dev/null || true
     fi
+
+    # 属主自愈：必须压在最后 —— 上面所有可能以 root 跑 artisan / composer 的步骤都跑完了
+    #（composer install 的 package:discover、run_artisan 之外的任何手工 php artisan），
+    # 这里把 storage / bootstrap/cache 的 root 属主文件收回网站运行用户名下。
+    # 顺序上不能提到 config:clear 那类步骤之前，否则还会被后续步骤重新污染。详见函数注释。
+    fix_storage_ownership
 
     echo -e "${GREEN}更新完成！${NC}"
 }
