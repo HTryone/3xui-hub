@@ -12,6 +12,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // 幂等：列已存在（备份导入 / 重复执行）→ 跳过，避免 1060 duplicate column
+        if (Schema::hasColumn('users', 'monthly_traffic_limit')) {
+            return;
+        }
+
         Schema::table('users', function (Blueprint $table) {
             $table->bigInteger('monthly_traffic_limit')->default(0)->after('monthly_traffic_used');
         });

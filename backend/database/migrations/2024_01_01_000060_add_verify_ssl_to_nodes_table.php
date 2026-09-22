@@ -11,6 +11,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // 幂等：列已存在（备份导入 / 重复执行）→ 跳过，避免 1060 duplicate column
+        if (Schema::hasColumn('nodes', 'verify_ssl')) {
+            return;
+        }
+
         Schema::table('nodes', function (Blueprint $table) {
             $table->boolean('verify_ssl')->default(false)->after('enabled');
         });

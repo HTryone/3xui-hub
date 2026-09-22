@@ -14,33 +14,41 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('users', function (Blueprint $table) {
-            $table->id();
-            $table->string('email')->nullable();
-            $table->string('token', 64)->unique();
-            $table->uuid('uuid')->unique();
-            $table->string('protocol', 16)->default('vless');
-            $table->bigInteger('traffic_limit')->default(0);
-            $table->bigInteger('traffic_used')->default(0);
-            $table->timestamp('expired_at')->nullable();
-            $table->boolean('enabled')->default(true);
-            $table->timestamps();
-        });
+        // 表已存在（例如从备份导入，或表由其它途径建过）→ 跳过创建，避免 1050 撞车。
+        // 本迁移建三张表，所以逐表守卫，不能提前 return（否则后面两张会被整段跳过）。
+        if (! Schema::hasTable('users')) {
+            Schema::create('users', function (Blueprint $table) {
+                $table->id();
+                $table->string('email')->nullable();
+                $table->string('token', 64)->unique();
+                $table->uuid('uuid')->unique();
+                $table->string('protocol', 16)->default('vless');
+                $table->bigInteger('traffic_limit')->default(0);
+                $table->bigInteger('traffic_used')->default(0);
+                $table->timestamp('expired_at')->nullable();
+                $table->boolean('enabled')->default(true);
+                $table->timestamps();
+            });
+        }
 
-        Schema::create('password_reset_tokens', function (Blueprint $table) {
-            $table->string('email')->primary();
-            $table->string('token');
-            $table->timestamp('created_at')->nullable();
-        });
+        if (! Schema::hasTable('password_reset_tokens')) {
+            Schema::create('password_reset_tokens', function (Blueprint $table) {
+                $table->string('email')->primary();
+                $table->string('token');
+                $table->timestamp('created_at')->nullable();
+            });
+        }
 
-        Schema::create('sessions', function (Blueprint $table) {
-            $table->string('id')->primary();
-            $table->foreignId('user_id')->nullable()->index();
-            $table->string('ip_address', 45)->nullable();
-            $table->text('user_agent')->nullable();
-            $table->longText('payload');
-            $table->integer('last_activity')->index();
-        });
+        if (! Schema::hasTable('sessions')) {
+            Schema::create('sessions', function (Blueprint $table) {
+                $table->string('id')->primary();
+                $table->foreignId('user_id')->nullable()->index();
+                $table->string('ip_address', 45)->nullable();
+                $table->text('user_agent')->nullable();
+                $table->longText('payload');
+                $table->integer('last_activity')->index();
+            });
+        }
     }
 
     public function down(): void

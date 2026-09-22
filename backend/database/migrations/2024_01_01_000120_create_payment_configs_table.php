@@ -8,6 +8,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // 表已存在（例如从备份导入，或表由其它途径建过）→ 跳过创建，避免 1050 撞车
+        if (Schema::hasTable('payment_configs')) {
+            return;
+        }
+
         Schema::create('payment_configs', function (Blueprint $table) {
             $table->id();
             $table->string('name', 64)->comment('配置名称');
