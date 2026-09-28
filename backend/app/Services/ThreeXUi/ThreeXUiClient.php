@@ -7,6 +7,9 @@ use GuzzleHttp\Cookie\CookieJar;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Exception\TransferException;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Log;
 
@@ -59,6 +62,9 @@ class ThreeXUiClient
 
     protected Client $client;
     protected CookieJar $cookieJar;
+
+    /** client 是否由外部注入（测试 mock）—— 注入的实例不该被 useSharedTransport 换掉 */
+    private bool $clientInjected = false;
     protected ?string $baseUrl;
     protected ?string $apiKey;
     protected string $username;
@@ -105,13 +111,65 @@ class ThreeXUiClient
         // verify 默认 true（生产安全）；dev 联调可传 false 绕过自签/不完整证书链
         $this->verify = $config['verify'] ?? true;
 
-        $this->client = $config['http_client'] ?? new Client([
-            'base_uri' => $this->baseUrl,
+        if (isset($config['http_client'])) {
+            $this->clientInjected = true;
+            $this->client = $config['http_client'];
+        } else {
+            $this->client = self::makeHttpClient($this->baseUrl, $this->verify);
+        }
+    }
+
+    /** 按实例配置新建 Guzzle Client；$transport 非空时以它作传输层（见 useSharedTransport）。 */
+    private static function makeHttpClient(string $baseUrl, bool $verify, ?callable $transport = null): Client
+    {
+        $options = [
+            'base_uri' => $baseUrl,
             'http_errors' => true,
             'timeout' => self::panelConfig('api_timeout', 15.0),
             'connect_timeout' => self::panelConfig('connect_timeout', 5.0),
-            'verify' => $this->verify,
-        ]);
+            'verify' => $verify,
+        ];
+
+        if ($transport !== null) {
+            $options['handler'] = $transport;
+        }
+
+        return new Client($options);
+    }
+
+    /**
+     * 新建一个可供多个 client 共用的传输层（并发探测专用，见 useSharedTransport）。
+     *
+     * 用 Guzzle 默认的 handler 栈：底层是同一个 curl_multi 事件循环，
+     * 无 curl 扩展时自动降级，不影响可用性（只是并发收益消失）。
+     */
+    public static function newSharedTransport(): HandlerStack
+    {
+        return HandlerStack::create();
+    }
+
+    /**
+     * 让本实例改用共用传输层 —— **并发探测的前提**。
+     *
+     * 为什么必须共用：Guzzle 的 CurlMultiHandler 把 curl_multi 句柄藏在实例里，它的 wait()
+     * 会一直跑到「自己名下」的请求全部结束。每个节点各建一个 Client 就各有一个 multi 句柄，
+     * 逐批 settle 时只能一个接一个 wait —— 表面并发、实际串行（实测 4 节点 × 1s = 4s）。
+     * 整批共用一个传输层，请求才会进同一个 curl_multi 句柄真正并行走。
+     *
+     * 共享的只是「传输层事件循环」；base_uri / verify / headers / cookie jar 等请求级配置仍各自独立，
+     * 且默认不开连接共享（transport_sharing=NONE），节点之间不串状态。
+     *
+     * 注入了 http_client（测试 mock）的实例原样返回，避免把 mock 换掉后误发真实请求。
+     */
+    public function useSharedTransport(callable $transport): static
+    {
+        if ($this->clientInjected) {
+            return $this;
+        }
+
+        $this->client = self::makeHttpClient($this->baseUrl, $this->verify, $transport);
+
+        return $this;
     }
 
     /**
@@ -151,6 +209,7 @@ class ThreeXUiClient
     public function setClient(Client $client): static
     {
         $this->client = $client;
+        $this->clientInjected = true;
 
         return $this;
     }
@@ -448,6 +507,77 @@ class ThreeXUiClient
             'mem' => $obj['mem'] ?? null,
             'xrayState' => $obj['xray']['state'] ?? null,
         ];
+    }
+
+    /**
+     * healthCheck() 的异步版：GET /panel/api/server/status，返回 promise 而不阻塞。
+     *
+     * 供 HealthCheckService::checkMany() 在同进程内并发探测多个节点用。判定规则、超时值、
+     * 返回结构均与同步 healthCheck() 完全一致，只是把「等这一次请求」变成「先全发出去再统一等」。
+     *
+     * **仅支持 api_key（Bearer）模式**：该模式无状态（只加 Authorization 头，不碰 cookie/CSRF/
+     * 登录缓存），每个节点经工厂拿到的又是独立 client 实例（独立 Guzzle Client / CookieJar），
+     * 天然可并发；cookie 模式要维护登录会话，不适合并发，调用方应回退同步 healthCheck()。
+     * api_key 为空时返回 rejected promise（reason 为带说明的 ThreeXUiException），由调用方兜底。
+     *
+     * 归一化保证：请求失败（网络异常 / 5xx / 解析失败 / success=false）一律 resolve 成
+     * ok=false 的结果，**不会把 reject 泄漏给调用方** —— checkMany 只需处理数组，无需 try。
+     *
+     * @return PromiseInterface resolved 时值为与 healthCheck() 同构的数组
+     */
+    public function healthCheckAsync(): PromiseInterface
+    {
+        if (!$this->apiKey) {
+            return Create::rejectionFor(
+                new ThreeXUiException('healthCheckAsync 仅支持 api_key 模式，cookie 模式请用同步 healthCheck()')
+            );
+        }
+
+        // 计时点与 healthCheck() 一致：发起请求之前
+        $start = microtime(true);
+
+        try {
+            $promise = $this->client->getAsync($this->baseUrl . self::EP_SERVER_STATUS, [
+                'headers' => [
+                    'Accept' => 'application/json',
+                    'Authorization' => 'Bearer ' . $this->apiKey,
+                ],
+                'verify' => $this->verify,
+                'timeout' => self::panelConfig('healthcheck_timeout', 8.0),
+                'connect_timeout' => self::panelConfig('healthcheck_connect_timeout', 5.0),
+            ]);
+        } catch (\Throwable $e) {
+            // 少数 handler 会在「发起阶段」就同步抛（如 base_uri 非法），此处也归一化为 ok=false
+            return Create::promiseFor($this->unhealthy(0, $e->getMessage()));
+        }
+
+        return $promise
+            ->then(function ($response) use ($start) {
+                $latencyMs = (int) round((microtime(true) - $start) * 1000);
+                $json = json_decode((string) $response->getBody(), true);
+
+                if (!is_array($json) || !($json['success'] ?? false)) {
+                    return $this->unhealthy($latencyMs, $json['msg'] ?? 'unhealthy');
+                }
+
+                $obj = $json['obj'] ?? [];
+
+                return [
+                    'ok' => true,
+                    'latencyMs' => $latencyMs,
+                    'cpu' => $obj['cpu'] ?? null,
+                    'mem' => $obj['mem'] ?? null,
+                    'xrayState' => $obj['xray']['state'] ?? null,
+                ];
+            })
+            // otherwise 兜住两类失败：promise 自身 reject（网络/5xx），以及 then 回调里抛出的异常。
+            // 网络失败与同步 healthCheck() 的 catch 分支对齐：latencyMs 记 0。
+            ->otherwise(function ($reason) {
+                return $this->unhealthy(
+                    0,
+                    $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason
+                );
+            });
     }
 
     /** GET /panel/api/server/getNewUUID → UUID 字符串。 */

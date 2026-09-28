@@ -21,6 +21,9 @@ return [
     // 健康检查连接超时
     'healthcheck_connect_timeout' => (float) env('PANEL_HEALTHCHECK_CONNECT_TIMEOUT', 5),
 
+    // 健康检查并发数：同时探测的节点数上限（同进程 Guzzle 并发，默认 10）
+    'healthcheck_concurrency' => (int) env('PANEL_HEALTHCHECK_CONCURRENCY', 10),
+
     /*
      | cookie 模式登录态缓存（秒）。
      |

@@ -20,12 +20,12 @@ class HealthCheckJob implements ShouldQueue
 
     public function handle(HealthCheckService $service): void
     {
-        Node::where('enabled', true)->each(function (Node $node) use ($service) {
-            try {
-                $service->check($node);
-            } catch (\Throwable $e) {
-                report($e);
-            }
-        });
+        try {
+            // 交给 checkMany 分批并发：api_key 节点同进程并发探测，其余仍逐个同步。
+            // 单节点异常已在 checkMany 内部消化，这里的 try/catch 只是最后兜底。
+            $service->checkMany(Node::where('enabled', true)->get());
+        } catch (\Throwable $e) {
+            report($e);
+        }
     }
 }
