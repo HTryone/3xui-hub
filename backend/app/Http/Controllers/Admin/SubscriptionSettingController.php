@@ -27,6 +27,7 @@ class SubscriptionSettingController extends Controller
         'sub_rename_replacement',
         'sub_custom_info_enabled',
         'sub_custom_info_text',
+        'sub_title',
     ];
 
     /**

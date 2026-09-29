@@ -64,11 +64,24 @@ class SubscriptionController extends Controller
             default => 'text/plain; charset=UTF-8',
         };
 
-        return response($body, 200)
+        // 订阅标题：管理员后台配置，留空保持原样（不加头、不改正文）
+        $title = trim((string) SiteConfig::getValue('sub_title', ''));
+        if ($title !== '' && $format === 'clash') {
+            // Clash 系客户端读取名称的约定：正文首行注释，值为 base64
+            $body = '#profile-title: ' . base64_encode($title) . "\n" . $body;
+        }
+
+        $response = response($body, 200)
             ->header('Content-Type', $contentType)
             ->header('Subscription-Userinfo', "upload={$upload}; download={$download}; total={$total}; expire={$expire}")
             ->header('X-CH-Code', '0')
             ->header('X-CH-Msg', 'ok');
+
+        if ($title !== '') {
+            $response->header('Content-Disposition', "attachment; filename*=UTF-8''" . rawurlencode($title));
+        }
+
+        return $response;
     }
 
     /**
