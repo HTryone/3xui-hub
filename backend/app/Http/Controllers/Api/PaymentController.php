@@ -105,13 +105,13 @@ class PaymentController extends Controller
     }
 
     /**
-     * 支付回调（无需鉴权）。
+     * 支付回调（无需鉴权）。应答文本按协议驱动返回（payindex: OK/FAIL，epay 系: success/fail，支付宝: success）。
      */
     public function notify(Request $request): string
     {
         $data = $request->all();
-        $success = $this->paymentService->handleNotify($data);
-        return $success ? 'OK' : 'FAIL';
+        $result = $this->paymentService->handleNotify($data);
+        return $result['body'];
     }
 
     /**

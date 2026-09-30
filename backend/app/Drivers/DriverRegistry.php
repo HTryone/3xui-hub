@@ -29,6 +29,12 @@ class DriverRegistry
             ?? throw new RuntimeException("Driver [{$name}] not registered");
     }
 
+    /** 是否已注册某驱动 */
+    public function has(string $name): bool
+    {
+        return isset($this->drivers[$name]);
+    }
+
     /** 获取面板驱动 */
     public function panel(string $name): PanelDriverInterface
     {

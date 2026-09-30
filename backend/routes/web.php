@@ -96,6 +96,8 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 支付配置管理
     Route::get('/payments', [AdminPaymentController::class, 'index']);
     Route::post('/payments', [AdminPaymentController::class, 'store']);
+    // 协议清单（动态表单元数据）—— 必须排在 /payments/{payment} 之前，否则被参数路由吞掉
+    Route::get('/payments/protocols', [AdminPaymentController::class, 'protocols']);
     Route::get('/payments/{payment}', [AdminPaymentController::class, 'show']);
     Route::put('/payments/{payment}', [AdminPaymentController::class, 'update']);
     Route::delete('/payments/{payment}', [AdminPaymentController::class, 'destroy']);

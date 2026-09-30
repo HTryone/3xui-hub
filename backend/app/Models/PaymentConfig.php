@@ -11,6 +11,8 @@ class PaymentConfig extends Model
 {
     protected $fillable = [
         'name',
+        'driver_type',
+        'driver_config',
         'gateway',
         'query_gateway',
         'member_id',
@@ -26,6 +28,7 @@ class PaymentConfig extends Model
     {
         return [
             'enabled' => 'boolean',
+            'driver_config' => 'array',
         ];
     }
 }

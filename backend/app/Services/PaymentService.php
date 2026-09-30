@@ -2,14 +2,15 @@
 
 namespace App\Services;
 
+use App\Drivers\Contracts\PaymentDriverInterface;
+use App\Drivers\DriverRegistry;
+use App\Drivers\Payments\PayindexDriver;
 use App\Models\DiscountCode;
-use App\Models\Domain;
 use App\Models\Order;
 use App\Models\PaymentConfig;
 use App\Models\Plan;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -22,6 +23,7 @@ class PaymentService
         private BanService $banService,
         private DiscountCodeService $discountCodeService,
         private RateGuardService $rateGuard,
+        private DriverRegistry $drivers,
     ) {}
 
     /**
@@ -183,7 +185,21 @@ class PaymentService
     }
 
     /**
-     * 构建支付链接（POST请求获取h5_url）。
+     * 取支付配置对应的协议驱动。
+     * driver_type 为空 / null / 未注册 → 一律回退 payindex，保证现有数据零影响。
+     */
+    private function driverFor(PaymentConfig $payment): PaymentDriverInterface
+    {
+        $type = (string) ($payment->driver_type ?? '');
+        if ($type !== '' && $this->drivers->has($type)) {
+            return $this->drivers->payment($type);
+        }
+
+        return $this->drivers->payment('payindex');
+    }
+
+    /**
+     * 构建支付链接（按 driver_type 分发到协议驱动）。
      *
      * 返回值升级为 [链接, 网关拒绝原因]：
      * - 成功：[$h5_url, null]
@@ -196,55 +212,14 @@ class PaymentService
      */
     public function buildPayUrl(PaymentConfig $payment, Order $order): array
     {
-        // notify_url 必须是完整的回调 URL，如果不是则用主域名默认值（网关固定打主域）
-        $notifyUrl = ($payment->notify_url && str_starts_with($payment->notify_url, 'http'))
-            ? $payment->notify_url
-            : $this->defaultNotifyUrl();
-        // 回跳地址 = 下单请求所在域名（多域名：b.zes.one 下单回 b.zes.one，不回主域）
-        $callbackUrl = request()->getSchemeAndHttpHost() . '/';
+        $result = $this->driverFor($payment)->pay($order, $payment);
 
-        $params = [
-            'pay_memberid' => $payment->member_id,
-            'pay_orderid' => $order->order_no,
-            // 复用旧单重发时用「当前时间」，不能用 $order->created_at：老单可能是几天前创建的，
-            // 网关会因时间差过大拒单或对账错乱（现场有 7 月老单被翻出重发的案例）。
-            'pay_applydate' => now()->format('Y-m-d H:i:s'),
-            'pay_bankcode' => $payment->bank_code,
-            'pay_notifyurl' => $notifyUrl,
-            'pay_callbackurl' => $callbackUrl,
-            'pay_amount' => number_format($order->amount, 2, '.', ''),
-            'pay_productname' => '套餐购买-' . ($order->plan->name ?? ''),
-            'pay_ip' => request()->ip() ?: ($order->pay_ip ?: '127.0.0.1'),
-            'pay_type' => 'JSON',
-        ];
-
-        $params['pay_md5sign'] = $this->generateSign($params, $payment->api_key);
-
-        // POST请求支付网关
-        try {
-            $response = Http::asForm()
-                ->timeout(10)
-                ->post($payment->gateway, $params);
-
-            $data = $response->json();
-
-            Log::info('支付网关响应', ['order_no' => $order->order_no, 'response' => $data]);
-
-            if (($data['status'] ?? 0) == 1 && !empty($data['h5_url'])) {
-                return [$data['h5_url'], null];
-            }
-
-            $msg = (string) ($data['msg'] ?? 'unknown');
-            Log::error('支付网关下单失败', ['order_no' => $order->order_no, 'msg' => $msg]);
-
-            // 网关明确拒绝：把原因带出去，调用方可据此决定是否作废旧单重建
-            return ['', $msg];
-        } catch (\Throwable $e) {
-            Log::error('支付网关请求异常', ['order_no' => $order->order_no, 'error' => $e->getMessage()]);
-
-            // 网络异常：原因留空，调用方不得作废订单（用户可能已在支付）
-            return ['', null];
+        if ($result->success) {
+            return [(string) $result->payUrl, null];
         }
+
+        // error=null 表示网络/解析异常；有 error 为网关明确拒绝
+        return ['', $result->error];
     }
 
     /**
@@ -271,71 +246,46 @@ class PaymentService
     }
 
     /**
-     * 缺省异步通知地址：domains 主域名 + /api/payment/notify；无主域行（老站）回退 url()。
+     * 处理支付回调：提取订单号 → 按该订单 payment_config 的 driver_type 分发到驱动验签/判状态
+     * → 金额匹配 → completeOrder。返回 [是否成功, 网关应答文本]。
+     *
+     * 订单号兼容 payindex 的 orderid 与 epay 系/支付宝的 out_trade_no。
+     *
+     * @return array{ok: bool, body: string}
      */
-    private function defaultNotifyUrl(): string
+    public function handleNotify(array $data): array
     {
-        $primary = Domain::where('is_primary', true)->where('enabled', true)->first();
-        if (!$primary) {
-            return url('/api/payment/notify');
-        }
-
-        // scheme https 优先（域名接入层默认走 TLS）
-        return 'https://' . $primary->domain . '/api/payment/notify';
-    }
-
-    /**
-     * 处理支付回调。
-     */
-    public function handleNotify(array $data): bool
-    {
-        $memberId = $data['memberid'] ?? '';
-        $orderId = $data['orderid'] ?? '';
-        $amount = $data['amount'] ?? '';
-        $returnCode = $data['returncode'] ?? '';
-        $sign = $data['sign'] ?? '';
-        $tradeNo = $data['transaction_id'] ?? '';
+        $orderId = (string) ($data['orderid'] ?? $data['out_trade_no'] ?? '');
 
         $order = Order::where('order_no', $orderId)->first();
         if (!$order) {
             Log::error('支付回调: 订单不存在', ['order_no' => $orderId]);
-            return false;
+            return ['ok' => false, 'body' => 'FAIL'];
         }
 
         $payment = $order->paymentConfig;
-        if (!$payment || $payment->member_id != $memberId) {
-            Log::error('支付回调: 商户号不匹配', ['order_no' => $orderId]);
-            return false;
+        if (!$payment) {
+            Log::error('支付回调: 支付配置缺失', ['order_no' => $orderId]);
+            return ['ok' => false, 'body' => 'FAIL'];
         }
 
-        // 验证签名
-        $verifyData = [
-            'memberid' => $memberId,
-            'orderid' => $orderId,
-            'amount' => $amount,
-            'transaction_id' => $tradeNo,
-            'datetime' => $data['datetime'] ?? '',
-            'returncode' => $returnCode,
-        ];
-        $expectedSign = $this->generateSign($verifyData, $payment->api_key);
-        if (strcasecmp($sign, $expectedSign) !== 0) {
-            Log::error('支付回调: 签名验证失败', ['order_no' => $orderId, 'expected' => $expectedSign, 'got' => $sign]);
-            return false;
+        $driver = $this->driverFor($payment);
+        $result = $driver->handleCallback($data, $payment);
+
+        if (!$result->success) {
+            Log::error('支付回调: 驱动校验未通过', ['order_no' => $orderId, 'error' => $result->error]);
+            return ['ok' => false, 'body' => $driver->notifyResponse(false)];
         }
 
-        if ($returnCode !== '00') {
-            Log::error('支付回调: 状态异常', ['returncode' => $returnCode]);
-            return false;
+        // 金额误差 > 0.01 拒绝（与各协议要求一致）
+        if (abs((float) $result->amount - (float) $order->amount) > 0.01) {
+            Log::error('支付回调: 金额不匹配', ['expected' => $order->amount, 'actual' => $result->amount]);
+            return ['ok' => false, 'body' => $driver->notifyResponse(false)];
         }
 
-        if (abs((float)$amount - (float)$order->amount) > 0.01) {
-            Log::error('支付回调: 金额不匹配', ['expected' => $order->amount, 'actual' => $amount]);
-            return false;
-        }
+        $this->completeOrder($order, $result->tradeNo);
 
-        $this->completeOrder($order, $tradeNo);
-
-        return true;
+        return ['ok' => true, 'body' => $driver->notifyResponse(true)];
     }
 
     /**
@@ -404,56 +354,37 @@ class PaymentService
     }
 
     /**
-     * 查询订单状态。
+     * 查询订单状态（按 driver_type 分发到协议驱动；多数 epay 协议不支持查单，返回 null）。
      */
     public function queryOrder(Order $order): ?array
     {
         $payment = $order->paymentConfig;
-        if (!$payment || !$payment->query_gateway) {
+        if (!$payment) {
             return null;
         }
 
-        $params = [
-            'pay_memberid' => $payment->member_id,
-            'pay_orderid' => $order->order_no,
-        ];
-        $params['pay_md5sign'] = $this->generateSign($params, $payment->api_key);
-
-        try {
-            $response = Http::asForm()
-                ->timeout(10)
-                ->post($payment->query_gateway, $params)
-                ->json();
-
-            if (($response['returncode'] ?? '') === '00') {
-                $tradeState = $response['trade_state'] ?? '';
-
-                if ($tradeState === 'SUCCESS' && $order->status !== 'paid') {
-                    $this->completeOrder($order, $response['transaction_id'] ?? null);
-                    $order->refresh();
-                }
-
-                return [
-                    'status' => $tradeState === 'SUCCESS' ? 'paid' : 'pending',
-                    'trade_state' => $tradeState,
-                ];
-            }
-        } catch (\Throwable $e) {
-            Log::error('订单查询失败', ['order_no' => $order->order_no, 'error' => $e->getMessage()]);
+        $result = $this->driverFor($payment)->query($order, $payment);
+        if ($result === null) {
+            return null;
         }
 
-        return null;
+        if (($result['status'] ?? '') === 'paid' && $order->status !== 'paid') {
+            $this->completeOrder($order, $result['trade_no'] ?? null);
+            $order->refresh();
+        }
+
+        return [
+            'status' => $result['status'],
+            'trade_state' => $result['trade_state'] ?? '',
+        ];
     }
 
     /**
-     * 生成 MD5 签名。
+     * 生成 MD5 签名（payindex 协议，保留公开方法供调用方/测试断言）。
      */
     public function generateSign(array $params, string $apiKey): string
     {
-        $filtered = array_filter($params, fn ($v) => $v !== '' && $v !== null);
-        ksort($filtered);
-        $stringSignTemp = http_build_query($filtered) . '&key=' . $apiKey;
-        return strtoupper(md5($stringSignTemp));
+        return PayindexDriver::signParams($params, $apiKey);
     }
 
     /**

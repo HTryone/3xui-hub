@@ -27,4 +27,10 @@ interface PaymentDriverInterface extends DriverInterface
 
     /** 退款（如支持） */
     public function refund(Order $order, PaymentConfig $config, ?float $amount = null): bool;
+
+    /**
+     * 回调应答文本（各网关要求不同：payindex 要 OK/FAIL，epay 系要 success/fail，支付宝要 success）。
+     * 新增方法，pay/handleCallback 签名与语义不变。
+     */
+    public function notifyResponse(bool $success): string;
 }
