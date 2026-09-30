@@ -19,6 +19,8 @@ use Illuminate\Support\Facades\Crypt;
     'username', 'password', 'api_key',
     'enabled', 'verify_ssl', 'status', 'latency', 'last_check_at',
     'driver_type', 'driver_version', 'driver_config',
+    // NULL = 继承 site_configs.default_node_multiplier；有值 = 该节点手动指定
+    'traffic_multiplier',
 ])]
 #[Hidden(['password', 'api_key'])]
 class Node extends Model
@@ -31,6 +33,9 @@ class Node extends Model
             'port' => 'integer',
             'latency' => 'integer',
             'last_check_at' => 'datetime',
+            // float cast 对 null 保留 null —— 「继承」与「手动设成 1.0」必须能区分开，
+            // 所以这里绝不能写 ?? 1.0 之类在 cast 层兜底。
+            'traffic_multiplier' => 'float',
         ];
     }
 

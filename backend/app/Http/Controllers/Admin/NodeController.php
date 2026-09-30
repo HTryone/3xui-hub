@@ -7,8 +7,10 @@ use App\Http\Controllers\Controller;
 use App\Models\AsyncTask;
 use App\Models\Node;
 use App\Models\NodeInbound;
+use App\Models\SiteConfig;
 use App\Services\NodeCleanupService;
 use App\Services\NodeInboundSyncService;
+use App\Services\TrafficSyncService;
 use App\Services\NodeInitService;
 use App\Services\ThreeXUi\ThreeXUiClient;
 use App\Traits\ApiResponse;
@@ -32,11 +34,19 @@ class NodeController extends Controller
     ) {
     }
 
-    public function index(): \Illuminate\Http\JsonResponse
+    /**
+     * 列表分页：每页 50 条，orderByDesc('id') 保证翻页稳定。
+     * 显式 ?all=1 才返回全量（倍率页/仪表盘要一次看全部节点），禁止 per_page 之类的绕过。
+     */
+    public function index(Request $request): \Illuminate\Http\JsonResponse
     {
-        $nodes = Node::orderByDesc('id')->get();
+        $query = Node::orderByDesc('id');
 
-        return $this->success($nodes->map(fn (Node $n) => $this->present($n))->values());
+        if ($request->boolean('all')) {
+            return $this->success($query->get()->map(fn (Node $n) => $this->present($n))->values());
+        }
+
+        return $this->successPage($query, fn (Node $n) => $this->present($n));
     }
 
     public function show(Node $node): \Illuminate\Http\JsonResponse
@@ -67,6 +77,7 @@ class NodeController extends Controller
                 'enabled' => false,
                 'verify_ssl' => (bool) ($data['verify_ssl'] ?? false),
                 'status' => 'offline',
+                'traffic_multiplier' => $data['traffic_multiplier'] ?? null,
             ]);
 
             $this->syncInbounds($node, $data['inbounds'] ?? [], false);
@@ -129,6 +140,10 @@ class NodeController extends Controller
                 'api_key' => array_key_exists('api_key', $data) ? $data['api_key'] : $node->api_key,
                 'enabled' => isset($data['enabled']) ? (bool) $data['enabled'] : $node->enabled,
                 'verify_ssl' => isset($data['verify_ssl']) ? (bool) $data['verify_ssl'] : $node->verify_ssl,
+                // 传 null 就是「清空改回继承原始倍率」，与文档口径一致
+                'traffic_multiplier' => array_key_exists('traffic_multiplier', $data)
+                    ? ($data['traffic_multiplier'] === null ? null : (float) $data['traffic_multiplier'])
+                    : $node->traffic_multiplier,
             ])->save();
 
             if (array_key_exists('inbounds', $data)) {
@@ -253,6 +268,55 @@ class NodeController extends Controller
         return $this->success($grouped);
     }
 
+    /**
+     * 改原始倍率（继承中的节点用）。
+     *
+     * 只改 site_configs 一个值，不去回写 nodes.traffic_multiplier —— 那样等于把「继承」
+     * 全部固化成手动指定，以后再改原始倍率就对这些节点失效了，与既定口径冲突。
+     * 手动指定过倍率的节点不受影响。
+     */
+    public function updateOriginalMultiplier(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $data = $request->validate([
+            'multiplier' => ['required', 'numeric', 'min:1', 'max:100'],
+        ]);
+
+        SiteConfig::setValue('default_node_multiplier', (string) (float) $data['multiplier']);
+
+        return $this->success(
+            ['multiplier' => (float) $data['multiplier']],
+            '原始倍率已保存（仅影响继承中的节点）'
+        );
+    }
+
+    /**
+     * 用户端节点列表是否展示倍率（show_node_multiplier，默认关）。
+     * 与原始倍率同一个 PUT，省得后台页面再多一个端点。
+     */
+    public function updateMultiplierDisplay(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $data = $request->validate([
+            'show_multiplier' => ['required', 'boolean'],
+        ]);
+
+        $on = (bool) $data['show_multiplier'];
+        if ($on) {
+            SiteConfig::setValue('show_node_multiplier', '1');
+        } else {
+            // 关掉就把这行删掉，而不是存 '0'：用户端靠「有没有这行」判断，
+            // 留着 '0' 行的历史数据会让字段一直存在，与「默认关」的语义对不上。
+            SiteConfig::where('key', 'show_node_multiplier')->delete();
+        }
+
+        return $this->success(['show_multiplier' => $on], $on ? '已开启' : '已关闭');
+    }
+
+    /** 原始倍率取值，供 present() 输出 —— 统一走 TrafficSyncService 的唯一入口。 */
+    private function originalMultiplier(): float
+    {
+        return TrafficSyncService::originalMultiplier();
+    }
+
     private function validateNode(Request $request, bool $forUpdate = false): array
     {
         $rules = [
@@ -267,6 +331,9 @@ class NodeController extends Controller
             'enabled' => ['sometimes', 'boolean'],
             'verify_ssl' => ['sometimes', 'boolean'],
             'inbounds' => ['sometimes', 'array'],
+            // 下限取 1 而不是更小的值：倍率 < 1 时 (int) floor($delta * m) 在小增量下恒为 0，
+            // 用户流量永远不涨，而且会吃掉正常增量的零头。1 才是「不打折」的语义。
+            'traffic_multiplier' => ['sometimes', 'nullable', 'numeric', 'min:1', 'max:100'],
             'inbounds.vless' => ['sometimes', 'nullable', 'array'],
             'inbounds.vless.*' => ['integer'],
             'inbounds.trojan' => ['sometimes', 'nullable', 'array'],
@@ -371,6 +438,11 @@ class NodeController extends Controller
             'latency' => $n->latency,
             'last_check_at' => $n->last_check_at?->toIso8601String(),
             'inbounds' => $n->inbounds->groupBy('protocol')->map(fn ($items) => $items->pluck('inbound_id')->values())->all(),
+            // null = 该节点继承原始倍率；前端要靠这个区分「继承」和「手动设成 1.0」
+            'traffic_multiplier' => $n->traffic_multiplier,
+            'original_multiplier' => $this->originalMultiplier(),
+            // 用户端是否展示倍率（默认关），后台页面开关的初始状态靠它回显
+            'show_multiplier' => in_array(SiteConfig::getValue('show_node_multiplier', ''), ['1', 'true', 'on'], true),
         ];
 
         if ($full) {

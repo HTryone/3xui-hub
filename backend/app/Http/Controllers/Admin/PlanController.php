@@ -15,11 +15,19 @@ class PlanController extends Controller
 {
     use ApiResponse;
 
-    public function index(): \Illuminate\Http\JsonResponse
+    /**
+     * 列表分页：每页 50 条，orderByDesc('id') 保证翻页稳定。
+     * 显式 ?all=1 才返回全量（用户/优惠码表单里的套餐选择器要列全部套餐）。
+     */
+    public function index(Request $request): \Illuminate\Http\JsonResponse
     {
-        $plans = Plan::orderByDesc('id')->get();
+        $query = Plan::orderByDesc('id');
 
-        return $this->success($plans->map(fn (Plan $p) => $this->present($p))->values());
+        if ($request->boolean('all')) {
+            return $this->success($query->get()->map(fn (Plan $p) => $this->present($p))->values());
+        }
+
+        return $this->successPage($query, fn (Plan $p) => $this->present($p));
     }
 
     public function show(Plan $plan): \Illuminate\Http\JsonResponse

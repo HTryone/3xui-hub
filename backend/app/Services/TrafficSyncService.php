@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Node;
+use App\Models\SiteConfig;
 use App\Models\TrafficSnapshot;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
@@ -19,6 +20,38 @@ use Illuminate\Support\Facades\DB;
  */
 class TrafficSyncService
 {
+    /**
+     * 原始倍率的 site_configs key。
+     */
+    private const ORIGINAL_MULTIPLIER_KEY = 'default_node_multiplier';
+
+    /**
+     * 节点实际生效的流量倍率 —— 全项目唯一取值入口（计费与展示共用），每次直接读库。
+     *
+     * 口径：traffic_multiplier 为 NULL（继承）就用原始倍率，有值（手动指定）就用它。
+     * 改原始倍率只影响继承中的节点。
+     *
+     * 不做进程内缓存：queue worker 是长驻进程，静态缓存跨 job 复用会让改倍率后的
+     * 同步静默按旧值计费；展示侧也必须实时。批量路径在循环外取一次即可。
+     */
+    public static function multiplierFor(Node $node): float
+    {
+        $own = $node->traffic_multiplier; // null = 继承
+        if ($own !== null) {
+            return (float) $own;
+        }
+
+        return self::originalMultiplier();
+    }
+
+    /** 原始倍率取值（唯一入口）；配置行不存在/空串时兜底 1.0。 */
+    public static function originalMultiplier(): float
+    {
+        $stored = SiteConfig::getValue(self::ORIGINAL_MULTIPLIER_KEY, '');
+
+        return $stored === '' ? 1.0 : (float) $stored;
+    }
+
     /**
      * 兼容原有调用方；远程同步应使用 syncUserNodeFromSource()，
      * 确保远程读取和数据库提交处于同一个节点锁内。
@@ -80,10 +113,18 @@ class TrafficSyncService
         }
 
         if ($delta > 0) {
-            $user->increment('traffic_used', $delta);
-            // 周期套餐：同时累加当月流量
-            if ($user->isPeriodPlan()) {
-                $user->increment('monthly_traffic_used', $delta);
+            // 倍率只乘在 delta 上，绝不碰快照：快照存的是面板侧原始累计字节数，
+            // 下一轮 delta = now - last。倍率一旦乘进快照，改倍率那一刻就会因为
+            // 「老倍率算过的 last 比面板原值大」触发 now < last 分支，delta 直接等于
+            // 全部累计值，用户流量瞬间暴涨。traffic_used 是 bigint，所以向下取整。
+            $delta = (int) floor($delta * self::multiplierFor($node));
+
+            if ($delta > 0) {
+                $user->increment('traffic_used', $delta);
+                // 周期套餐：同时累加当月流量
+                if ($user->isPeriodPlan()) {
+                    $user->increment('monthly_traffic_used', $delta);
+                }
             }
         }
 
@@ -151,6 +192,9 @@ class TrafficSyncService
         $snapshotData = [];
         $now = now();
 
+        // 同一节点内所有用户共用一个倍率，循环外取一次（节点级倍率）。
+        $multiplier = self::multiplierFor($node);
+
         foreach ($emailToUserId as $email => $userId) {
             if (!isset($clientStats[$email])) continue;
             if (!isset($users[$userId])) continue; // 无套餐用户跳过
@@ -170,7 +214,8 @@ class TrafficSyncService
             }
 
             if ($delta > 0) {
-                $deltaMap[$userId] = $delta;
+                // 倍率只乘在 delta 上，快照那两行照旧存面板原始字节数（原因同单用户路径）。
+                $deltaMap[$userId] = (int) floor($delta * $multiplier);
             }
 
             $snapshotData[] = [

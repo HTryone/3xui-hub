@@ -51,6 +51,10 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // M4 节点管理
     Route::get('/nodes', [AdminNodeController::class, 'index']);
     Route::post('/nodes', [AdminNodeController::class, 'store']);
+    // 流量倍率（原始倍率 / 用户端展示开关）—— 必须排在 /nodes/{node} 参数路由之前，
+    // 否则 multiplier 会被当成 node id 吞掉（同 /payments/protocols 的先例）
+    Route::put('/nodes/multiplier/original', [AdminNodeController::class, 'updateOriginalMultiplier']);
+    Route::put('/nodes/multiplier/display', [AdminNodeController::class, 'updateMultiplierDisplay']);
     Route::get('/nodes/{node}', [AdminNodeController::class, 'show']);
     Route::put('/nodes/{node}', [AdminNodeController::class, 'update']);
     Route::delete('/nodes/{node}', [AdminNodeController::class, 'destroy']);

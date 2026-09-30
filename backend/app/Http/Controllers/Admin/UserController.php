@@ -34,11 +34,13 @@ class UserController extends Controller
     ) {
     }
 
+    /** 列表分页：每页 50 条，orderByDesc('id') 保证翻页稳定（纯展示层，见 ApiResponse::successPage）。 */
     public function index(): \Illuminate\Http\JsonResponse
     {
-        $users = User::with('plan')->orderByDesc('id')->get();
-
-        return $this->success($users->map(fn (User $u) => $this->present($u))->values());
+        return $this->successPage(
+            User::with('plan')->orderByDesc('id'),
+            fn (User $u) => $this->present($u),
+        );
     }
 
     public function show(User $user): \Illuminate\Http\JsonResponse
