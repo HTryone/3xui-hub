@@ -30,8 +30,11 @@ class SimpleMailerService
     /**
      * 发一封 HTML 邮件。
      * 异常不吞：由调用方决定记什么日志、回给用户什么文案。
+     *
+     * $mailerId 为预留的多账号参数：当前系统只有单 SMTP 配置，实现忽略该值，
+     * 但签名先留出来——将来支持多发信账号时不必改所有调用方。
      */
-    public function send(string $to, string $subject, string $htmlBody): void
+    public function send(string $to, string $subject, string $htmlBody, ?string $mailerId = null): void
     {
         $config = SiteConfig::getMany(self::CONFIG_KEYS);
 

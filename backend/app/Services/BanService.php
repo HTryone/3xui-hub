@@ -3,7 +3,10 @@
 namespace App\Services;
 
 use App\Drivers\NodeDriverFactory;
+use App\Jobs\SendMailJob;
+use App\Models\MailLog;
 use App\Models\Node;
+use App\Models\SiteConfig;
 use App\Models\User;
 
 /**
@@ -201,9 +204,46 @@ class BanService
         $applied = $confirmed === $nodes->count();
         if ($applied) {
             $user->forceFill(['traffic_disabled_at' => now()])->save();
+
+            // 流量用尽通知：落库这一刻是天然的单次触发点（traffic_disabled_at 之前为 null），
+            // 不受 ban.recheck_after_hours 重关影响，不会重复发信。
+            $this->notifyTrafficExhausted($user);
         }
 
         return $applied;
+    }
+
+    /**
+     * 流量用尽通知（默认关闭，管理员在「设置-邮箱」里自行开启）。
+     * 开关未开时这里只读一次 SiteConfig，无队列、无 SMTP 请求。
+     */
+    private function notifyTrafficExhausted(User $user): void
+    {
+        if (!MailNotifyService::isEnabled('traffic_exhausted')) {
+            return;
+        }
+
+        $rendered = MailNotifyService::render('traffic_exhausted', $user->loadMissing('plan'));
+        if ($rendered === []) {
+            return;
+        }
+
+        $to = $rendered['to_type'] === 'admin'
+            ? SiteConfig::getValue('notify_admin_email')
+            : $user->email;
+
+        if (empty($to)) {
+            return;
+        }
+
+        SendMailJob::dispatch(
+            toEmail: $to,
+            subject: $rendered['subject'],
+            htmlBody: $rendered['body'],
+            type: MailLog::TYPE_NOTIFY,
+            userId: $user->id,
+            scene: 'traffic_exhausted',
+        );
     }
 
     /**

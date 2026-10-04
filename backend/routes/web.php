@@ -88,6 +88,13 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/email', [AdminEmailController::class, 'show']);
     Route::put('/email', [AdminEmailController::class, 'save']);
     Route::post('/email/test', [AdminEmailController::class, 'test']);
+    // 自动通知配置（开关全部默认关闭，管理员自行开启）
+    Route::get('/email/notify', [AdminEmailController::class, 'notifyConfig']);
+    Route::put('/email/notify', [AdminEmailController::class, 'saveNotifyConfig']);
+    // 批量发信（群发/单发，限速默认关闭由管理员填上限）
+    Route::post('/email/batch-send', [AdminEmailController::class, 'batchSend']);
+    // 发信日志
+    Route::get('/email/logs', [AdminEmailController::class, 'mailLogs']);
 
     // 多域名管理
     Route::get('/domains', [AdminDomainController::class, 'index']);

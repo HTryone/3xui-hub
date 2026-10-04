@@ -34,11 +34,32 @@ class UserController extends Controller
     ) {
     }
 
-    /** 列表分页：每页 50 条，orderByDesc('id') 保证翻页稳定（纯展示层，见 ApiResponse::successPage）。 */
-    public function index(): \Illuminate\Http\JsonResponse
+    /**
+     * 列表分页：每页 50 条，orderByDesc('id') 保证翻页稳定（纯展示层，见 ApiResponse::successPage）。
+     *
+     * search 在全表里查（ID / 邮箱 / Token），不是只过滤当前页——否则用户在第 3 页，
+     * 前端拿到的第 1 页数据里没有他，搜索就等于「搜不到，得翻页才看得见」。
+     * 数字 ID 走精确匹配，避免 id=1 命中 10/11/12…；邮箱/Token 走模糊包含。
+     */
+    public function index(Request $request): \Illuminate\Http\JsonResponse
     {
+        $query = User::with('plan')->orderByDesc('id');
+
+        $search = trim((string) $request->query('search', ''));
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                if (ctype_digit($search)) {
+                    $q->where('id', (int) $search)->orWhere('email', 'like', '%' . $search . '%')
+                        ->orWhere('token', 'like', '%' . $search . '%');
+                } else {
+                    $q->where('email', 'like', '%' . $search . '%')
+                        ->orWhere('token', 'like', '%' . $search . '%');
+                }
+            });
+        }
+
         return $this->successPage(
-            User::with('plan')->orderByDesc('id'),
+            $query,
             fn (User $u) => $this->present($u),
         );
     }

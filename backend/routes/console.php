@@ -2,6 +2,7 @@
 
 use App\Jobs\BanCheckJob;
 use App\Jobs\HealthCheckJob;
+use App\Jobs\MailNotifyScanJob;
 use Illuminate\Support\Facades\Schedule;
 
 // 流量自动同步：每5分钟
@@ -28,3 +29,8 @@ Schedule::command('order:expire-pending', ['--hours' => 1])->hourly()->name('exp
 
 // 任务超时兜底：超过阈值（config('tasks.stale_after_minutes')）未终态的异步任务标记失败，防止 running 永久停留
 Schedule::call(fn () => app(\App\Services\AsyncTaskService::class)->timeoutStale())->everyFiveMinutes()->name('async-task-timeout')->withoutOverlapping();
+
+// 邮件自动通知扫描：每 5 分钟检查「流量即将用尽 / 即将到期 / 已到期 / 无套餐」。
+// 四个开关默认关闭（SiteConfig 未配置即关闭），未开启时本任务不查库也不发信。
+// 同一天同一场景对同一用户只发一次，防重复逻辑在 MailNotifyScanJob 内。
+Schedule::job(MailNotifyScanJob::class)->everyFiveMinutes()->name('mail-notify-scan')->withoutOverlapping();
