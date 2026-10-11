@@ -98,8 +98,14 @@ class NodeApiController extends Controller
         $json = $this->config->renderJson($node);
         $etag = '"' . sha1($json) . '"';
 
+        // If-None-Match 按 RFC 7232 弱比较：CDN（Cloudflare 等）压缩响应时会把强 ETag
+        // 改写为弱 ETag（W/"…"），而节点 agent 的 Go http 客户端默认带 Accept-Encoding:
+        // gzip，收到的永远是弱 ETag —— 只做强比较会永不匹配、永远回 200 全量配置，
+        // agent 每轮误判「配置已更新」并重启内核。两侧各剥掉可选的 W/ 前缀与引号后再比。
+        $normalizeEtag = static fn (string $v): string => trim(preg_replace('/^W\//i', '', trim($v)) ?? '', '"');
+
         $ifNoneMatch = trim((string) $request->header('If-None-Match', ''));
-        if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || trim($ifNoneMatch, '"') === trim($etag, '"'))) {
+        if ($ifNoneMatch !== '' && $normalizeEtag($ifNoneMatch) === $normalizeEtag($etag)) {
             return response('', 304, ['ETag' => $etag]);
         }
 

@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.24.0**
+**版本：1.24.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -156,6 +156,11 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.24.1 (2026-10-11)
+
+- 修复节点 config 接口的 ETag 协商：经 CDN 压缩后弱 ETag（W/"…"）永不命中 304，agent 每 30 秒误判「配置已更新」重启内核
+- 修复 agent 内核进程记账错位：孤儿内核占住端口导致 exit 255 无限重启循环，只能重启 agent 复位；agent 升级至 1.0.3
+
 ### v1.24.0 (2026-10-10)
 
 - xray 入站新增 Reality 目标检测：在节点上跑真实 TLS 握手（TLS1.3 / h2 / X25519 / 证书链受信任），
@@ -250,7 +255,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.24.0**
+**Version: 1.24.1**
 
 ## Quick Install
 
@@ -306,7 +311,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.24.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.24.1-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
