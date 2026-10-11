@@ -8,10 +8,14 @@ INSTALL_DIR="/www/wwwroot/3xui-hub"
 BACKEND_DIR="${INSTALL_DIR}/backend"
 QUEUE_SERVICE="3xui-hub-queue.service"
 # 节点任务专用队列（node-ops）的 worker：模板单元 + 实例编号，命令只写一份。
-# 要增减并发实例，改 NODE_QUEUE_INSTANCES 并照 configure_queue_worker 里的
-# systemctl enable/disable 操作即可（详见 INSTALL.md「队列与并发」）。
+# 实例数运行期自适应（见 node_queue_instances_for_mem / resolve_node_queue_instances）：
+# 覆盖文件 /etc/3xui-hub/node-queue-instances 优先，否则 MemTotal <1024MB → 1 个、否则 2 个。
+# status/restart/update 都跟随同一份名单（详见 INSTALL.md「队列与并发」）。
 NODE_QUEUE_TEMPLATE="3xui-hub-queue-node@"
 NODE_QUEUE_UNIT_FILE="/etc/systemd/system/3xui-hub-queue-node@.service"
+NODE_QUEUE_UNIT_DIR="/etc/systemd/system/multi-user.target.wants"
+NODE_QUEUE_INSTANCES_FILE="/etc/3xui-hub/node-queue-instances"
+# 占位默认值；实际值在脚本底部（命令分发前）由 resolve_node_queue_instances 覆盖
 NODE_QUEUE_INSTANCES="1 2"
 # 邮件专用队列（mail）的 worker：单实例。
 # 邮件任务（自动通知/群发/每月定时）与控制类定时任务（封禁检查、健康检查）挤在同一条
@@ -35,6 +39,43 @@ check_install() {
         echo -e "${RED}错误: 3xui-hub 未安装或安装目录不正确${NC}"
         exit 1
     fi
+}
+
+# node-ops 实例数规则（纯函数，入参 mem_mb，只回显列表）：<1024MB → 1，否则 2。
+# 与 install.sh 里的 node_instance_count_for_mem 同一规则；分开两处保持各自可独立运行。
+node_queue_instances_for_mem() {
+    local mem_mb="${1:-0}"
+    if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
+        echo "1"
+    else
+        echo "1 2"
+    fi
+}
+
+# 解析本机该开几个 node-ops 实例：覆盖文件优先（含数字，空格分隔），否则按 MemTotal 自适应。
+resolve_node_queue_instances() {
+    local mem_mb
+    if [ -f "$NODE_QUEUE_INSTANCES_FILE" ] && grep -q '[0-9]' "$NODE_QUEUE_INSTANCES_FILE" 2>/dev/null; then
+        tr -s ' \t\n' ' ' < "$NODE_QUEUE_INSTANCES_FILE" | sed -e 's/^ *//' -e 's/ *$//'
+        return 0
+    fi
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    node_queue_instances_for_mem "$mem_mb"
+}
+
+# 关闭「已 enabled 但不在名单内」的 node-ops 实例（老机器升级后 2→1 时残留的 @2 必须停掉）。
+# 来源是 multi-user.target.wants 下的软链，不写死 1..N —— 人工 enable 过 @3 也能被收敛。
+converge_node_queue_instances() {
+    local keep="$1" link inst i
+    for link in "$NODE_QUEUE_UNIT_DIR"/3xui-hub-queue-node@*.service; do
+        [ -e "$link" ] || continue
+        inst="${link##*/3xui-hub-queue-node@}"
+        inst="${inst%.service}"
+        for i in $keep; do
+            [ "$i" = "$inst" ] && continue 2
+        done
+        systemctl disable --now "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
+    done
 }
 
 # 展开 node-ops worker 的实例单元名（3xui-hub-queue-node@1.service ...）
@@ -211,6 +252,8 @@ EOF
         systemctl enable "$u" >/dev/null 2>&1
         systemctl restart "$u"
     done
+    # 收敛：名单外但已 enabled 的实例（如老机器升级后 2→1 残留的 @2）显式停掉
+    converge_node_queue_instances "$NODE_QUEUE_INSTANCES"
 
     systemctl enable "$MAIL_QUEUE_SERVICE" >/dev/null 2>&1
     systemctl restart "$MAIL_QUEUE_SERVICE"
@@ -565,6 +608,44 @@ cmd_fpm_tune() {
     php artisan fpm:tune "$@"
 }
 
+# 开启 CLI opcache（面板常驻进程都是 php-cli：队列 worker / WS / 调度）
+#
+# 发行版默认 opcache.enable_cli=0，每个常驻 worker 各自重新编译整套 Laravel，多占约 30MB。
+# 和 FPM 的并发调优同一处境：老版本升级上来的机器从没配过，所以 update 时以子进程
+# 方式调「刚更新到盘上」的这份脚本里的本函数（bash 启动时已把旧函数读进内存，
+# 直接调函数在老版本升级那一次跑不到，同 __fpm-tune / ensure_nginx_node_ws 的坑）。
+# 必须在 configure_queue_worker 之前跑：worker restart 后才能读到新 ini。
+# php 不可用 / 找不到扫描目录时只提示跳过，不中断更新（纯优化项）。
+cmd_cli_opcache() {
+    if ! command -v php >/dev/null 2>&1; then
+        echo -e "CLI opcache: ${YELLOW}跳过${NC}（php 不可用）"
+        return 0
+    fi
+
+    local scan_dir ini
+    scan_dir=$(php --ini 2>/dev/null | awk -F': ' '/Scan for additional .ini files in/ {print $2; exit}')
+    if [ -z "$scan_dir" ] || [ "$scan_dir" = "(none)" ] || [ ! -d "$scan_dir" ]; then
+        echo -e "CLI opcache: ${YELLOW}跳过${NC}（未找到 php ini 扫描目录）"
+        return 0
+    fi
+
+    ini="${scan_dir}/99-3xui-hub-opcache.ini"
+    cat > "$ini" << 'EOF'
+; 3xui-hub：为 CLI 常驻进程（队列 worker / WS 服务 / 调度）打开 opcache。
+; 发行版默认 opcache.enable_cli=0，每个常驻 worker 都会各自重新编译整套 Laravel，
+; 多占约 30MB 内存并拖慢启动；打开后由 opcache 缓存字节码。
+opcache.enable_cli=1
+opcache.max_accelerated_files=20000
+EOF
+
+    if [ -f "$ini" ]; then
+        echo -e "CLI opcache: ${GREEN}已开启${NC}（${ini}）"
+    else
+        echo -e "CLI opcache: ${YELLOW}写入失败${NC}（${ini}）"
+    fi
+    return 0
+}
+
 # 更新系统
 cmd_update() {
     check_install
@@ -588,7 +669,12 @@ cmd_update() {
     echo -e "${CYAN}检查定时任务...${NC}"
     ensure_artisan_cron || echo -e "${YELLOW}定时任务未就绪，见上方提示${NC}"
 
-    # 配置数据库队列和常驻 Worker
+    # CLI opcache：常驻 worker 重启前必须先落 ini，否则 worker 起来时读到的还是旧配置。
+    # 与 __fpm-tune 同理走子进程调「刚更新到盘上」的脚本，老版本升级第一次也要跑到。
+    echo -e "${CYAN}检查 CLI opcache...${NC}"
+    bash "$INSTALL_DIR/3hub" __cli-opcache
+
+    # 配置数据库队列和常驻 Worker（内部会 restart 各 worker，此时已能读到上面的 opcache ini）
     configure_queue_worker
 
     # xray 节点 WS 长连接服务（自愈安装 + 重启；失败仅告警：agent 会降级 HTTP 通道）
@@ -1145,6 +1231,7 @@ run_cmd() {
         # 逻辑（旧版两处各写一份，更新路径那份没人管，线上丢过条目）。不列进帮助菜单。
         __ensure-cron) ensure_artisan_cron ;;
         __fpm-tune)    shift; cmd_fpm_tune "$@" ;;
+        __cli-opcache) cmd_cli_opcache ;;
         help|--help|-h) show_help ;;
         *)
             echo -e "${RED}未知命令: $CMD${NC}"
@@ -1154,6 +1241,10 @@ run_cmd() {
             ;;
     esac
 }
+
+# 实例数在命令分发前解析一次：status / restart / update / log 都读同一个 NODE_QUEUE_INSTANCES，
+# 覆盖文件或内存一变，全部自动跟随（不再需要手工同步脚本里的常量）。
+NODE_QUEUE_INSTANCES=$(resolve_node_queue_instances)
 
 # 主逻辑
 if [ -n "$1" ]; then

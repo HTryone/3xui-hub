@@ -163,6 +163,32 @@ stop_php_fpm() {
 }
 
 # ------------------------------------------------------------
+# 删除 CLI opcache 增量配置
+# install.sh / 3hub 把 99-3xui-hub-opcache.ini 写进 PHP 的 ini 扫描目录
+# （php --ini 的 "Scan for additional .ini files in"）。卸载时按同一方式探测路径删除；
+# php 不可用 / 找不到扫描目录就跳过（不因这一个文件让卸载失败）。
+# ------------------------------------------------------------
+remove_cli_opcache() {
+    local scan_dir ini
+    if ! command -v php >/dev/null 2>&1; then
+        info "php 不可用，跳过 CLI opcache 配置清理"
+        return 0
+    fi
+    scan_dir=$(php --ini 2>/dev/null | awk -F': ' '/Scan for additional .ini files in/ {print $2; exit}')
+    if [ -z "$scan_dir" ] || [ "$scan_dir" = "(none)" ] || [ ! -d "$scan_dir" ]; then
+        info "未找到 PHP ini 扫描目录，跳过 CLI opcache 配置清理"
+        return 0
+    fi
+    ini="${scan_dir}/99-3xui-hub-opcache.ini"
+    if [ -f "$ini" ]; then
+        info "删除 CLI opcache 配置: $ini"
+        rm -f "$ini"
+        log "已删除 $ini"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------
 # 删除 Nginx 站点配置并重载
 # 只删 3xui-hub 自己的 conf，不动其他网站配置
 # 删完要 reload 让配置生效，否则 Nginx 还会按旧配置转发到已删除的项目
@@ -243,13 +269,21 @@ remove_cron() {
 # ------------------------------------------------------------
 remove_queue_services() {
     info "停止队列 Worker 服务..."
-    local unit
-    # 模板实例的 enable 只写 multi-user.target.wants/ 下的符号链接，
-    # /etc/systemd/system/ 下并不存在 @1.service 文件，所以不看文件在不在，
-    # 直接 stop/disable，服务不存在时由 2>/dev/null || true 兜底
-    for unit in "3xui-hub-queue.service" "3xui-hub-queue-node@1.service" "3xui-hub-queue-node@2.service"; do
+    local unit link inst
+    # default 是固定单元名，直接 stop/disable
+    for unit in "3xui-hub-queue.service"; do
         systemctl stop "$unit" 2>/dev/null || true
         systemctl disable "$unit" 2>/dev/null || true
+    done
+    # node-ops 是模板单元（实例号按内存自适应，可能是 @1 也可能 @1/@2/@3）：
+    # 从 multi-user.target.wants 下的软链枚举实际 enabled 的实例，不写死 1..N，
+    # 否则自适应/人工加过的实例会被漏掉，留着指向已删单元的僵尸软链。
+    for link in /etc/systemd/system/multi-user.target.wants/3xui-hub-queue-node@*.service; do
+        [ -e "$link" ] || continue
+        inst="${link##*/3xui-hub-queue-node@}"
+        inst="${inst%.service}"
+        systemctl stop "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
+        systemctl disable "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
     done
     # 单元文件本体（模板单元只有一份）
     rm -f /etc/systemd/system/3xui-hub-queue.service 2>/dev/null || true
@@ -489,6 +523,10 @@ remove_composer() {
 # ------------------------------------------------------------
 cleanup_tmp() {
     info "清理临时文件..."
+    # node-ops 实例覆盖文件（install.sh / 3hub 读它决定开几个 worker）：面板卸载后不再有意义。
+    # 先删文件，目录为空（不只剩别的东西）时一并删掉 /etc/3xui-hub。
+    rm -f /etc/3xui-hub/node-queue-instances 2>/dev/null
+    rmdir /etc/3xui-hub 2>/dev/null || true
     rm -f /tmp/3xui-hub-install.log 2>/dev/null   # 安装日志
     rm -f /tmp/test1.sql /tmp/test2.sql 2>/dev/null  # 调试时手动跑 mysqldump 留下的
     rm -f /tmp/mysql-apt-config*.deb 2>/dev/null   # MySQL APT 配置包残留
@@ -543,11 +581,12 @@ do_uninstall() {
 
     # === 所有模式都执行的基础清理 ===
     stop_php_fpm         # 1. 停 PHP-FPM，释放项目文件占用
-    remove_queue_services # 2. 停并删队列 Worker 服务（先于删目录，避免僵尸服务）
-    remove_nginx_conf    # 3. 删 Nginx 站点配置 + reload
-    remove_hub_bin       # 4. 删 /usr/local/bin/3hub 命令
-    remove_cron          # 5. 清理 cron 定时任务
-    remove_project       # 6. 删 /www/wwwroot/3xui-hub 项目目录
+    remove_cli_opcache   # 2. 删 CLI opcache 增量 ini（php 可用时才探测）
+    remove_queue_services # 3. 停并删队列 Worker 服务（先于删目录，避免僵尸服务）
+    remove_nginx_conf    # 4. 删 Nginx 站点配置 + reload
+    remove_hub_bin       # 5. 删 /usr/local/bin/3hub 命令
+    remove_cron          # 6. 清理 cron 定时任务
+    remove_project       # 7. 删 /www/wwwroot/3xui-hub 项目目录
 
     # === --app / --all：额外删数据库 ===
     if [ "$MODE" = "app" ] || [ "$MODE" = "all" ]; then

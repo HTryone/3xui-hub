@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 | 队列 | 跑什么 | Worker |
 |------|--------|--------|
 | `default` | 定时任务类：封禁检查、健康检查、流量同步 | `3xui-hub-queue.service` |
-| `node-ops` | 节点类：新建节点初始化、节点 inbound 扫描/同步、客户端清理 | `3xui-hub-queue-node@1/@2.service` |
+| `node-ops` | 节点类：新建节点初始化、节点 inbound 扫描/同步、客户端清理 | `3xui-hub-queue-node@.service`（实例按内存自适应，默认 1~2 个） |
 | `mail` | 邮件类：自动通知、批量群发、每月定时发信 | `3xui-hub-queue-mail.service` |
 
 ### 为什么要多条队列
@@ -67,25 +67,54 @@ worker 侧由 `queue:work --queue=node-ops` / `--queue=mail` 决定，**两边�
 
 ### 调整 worker 数量
 
-默认 2 个 node-ops 实例，`mail` 固定 1 个（发信是 IO 等待型，一条 worker 的吞吐已超过
-常见 SMTP 服务商的限速，多开只会互相抢同一个发信账号）。加减 node-ops 实例
-（模板单元，不用改单元文件）：
+node-ops 实例数**按机器内存自适应**，不需要手动数并发：
+
+| 内存 (MemTotal) | node-ops 实例 |
+|-----------------|---------------|
+| < 1024MB        | 1             |
+| ≥ 1024MB        | 2             |
+
+`mail` 固定 1 个（发信是 IO 等待型，一条 worker 的吞吐已超过常见 SMTP 服务商的限速，
+多开只会互相抢同一个发信账号）。
+
+要显式指定实例（内存够但就想省一个进程，或反过来加到 3 个），写覆盖文件
+`/etc/3xui-hub/node-queue-instances`，内容是空格分隔的实例号：
 
 ```bash
-# 加到 3 个
-systemctl enable --now 3xui-hub-queue-node@3.service
-# 减到 1 个
-systemctl disable --now 3xui-hub-queue-node@2.service
-# 看状态（「节点 Worker」一行会显示 运行中（node-ops，2/2））
-3hub status
+# 只开 1 个
+mkdir -p /etc/3xui-hub && echo 1 > /etc/3xui-hub/node-queue-instances
+# 开 3 个
+echo "1 2 3" > /etc/3xui-hub/node-queue-instances
+# 删掉覆盖文件 → 回到按内存自适应
+rm -f /etc/3xui-hub/node-queue-instances
 ```
 
-注意 `3hub` 的 status/restart/update 只认脚本里 `NODE_QUEUE_INSTANCES`（默认 `"1 2"`）
-列出的实例。要让它们也认新实例，同步改这个变量 —— 但 `3hub update` 会用仓库里的版本
-覆盖 `/usr/local/bin/3hub`，所以正式做法是改仓库里的 `3hub` 后随版本一起发布。
+写好后运行一次 `3hub update`（或重跑 `install.sh`）即生效：脚本会 enable 名单里的实例，
+并把「已 enabled 但不在名单里」的实例 `systemctl disable --now` **收敛**掉 —— 老机器
+升级后从 2 个减到 1 个时，残留的 `@2` 就是这个路径停掉的（不会继续白占内存）。
+`3hub status` 的「节点 Worker」一行按实际实例数显示，例如 `运行中（node-ops，1/1）`。
 
 Docker 部署改 `docker/supervisord.conf`：照着加一段 `[program:queue-node-3]`，
 或者把 `queue-node-2` 整段删掉只留一个。
+
+### 小内存机器（< 1GB）默认已按内存收敛
+
+1 核 / 937MB 这类机器装完不用手动做任何事，三处默认值都已朝省内存调整：
+
+- **node-ops 实例自适应**：MemTotal < 1024MB 时只开 1 个 node-ops worker（否则 2 个），
+  少一个常驻进程约省 40~80MB。老机器升级上来若之前是 2 个，会被自动收敛到 1 个。
+- **php-fpm 并发下限已修正**：面板的 `pm.max_children` 推荐值不再被死抬到 10。下限 = 
+  `min(10, 按内存算, 按核数算)`、最低 2 —— 1 核/937MB 算出 4，避免 10×50MB≈450MB 把
+  MySQL 挤到 OOM。可用 `php artisan fpm:tune` 查看/应用。
+- **CLI opcache 已默认开**：安装/更新时给 php-cli 写 `99-3xui-hub-opcache.ini`
+  （`opcache.enable_cli=1`），常驻 worker / 调度不再各自重新编译整套 Laravel，
+  每个进程约省 30MB。
+
+想再挤出内存，可以把邮件任务退回 default 队列，省掉一个常驻 worker（**约 60MB**）：
+在 `backend/.env` 里把 `PANEL_MAIL_QUEUE=mail` 改成 `PANEL_MAIL_QUEUE=default`（或删掉该行），
+然后 `systemctl disable --now 3xui-hub-queue-mail.service`。代价是邮件（尤其群发）会回到
+default 队列 —— 一次大群发期间，封禁/健康检查这类 5 分钟定时任务可能排队延迟，
+用「省内存」换「定时任务及时性」，小机器上通常值得。
 
 ### 注意：并发要顾着面板本身的承载
 
@@ -194,7 +223,7 @@ server {
 节点类任务（新建节点初始化、节点扫描等）走独立队列 `node-ops`，先确认 worker 在跑：
 
 ```bash
-3hub status        # 「节点 Worker」应为 运行中（node-ops，2/2）
+3hub status        # 「节点 Worker」应为 运行中（node-ops，1/1 或 2/2，按内存自适应）
 3hub log           # 含 worker 的 systemd journal，看有没有 OOM kill / 反复重启
 ```
 

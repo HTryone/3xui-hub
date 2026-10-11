@@ -54,7 +54,7 @@ class PhpFpmTuner
     }
 
     /**
-     * 推荐 max_children：内存×ratio÷单进程MB 与 核数×倍率 取小，夹到 [min,max]。
+     * 推荐 max_children：内存×ratio÷单进程MB 与 核数×倍率 取小，夹到 [floor,max]。
      *
      * 两个来源都可能读不到（容器/异常环境）：0 表示「未知」，未知的一方不参与取小。
      */
@@ -72,7 +72,23 @@ class PhpFpmTuner
             $value = $byCpu;
         }
 
-        return max((int) $cfg['min_children'], min((int) $cfg['max_children'], $value));
+        // 下限不能只认 min_children：小机器（1 核/937MB）byMem/byCpu 算下来只有个位数，
+        // 直接抬到 min_children(10) 会占掉 ~450MB（10×50MB），把 MySQL 挤到 OOM。
+        // 下限必须同样受安全容量约束，取「min_children 与已知的 byMem/byCpu 三者中的最小值」，
+        // 最低兜到 2（php-fpm 起得来的最小可用并发）。两端都读不到（byMem=byCpu=0）时
+        // 退化为 min_children —— 全未知就按默认值走，与旧行为一致。
+        $floor = (int) $cfg['min_children'];
+        if ($byMem > 0 && $byMem < $floor) {
+            $floor = $byMem;
+        }
+        if ($byCpu > 0 && $byCpu < $floor) {
+            $floor = $byCpu;
+        }
+        if ($floor < 2) {
+            $floor = 2;
+        }
+
+        return max($floor, min((int) $cfg['max_children'], $value));
     }
 
     /** pm = dynamic 下各档位（必须一起改：max_spare_servers > max_children 会让 php-fpm 起不来）。 */

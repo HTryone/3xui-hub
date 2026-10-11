@@ -64,8 +64,11 @@ return [
      | 用途：`php artisan fpm:tune`（已装机器一键调，不重装）+ install.sh 的 tune_php_fpm（新装机器）。
      | 发行版默认 www.conf 是 pm.max_children=5，面板一有并发就排队，是用户量上来后第一个卡的环节。
      |
-     | 公式：内存 × memory_ratio ÷ process_memory_mb，与 核数 × cpu_multiplier 取小，夹到 [min,max]。
+     | 公式：内存 × memory_ratio ÷ process_memory_mb，与 核数 × cpu_multiplier 取小，夹到 [floor,max]。
      | 单进程内存用固定估值：安装时 php-fpm 刚起来量不到真实 RSS，且这个值只用于定一个安全起点。
+     | floor = min(min_children, 已知的 byMem/byCpu)，最低 2 —— 小机器（1 核/937MB）按容量只该开
+     | 4 个，若硬抬到 min_children(10) 会占 ~450MB 把 MySQL 挤到 OOM；两端都读不到时才回落到
+     | min_children。
      |
      | ⚠️ install.sh 里有一份等价的 shell 实现（安装早期 artisan 还不可用），改公式时两边一起改。
      */

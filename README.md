@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.25.0**
+**版本：1.25.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -156,6 +156,14 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.25.1 (2026-10-12)
+
+- 小内存机器（1 核 / 1GB 档）开箱即适配，无需手动调优：
+  - 节点任务 Worker 数量按内存自适应：小于 1GB 的机器只开 1 个（省约 40~80MB），老机器升级后自动收敛
+  - php-fpm 并发推荐值不再被硬性抬到 10：1 核小机器按实际容量推荐 4，避免极端占用把数据库挤爆
+  - 常驻进程默认开启 opcache 共享缓存（每个进程约省 30MB）
+- 更多说明见 INSTALL.md「小内存机器」一节
+
 ### v1.25.0 (2026-10-11)
 
 - 仪表盘改版：新增节点监控 —— 3D 地球（拖拽旋转、点击地区定位）、实时 CPU / 内存 / 连接数 / 上下行曲线、节点卡片网格
@@ -262,7 +270,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.25.0**
+**Version: 1.25.1**
 
 ## Quick Install
 
@@ -318,7 +326,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.25.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.25.1-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

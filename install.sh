@@ -155,7 +155,8 @@ detect_fpm_target() {
 # 请求就直接排队，这是用户量上来后第一个卡的环节。Docker 版 www.conf 里显式写了 50。
 #
 # 公式与后端 `php artisan fpm:tune` 保持一致：内存×50% ÷ 单进程 50MB，再与 核数×4 取小，
-# 夹到 10~100。改前备份，语法校验不过或 reload 失败立即回滚 —— 改错会让面板自己都打不开。
+# 夹到 floor~100，其中 floor = min(10, byMem, byCpu) 最低 2（小机器按容量定，不被硬抬到 10）。
+# 改前备份，语法校验不过或 reload 失败立即回滚 —— 改错会让面板自己都打不开。
 tune_php_fpm() {
     local conf="${1:-}" service="${2:-php-fpm}"
 
@@ -165,14 +166,21 @@ tune_php_fpm() {
     fi
 
     # 单进程估算 50MB：安装时 php-fpm 刚起来量不到真实 RSS，用固定估值（与后端默认一致）
-    local mem_mb cpus by_mem by_cpu children
+    local mem_mb cpus by_mem by_cpu children floor
     mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     cpus=$(nproc 2>/dev/null || echo 1)
     by_mem=$(( mem_mb / 2 / 50 ))
     by_cpu=$(( cpus * 4 ))
     children=$by_mem
     if [ "$by_cpu" -lt "$children" ]; then children=$by_cpu; fi
-    if [ "$children" -lt 10 ]; then children=10; fi
+    # 下限 floor = min(min_children=10, byMem, byCpu)，最低 2 —— 与后端 recommend() 同一规则。
+    # 小机器（1 核/937MB）byMem/byCpu 只有个位数，硬抬到 10 会占 ~450MB 把 MySQL 挤到 OOM。
+    # 值为 0 表示该项读不到 → 不参与取小（两端都读不到时 floor 保持 10，与旧行为一致）。
+    floor=10
+    if [ "$by_mem" -gt 0 ] && [ "$by_mem" -lt "$floor" ]; then floor=$by_mem; fi
+    if [ "$by_cpu" -gt 0 ] && [ "$by_cpu" -lt "$floor" ]; then floor=$by_cpu; fi
+    if [ "$floor" -lt 2 ]; then floor=2; fi
+    if [ "$children" -lt "$floor" ]; then children=$floor; fi
     if [ "$children" -gt 100 ]; then children=100; fi
 
     local start min_spare max_spare
@@ -226,6 +234,47 @@ tune_php_fpm() {
 
     # 只保留最近 3 份备份，避免反复执行 install/update 时无限堆积
     ls -1t "${conf}".bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f 2>/dev/null || true
+
+    return 0
+}
+
+# 开启 CLI opcache
+#
+# 为什么需要：面板的常驻进程（队列 worker / WS 服务 / 调度）都是 php-cli 跑的，
+# 而发行版默认 CLI 的 opcache 是 Off（`opcache.enable_cli=0`）—— 每个常驻 worker
+# 都会在启动时各自把整套 Laravel 重新编译一遍，占内存也拖启动。给 CLI 打开 opcache 后，
+# 每个进程常驻省下约 30MB，小内存机器上收益明显。
+#
+# 和 FPM 一样，CLI 的增量 ini 也放在「扫描目录」（php --ini 的
+# "Scan for additional .ini files in"）。目录读不到 / 为 (none) / php 不可用时只告警跳过，
+# 绝不中断安装 —— 这只是个优化，装不上面板也得能装。
+setup_cli_opcache() {
+    if ! command -v php >/dev/null 2>&1; then
+        warn "php 不可用，跳过 CLI opcache 配置"
+        return 0
+    fi
+
+    local scan_dir
+    scan_dir=$(php --ini 2>/dev/null | awk -F': ' '/Scan for additional .ini files in/ {print $2; exit}')
+    if [ -z "$scan_dir" ] || [ "$scan_dir" = "(none)" ] || [ ! -d "$scan_dir" ]; then
+        warn "未找到 PHP 的 ini 扫描目录（php --ini），跳过 CLI opcache 配置"
+        return 0
+    fi
+
+    local ini="${scan_dir}/99-3xui-hub-opcache.ini"
+    cat > "$ini" << 'EOF'
+; 3xui-hub：为 CLI 常驻进程（队列 worker / WS 服务 / 调度）打开 opcache。
+; 发行版默认 opcache.enable_cli=0，每个常驻 worker 都会各自重新编译整套 Laravel，
+; 多占约 30MB 内存并拖慢启动；打开后由 opcache 缓存字节码。
+opcache.enable_cli=1
+opcache.max_accelerated_files=20000
+EOF
+
+    if [ -f "$ini" ]; then
+        success "CLI opcache 已开启（${ini}）"
+    else
+        warn "写入 ${ini} 失败，跳过 CLI opcache 配置"
+    fi
 
     return 0
 }
@@ -333,6 +382,9 @@ install_php() {
         detect_fpm_target   # 兜底探测：兼容重跑安装 / 其它发行版布局
     fi
     tune_php_fpm "${FPM_CONF:-}" "${FPM_SERVICE:-php-fpm}"
+
+    # CLI opcache（与 fpm 调优并列：都改 PHP 运行参数，且都在 PHP 装好后）
+    setup_cli_opcache
 
     # 配置 PHP（禁用 putenv）
     PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')
@@ -848,7 +900,54 @@ EOF
     success "后台任务 Worker 已启动"
 }
 
-# 配置节点任务专用队列 Worker（node-ops，2 实例）
+# ── node-ops worker 实例数：自适应小机器 ────────────────────────────────
+#
+# 实例数按机器内存自适应，而不是写死 2 个：
+#   1 核 / 937MB 这类小机器上，每个常驻 PHP worker ≈ 40~80MB，两个 node-ops worker
+#   再加 default / mail / WS 很容易把 MySQL 挤到 OOM。规则：MemTotal < 1024MB → 1 个实例，
+#   否则 2 个。管理员可用覆盖文件 /etc/3xui-hub/node-queue-instances 显式指定（空格分隔）。
+#
+# 纯函数（入参 mem_mb，只回显实例列表）便于脚本级单独测试 —— 不读任何环境。
+node_instance_count_for_mem() {
+    local mem_mb="${1:-0}"
+    if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
+        echo "1"
+    else
+        echo "1 2"
+    fi
+}
+
+# node-ops 实例的单元目录（软链来源）与覆盖文件路径，集中成常量便于测试/复用
+NODE_QUEUE_UNIT_DIR="/etc/systemd/system/multi-user.target.wants"
+NODE_QUEUE_INSTANCES_FILE="/etc/3xui-hub/node-queue-instances"
+
+# 解析本机该开几个 node-ops 实例：覆盖文件优先（须含数字，空格分隔），否则按 MemTotal 自适应
+resolve_node_queue_instances() {
+    local mem_mb
+    if [ -f "$NODE_QUEUE_INSTANCES_FILE" ] && grep -q '[0-9]' "$NODE_QUEUE_INSTANCES_FILE" 2>/dev/null; then
+        tr -s ' \t\n' ' ' < "$NODE_QUEUE_INSTANCES_FILE" | sed -e 's/^ *//' -e 's/ *$//'
+        return 0
+    fi
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    node_instance_count_for_mem "$mem_mb"
+}
+
+# 关闭「已 enabled 但不在名单内」的 node-ops 实例（老 937MB 机器升级后 2→1，残留 @2 必须停掉）。
+# 来源是 multi-user.target.wants 下的软链，不写死 1..N —— 人工 enable 过 @3 也能被收敛。
+converge_node_queue_instances() {
+    local keep="$1" link inst i
+    for link in "$NODE_QUEUE_UNIT_DIR"/3xui-hub-queue-node@*.service; do
+        [ -e "$link" ] || continue
+        inst="${link##*/3xui-hub-queue-node@}"
+        inst="${inst%.service}"
+        for i in $keep; do
+            [ "$i" = "$inst" ] && continue 2
+        done
+        systemctl disable --now "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
+    done
+}
+
+# 配置节点任务专用队列 Worker（node-ops，实例数自适应）
 #
 # 为什么要有第二条队列：
 #   一条 `queue:work` 进程同一时刻只跑一个 Job（单线程）。节点任务（如新建节点初始化，
@@ -905,12 +1004,21 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
+    # 实例数自适应：覆盖文件 /etc/3xui-hub/node-queue-instances 优先（含数字则以其为准），
+    # 否则按 MemTotal（<1024MB → 1 个，否则 2 个）。小机器上少开一个 = 少占 ~40~80MB。
+    local NODE_QUEUE_INSTANCES i
+    NODE_QUEUE_INSTANCES=$(resolve_node_queue_instances)
+
     # enable --now 失败不在这里中断：交给下面第 3 步自检统一报错。
     # 本脚本是 set -e，让 enable 自己失败会变成一句没有上下文的退出，
     # 而 error_exit 会带上系统信息、日志尾巴和可复制给开发者的报告。
-    for i in 1 2; do
+    for i in $NODE_QUEUE_INSTANCES; do
         systemctl enable --now "3xui-hub-queue-node@${i}.service" || true
     done
+
+    # 收敛：关掉「已 enabled 但不在本次名单内」的实例 —— 老 937MB 机器升级上来时
+    # 上一次安装 enable 过 @2，本次自适应只留 @1，@2 若不停会继续占内存（本改动核心目的）。
+    converge_node_queue_instances "$NODE_QUEUE_INSTANCES"
 
     # ---------- 3. 启动后自检 ----------
     # 为什么必须自检：.env 里开了 PANEL_NODE_OPS_QUEUE=node-ops、但没有 worker 监听
@@ -919,13 +1027,15 @@ EOF
     # 所以「两边都到位」才算装好，这里检查不过就直接中断安装，而不是留下一个静默坏掉的面板。
     # active 和 enabled 都要查：active 只证明「现在在跑」，enabled 才保证重启后还在
     #（enable 失败但被 --now 拉起来的边界情况，只查 active 会漏过去）。
-    for i in 1 2; do
+    for i in $NODE_QUEUE_INSTANCES; do
         systemctl is-active --quiet "3xui-hub-queue-node@${i}.service" || \
             error_exit "节点任务 Worker (实例 ${i}) 未在运行，请查看: systemctl status 3xui-hub-queue-node@${i}.service"
         systemctl is-enabled --quiet "3xui-hub-queue-node@${i}.service" || \
             error_exit "节点任务 Worker (实例 ${i}) 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-node@${i}.service"
     done
-    success "节点任务 Worker 已启动（node-ops 队列，2 实例）"
+    local INSTANCE_COUNT=0
+    for i in $NODE_QUEUE_INSTANCES; do INSTANCE_COUNT=$((INSTANCE_COUNT + 1)); done
+    success "节点任务 Worker 已启动（node-ops 队列，${INSTANCE_COUNT} 实例：${NODE_QUEUE_INSTANCES}）"
 }
 
 # 配置邮件专用队列 Worker（mail，1 实例）
