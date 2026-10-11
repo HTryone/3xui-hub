@@ -7,6 +7,7 @@ use App\Models\Node;
 use App\Services\ThreeXUi\ThreeXUiClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
+use Illuminate\Database\QueryException;
 
 /**
  * 节点健康检查服务（M9）。
@@ -36,7 +37,13 @@ class HealthCheckService
         }
 
         $ok = (bool) $health['ok'];
-        $this->apply($node, $ok ? 'online' : 'offline', (int) ($health['latencyMs'] ?? 0));
+        $this->apply(
+            $node,
+            $ok ? 'online' : 'offline',
+            (int) ($health['latencyMs'] ?? 0),
+            $this->metric($health, 'cpu'),
+            $this->metric($health, 'mem'),
+        );
 
         return [
             'ok' => $ok,
@@ -176,7 +183,7 @@ class HealthCheckService
         $ok = (bool) ($health['ok'] ?? false);
         $latency = (int) ($health['latencyMs'] ?? 0);
 
-        $this->apply($node, $ok ? 'online' : 'offline', $latency);
+        $this->apply($node, $ok ? 'online' : 'offline', $latency, $this->metric($health, 'cpu'), $this->metric($health, 'mem'));
 
         $result = ['ok' => $ok, 'status' => $ok ? 'online' : 'offline', 'latency' => $latency];
 
@@ -220,19 +227,46 @@ class HealthCheckService
         }
     }
 
-    private function apply(Node $node, string $status, int $latency): void
+    /**
+     * 从 healthCheck() 的返回值里取一个数值指标，非数值一律当「无数据」。
+     * 3x-ui 的 /server/status 返回的是字符串数字，xray 驱动压根不返回 cpu/mem。
+     */
+    private function metric(?array $health, string $key): ?float
+    {
+        $value = $health[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    private function apply(Node $node, string $status, int $latency, ?float $cpu = null, ?float $mem = null): void
     {
         $fields = [
             'status' => $status,
             'latency' => $latency,
         ];
 
-        // xray 节点的 last_check_at 是 agent 心跳时间（/node-api/alive 维护）；
-        // 健康检查只翻 status，绝不覆盖心跳时间，否则「心跳新鲜度」判定会失真。
+        // 3x-ui 面板节点：顺手把这次 /server/status 已经返回的 cpu/mem 存下来（仪表盘监控用）。
+        // xray 节点不走这里 —— 它没有面板请求，cpu/mem 由 agent 每 5 秒上报、存在
+        // driver_config.agent 里；而且它的 last_check_at 是 agent 心跳时间（/node-api/alive
+        // 维护），健康检查只翻 status，绝不覆盖心跳时间，否则「心跳新鲜度」判定会失真。
         if (! $node->isXray()) {
+            $fields['cpu'] = $cpu;
+            $fields['mem'] = $mem;
             $fields['last_check_at'] = now();
         }
 
-        $node->forceFill($fields)->save();
+        try {
+            $node->forceFill($fields)->save();
+        } catch (QueryException $e) {
+            // cpu/mem 是这一轮才加的列。升级路径是「先落代码、再跑迁移」（3hub update 里
+            // git reset --hard 在 migrate 之前），中间那几十秒里 php-fpm 已经在跑新代码、
+            // 库里却还没有这两列 —— 老库从备份还原但没跑迁移也是同一现场。
+            // 指标是附加信息，不能因为它让整轮健康检查（状态 / 延迟）失败：去掉这两列再写一次。
+            // 注意模型属性也要摘 —— 第一次 forceFill 已经把它们填进 attributes 了，
+            // 只清本地数组的话第二次 save 照样会把这两列带上（踩过）。
+            unset($fields['cpu'], $fields['mem']);
+            unset($node->cpu, $node->mem);
+            $node->forceFill($fields)->save();
+        }
     }
 }

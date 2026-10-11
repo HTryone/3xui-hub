@@ -16,6 +16,7 @@ use App\Http\Controllers\Admin\SyncTrafficController as AdminSyncTrafficControll
 use App\Http\Controllers\Admin\ThirdPartyController as AdminThirdPartyController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Admin\SiteSettingController as AdminSiteSettingController;
+use App\Http\Controllers\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Admin\SubscriptionSettingController as AdminSubscriptionSettingController;
 use App\Http\Controllers\Admin\SystemStatusController as AdminSystemStatusController;
 use App\Http\Controllers\Admin\TutorialController as AdminTutorialController;
@@ -129,6 +130,9 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
 
     // 订单管理
     Route::get('/orders', [AdminOrderController::class, 'index']);
+
+    // 仪表盘统计（成交额）
+    Route::get('/stats/revenue', [AdminStatsController::class, 'revenue']);
 
     // 流量同步
     Route::post('/sync-traffic', [AdminSyncTrafficController::class, 'sync']);

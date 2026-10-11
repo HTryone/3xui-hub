@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.24.1**
+**版本：1.25.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -156,6 +156,13 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.25.0 (2026-10-11)
+
+- 仪表盘改版：新增节点监控 —— 3D 地球（拖拽旋转、点击地区定位）、实时 CPU / 内存 / 连接数 / 上下行曲线、节点卡片网格
+- 业务概览新增「今日成交额」（按北京时间日界统计已支付订单）
+- 修复订阅节点名的地区识别误判（如 Australia 被识别成美国、Netherlands 被识别成泰国）
+- 节点列表接口查询优化（仪表盘 5 秒轮询开销显著下降）
+
 ### v1.24.1 (2026-10-11)
 
 - 修复节点 config 接口的 ETag 协商：经 CDN 压缩后弱 ETag（W/"…"）永不命中 304，agent 每 30 秒误判「配置已更新」重启内核
@@ -255,7 +262,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.24.1**
+**Version: 1.25.0**
 
 ## Quick Install
 
@@ -311,7 +318,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.24.1-blue
+[version-shield]: https://img.shields.io/badge/version-1.25.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

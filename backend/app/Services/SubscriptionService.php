@@ -6,6 +6,7 @@ use App\Drivers\NodeDriverFactory;
 use App\Models\Node;
 use App\Models\SiteConfig;
 use App\Models\User;
+use App\Support\NodeRegion;
 use App\Services\ThreeXUi\ThreeXUiClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
@@ -1020,93 +1021,20 @@ class SubscriptionService
      */
     private function addFlagToName(string $name, array &$regionCounters): string
     {
-        // 地区关键词到旗帜和简称的映射
-        $regionMap = [
-            '香港' => ['flag' => '🇭🇰', 'code' => 'HK'],
-            'HK' => ['flag' => '🇭🇰', 'code' => 'HK'],
-            'Hong Kong' => ['flag' => '🇭🇰', 'code' => 'HK'],
-            '台湾' => ['flag' => '🇹🇼', 'code' => 'TW'],
-            'TW' => ['flag' => '🇹🇼', 'code' => 'TW'],
-            'Taiwan' => ['flag' => '🇹🇼', 'code' => 'TW'],
-            '日本' => ['flag' => '🇯🇵', 'code' => 'JP'],
-            'JP' => ['flag' => '🇯🇵', 'code' => 'JP'],
-            'Japan' => ['flag' => '🇯🇵', 'code' => 'JP'],
-            '韩国' => ['flag' => '🇰🇷', 'code' => 'KR'],
-            'KR' => ['flag' => '🇰🇷', 'code' => 'KR'],
-            'Korea' => ['flag' => '🇰🇷', 'code' => 'KR'],
-            '新加坡' => ['flag' => '🇸🇬', 'code' => 'SG'],
-            'SG' => ['flag' => '🇸🇬', 'code' => 'SG'],
-            'Singapore' => ['flag' => '🇸🇬', 'code' => 'SG'],
-            '美国' => ['flag' => '🇺🇸', 'code' => 'US'],
-            'US' => ['flag' => '🇺🇸', 'code' => 'US'],
-            'USA' => ['flag' => '🇺🇸', 'code' => 'US'],
-            'America' => ['flag' => '🇺🇸', 'code' => 'US'],
-            '英国' => ['flag' => '🇬🇧', 'code' => 'UK'],
-            'UK' => ['flag' => '🇬🇧', 'code' => 'UK'],
-            'Britain' => ['flag' => '🇬🇧', 'code' => 'UK'],
-            '德国' => ['flag' => '🇩🇪', 'code' => 'DE'],
-            'DE' => ['flag' => '🇩🇪', 'code' => 'DE'],
-            'Germany' => ['flag' => '🇩🇪', 'code' => 'DE'],
-            '法国' => ['flag' => '🇫🇷', 'code' => 'FR'],
-            'FR' => ['flag' => '🇫🇷', 'code' => 'FR'],
-            'France' => ['flag' => '🇫🇷', 'code' => 'FR'],
-            '加拿大' => ['flag' => '🇨🇦', 'code' => 'CA'],
-            'CA' => ['flag' => '🇨🇦', 'code' => 'CA'],
-            'Canada' => ['flag' => '🇨🇦', 'code' => 'CA'],
-            '澳大利亚' => ['flag' => '🇦🇺', 'code' => 'AU'],
-            'AU' => ['flag' => '🇦🇺', 'code' => 'AU'],
-            'Australia' => ['flag' => '🇦🇺', 'code' => 'AU'],
-            '印度' => ['flag' => '🇮🇳', 'code' => 'IN'],
-            'IN' => ['flag' => '🇮🇳', 'code' => 'IN'],
-            'India' => ['flag' => '🇮🇳', 'code' => 'IN'],
-            '泰国' => ['flag' => '🇹🇭', 'code' => 'TH'],
-            'TH' => ['flag' => '🇹🇭', 'code' => 'TH'],
-            'Thailand' => ['flag' => '🇹🇭', 'code' => 'TH'],
-            '马来西亚' => ['flag' => '🇲🇾', 'code' => 'MY'],
-            'MY' => ['flag' => '🇲🇾', 'code' => 'MY'],
-            'Malaysia' => ['flag' => '🇲🇾', 'code' => 'MY'],
-            '越南' => ['flag' => '🇻🇳', 'code' => 'VN'],
-            'VN' => ['flag' => '🇻🇳', 'code' => 'VN'],
-            'Vietnam' => ['flag' => '🇻🇳', 'code' => 'VN'],
-            '俄罗斯' => ['flag' => '🇷🇺', 'code' => 'RU'],
-            'RU' => ['flag' => '🇷🇺', 'code' => 'RU'],
-            'Russia' => ['flag' => '🇷🇺', 'code' => 'RU'],
-            '巴西' => ['flag' => '🇧🇷', 'code' => 'BR'],
-            'BR' => ['flag' => '🇧🇷', 'code' => 'BR'],
-            'Brazil' => ['flag' => '🇧🇷', 'code' => 'BR'],
-            '土耳其' => ['flag' => '🇹🇷', 'code' => 'TR'],
-            'TR' => ['flag' => '🇹🇷', 'code' => 'TR'],
-            'Turkey' => ['flag' => '🇹🇷', 'code' => 'TR'],
-            '荷兰' => ['flag' => '🇳🇱', 'code' => 'NL'],
-            'NL' => ['flag' => '🇳🇱', 'code' => 'NL'],
-            'Netherlands' => ['flag' => '🇳🇱', 'code' => 'NL'],
-            '中国' => ['flag' => '🇨🇳', 'code' => 'CN'],
-            'CN' => ['flag' => '🇨🇳', 'code' => 'CN'],
-            'China' => ['flag' => '🇨🇳', 'code' => 'CN'],
-        ];
-
         // 检查名称是否已经有旗帜，如果有则移除后再处理
         if (preg_match('/[\x{1F1E0}-\x{1F1FF}]{2}/u', $name)) {
             // 移除已有的旗帜emoji
             $name = preg_replace('/[\x{1F1E0}-\x{1F1FF}]{2}\s*/u', '', $name);
         }
 
-        // 根据关键词识别地区
-        $upperName = strtoupper($name);
-        $region = null;
-        foreach ($regionMap as $keyword => $info) {
-            if (stripos($upperName, strtoupper($keyword)) !== false) {
-                $region = $info;
-                break;
-            }
-        }
-
-        if (!$region) {
+        // 地区关键词映射统一放在 App\Support\NodeRegion：仪表盘的地球用同一套判定，
+        // 避免两份表各自漂移（订阅显示 HK、地球上却点不出来）。
+        $regionCode = NodeRegion::code($name);
+        if ($regionCode === null) {
             return $name;
         }
 
         // 按地区计数
-        $regionCode = $region['code'];
         if (!isset($regionCounters[$regionCode])) {
             $regionCounters[$regionCode] = 0;
         }
@@ -1114,7 +1042,7 @@ class SubscriptionService
         $number = str_pad($regionCounters[$regionCode], 2, '0', STR_PAD_LEFT);
 
         // 组合为"旗帜+地区+编号"格式
-        return $region['flag'] . ' ' . $region['code'] . $number;
+        return NodeRegion::flag($regionCode) . ' ' . $regionCode . $number;
     }
 
     /**

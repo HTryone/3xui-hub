@@ -16,6 +16,15 @@ return [
     // ca-certificates.crt 等），可用 env 覆盖；指向的文件不存在则自动回退系统校验。
     'third_party_ca_bundle' => env('PANEL_THIRD_PARTY_CA_BUNDLE', ''),
 
+    /*
+     | 「今日成交额」的日界时区。
+     |
+     | 订单的 paid_at 按 app.timezone 存（默认 UTC），但「今天」是给人看的日界：
+     | 用 UTC 日界会把北京时间 0:00–8:00 的订单算到前一天。默认按东八区切，
+     | 部署在别的时区可用 env 覆盖。
+     */
+    'business_timezone' => env('PANEL_BUSINESS_TIMEZONE', 'Asia/Shanghai'),
+
     // 常规 API 请求总超时（ThreeXUiClient 构造 Guzzle 客户端时的默认值）
     'api_timeout' => (float) env('PANEL_API_TIMEOUT', 15),
 

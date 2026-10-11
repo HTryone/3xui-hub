@@ -14,6 +14,7 @@ use App\Services\NodeInboundSyncService;
 use App\Services\TrafficSyncService;
 use App\Services\NodeInitService;
 use App\Services\ThreeXUi\ThreeXUiClient;
+use App\Support\NodeRegion;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -41,7 +42,9 @@ class NodeController extends Controller
      */
     public function index(Request $request): \Illuminate\Http\JsonResponse
     {
-        $query = Node::orderByDesc('id');
+        // 预加载 present() 要用的关联：不预加载时每个节点都会各自查一次
+        // （all=1 被仪表盘每 5 秒轮询一次，N+1 会随节点数线性放大）
+        $query = Node::with(['inbounds', 'xrayInbounds'])->orderByDesc('id');
 
         if ($request->boolean('all')) {
             return $this->success($query->get()->map(fn (Node $n) => $this->present($n))->values());
@@ -486,6 +489,64 @@ class NodeController extends Controller
         return $changed === [] ? null : $this->inboundSync->submit($node, $changed);
     }
 
+    /**
+     * 节点运行指标（仪表盘监控用）：两种驱动统一成一个形状，前端不按驱动分支。
+     *   cpu / mem / conns / active_users / up_speed / down_speed / at
+     *
+     * - xray 裸内核节点：来自 agent 上报（driver_config.agent），5 秒一轮，字段齐全。
+     * - 3x-ui 面板节点：来自 HealthCheckJob 每 5 分钟一次 /server/status，只有 cpu/mem；
+     *   面板 API 不提供连接数/上下行，这些字段为 null；at 取 last_check_at。
+     *
+     * 一个数据都没有时返回 null —— 前端按「暂无数据」处理，不要把 null 渲染成 0。
+     */
+    private function presentMetrics(Node $n): ?array
+    {
+        if ($n->isXray()) {
+            $agent = ($n->driver_config ?? [])['agent'] ?? null;
+            if (! is_array($agent)) {
+                return null;
+            }
+
+            return [
+                'cpu' => $this->numOrNull($agent['cpu'] ?? null),
+                'mem' => $this->numOrNull($agent['mem'] ?? null),
+                'conns' => $this->intOrNull($agent['conns'] ?? null),
+                'active_users' => $this->intOrNull($agent['active_users'] ?? null),
+                'up_speed' => $this->numOrNull($agent['up_speed'] ?? null),
+                'down_speed' => $this->numOrNull($agent['down_speed'] ?? null),
+                'at' => $agent['at'] ?? null,
+            ];
+        }
+
+        $cpu = $this->numOrNull($n->cpu);
+        $mem = $this->numOrNull($n->mem);
+
+        if ($cpu === null && $mem === null) {
+            return null;
+        }
+
+        return [
+            'cpu' => $cpu,
+            'mem' => $mem,
+            'conns' => null,
+            'active_users' => null,
+            'up_speed' => null,
+            'down_speed' => null,
+            'at' => $n->last_check_at?->toIso8601String(),
+        ];
+    }
+
+    /** decimal 列在 MySQL 下是字符串，统一转 float；非数值当「无数据」。 */
+    private function numOrNull(mixed $value): ?float
+    {
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    private function intOrNull(mixed $value): ?int
+    {
+        return is_numeric($value) ? (int) $value : null;
+    }
+
     private function present(Node $n, bool $full = false): array
     {
         $data = [
@@ -501,6 +562,10 @@ class NodeController extends Controller
             'status' => $n->status,
             'latency' => $n->latency,
             'last_check_at' => $n->last_check_at?->toIso8601String(),
+            // 仪表盘监控：地区代码（从节点名识别，识别不出为 null）+ 统一形状的运行指标。
+            // 两种驱动吐同一个结构，前端不按驱动分支。
+            'region' => NodeRegion::code($n->name),
+            'metrics' => $this->presentMetrics($n),
             'driver_type' => $n->driver_type ?? '3x-ui',
             'inbounds' => $n->inbounds->groupBy('protocol')->map(fn ($items) => $items->pluck('inbound_id')->values())->all(),
             // null = 该节点继承原始倍率；前端要靠这个区分「继承」和「手动设成 1.0」
@@ -520,10 +585,10 @@ class NodeController extends Controller
 
         if ($n->isXray()) {
             // 「已配置 biz」判定：存在启用中的 reality 入站（Reality 密钥已随入站迁移到面板侧管理）
-            $data['reality_registered'] = $n->xrayInbounds()
+            // 属性访问走预加载集合（index 已 with('xrayInbounds')；show 单节点时自动懒加载）
+            $data['reality_registered'] = $n->xrayInbounds
                 ->where('protocol', 'vless')
                 ->where('enabled', true)
-                ->get()
                 ->contains(fn ($in) => ($in->stream_settings['security'] ?? null) === 'reality');
             $data['node_secret_prefix'] = $n->nodeSecret() !== null ? substr($n->nodeSecret(), 0, 4) . '…' : null;
             $data['xray_version'] = $n->driver_config['xray_version'] ?? null;
