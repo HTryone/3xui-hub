@@ -14,6 +14,20 @@
 
 [English](#english) | 中文
 
+## 界面预览
+
+用户端首页：
+
+![用户端首页](screenshots/home.png)
+
+管理端 · 仪表盘（节点监控 / 3D 地球）：
+
+![管理端仪表盘](screenshots/admin-dashboard.png)
+
+管理端 · 节点管理：
+
+![管理端节点管理](screenshots/admin-nodes.png)
+
 ## 一键安装
 
 ```bash
@@ -271,6 +285,20 @@ MIT License
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
 **Version: 1.25.1**
+
+## Screenshots
+
+Landing page:
+
+![Landing Page](screenshots/home.png)
+
+Admin dashboard (node monitoring / 3D globe):
+
+![Admin Dashboard](screenshots/admin-dashboard.png)
+
+Admin · Nodes:
+
+![Admin Nodes](screenshots/admin-nodes.png)
 
 ## Quick Install
 
