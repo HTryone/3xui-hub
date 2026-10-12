@@ -97,7 +97,7 @@ class XrayRelayService
                 ),
                 $this->outboundStream($inbound, (string) $target->host),
                 $customRemark ?? '',
-                $customTag ?? ($target->name . '-' . $inbound->port . '-' . $inbound->tag),
+                $customTag ?? ($target->name . '-' . (str_contains((string) $inbound->tag, (string) $inbound->port) ? $inbound->tag : $inbound->port . '-' . $inbound->tag)),
                 $customTag !== null,
             );
         }
@@ -125,7 +125,7 @@ class XrayRelayService
             $this->outboundSettings($protocol, $clientId, (string) $target->host, $port),
             $this->outboundStreamFromThreeX($stream, (string) $target->host),
             $customRemark ?? '',
-            $customTag ?? ($target->name . '-' . $port . '-' . $tag),
+            $customTag ?? ($target->name . '-' . (str_contains((string) $tag, (string) $port) ? $tag : $port . '-' . $tag)),
             $customTag !== null,
         );
     }

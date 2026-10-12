@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.29.0**
+**版本：1.29.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,14 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.29.1 (2026-10-13)
+
+- 修复 issue #20：中转出站「建得出、编辑不了」（点编辑再保存报 `The selected network is invalid. (and 1 more error)`）
+  - 出站/入站的 `network`、`security` 校验白名单补齐 `xhttp` 与 `reality`；结构化表单补上对应分支（xhttp 的 path/host/mode，reality 的公钥/SNI/shortId/指纹/spiderX）
+  - 出站页传输/安全层下拉同步补齐 `xhttp` / `Reality`（否则编辑时两项显示空白、保存即被拒）
+- 修复中转出站默认标识重复端口：入站 tag 已含端口时不再重复拼（`JP1-43981-in-43981-tcp` → `JP1-in-43981-tcp`）
+- 出站列表「目标」列：无备注时显示「服务器名 · 端口」，不再回落到标识导致与「标识」列重复
 
 ### v1.29.0 (2026-10-13)
 
@@ -344,7 +352,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.29.0**
+**Version: 1.29.1**
 
 ## Screenshots
 
@@ -414,7 +422,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.29.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.29.1-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

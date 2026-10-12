@@ -482,11 +482,20 @@ class XrayOutboundController extends Controller
             'method' => ['nullable', 'string', 'max:64'], // ss 加密方式
             'username' => ['nullable', 'string', 'max:255'], // socks/http 用户名
             // 传输
-            'network' => ['nullable', 'in:tcp,ws,grpc'],
-            'security' => ['nullable', 'in:none,tls'],
+            'network' => ['nullable', 'in:tcp,ws,grpc,xhttp'],
+            'security' => ['nullable', 'in:none,tls,reality'],
             'ws_path' => ['nullable', 'string', 'max:255'],
             'ws_host' => ['nullable', 'string', 'max:255'],
+            'xhttp_path' => ['nullable', 'string', 'max:255'],
+            'xhttp_host' => ['nullable', 'string', 'max:255'],
+            'xhttp_mode' => ['nullable', 'string', 'max:32'],
             'tls_server_name' => ['nullable', 'string', 'max:255'],
+            // reality（出站只用公开参数，不涉私钥）
+            'reality_server_name' => ['nullable', 'string', 'max:255'],
+            'reality_public_key' => ['nullable', 'string', 'max:255'],
+            'reality_short_id' => ['nullable', 'string', 'max:32'],
+            'reality_fingerprint' => ['nullable', 'string', 'max:32'],
+            'reality_spider_x' => ['nullable', 'string', 'max:255'],
             // 中转「借道」：本出站的连接先经同节点另一出站拨出（xray sockopt.dialerProxy）
             'dialer_proxy' => ['nullable', 'string', 'max:64'],
             // wireguard（高级透传兜底；WARP 功能外的手工 wireguard）
@@ -656,11 +665,26 @@ class XrayOutboundController extends Controller
                 'headers' => (string) ($data['ws_host'] ?? '') !== '' ? ['Host' => (string) $data['ws_host']] : null,
             ], fn ($v) => $v !== null);
             $stream['wsSettings'] = $ws;
+        } elseif ($network === 'xhttp') {
+            $stream['xhttpSettings'] = array_filter([
+                'path' => (string) ($data['xhttp_path'] ?? '') !== '' ? (string) $data['xhttp_path'] : '/',
+                'host' => (string) ($data['xhttp_host'] ?? ''),
+                'mode' => (string) ($data['xhttp_mode'] ?? '') !== '' ? (string) $data['xhttp_mode'] : 'auto',
+            ], fn ($v) => $v !== '');
         }
 
         if ($security === 'tls') {
             $stream['tlsSettings'] = array_filter([
                 'serverName' => (string) ($data['tls_server_name'] ?? ''),
+            ], fn ($v) => $v !== '');
+        } elseif ($security === 'reality') {
+            // 出站侧 reality 只用公开参数（publicKey/serverName/shortId/fingerprint/spiderX），不涉私钥
+            $stream['realitySettings'] = array_filter([
+                'serverName' => (string) ($data['reality_server_name'] ?? ''),
+                'publicKey' => (string) ($data['reality_public_key'] ?? ''),
+                'shortId' => (string) ($data['reality_short_id'] ?? ''),
+                'fingerprint' => (string) ($data['reality_fingerprint'] ?? '') !== '' ? (string) $data['reality_fingerprint'] : 'chrome',
+                'spiderX' => (string) ($data['reality_spider_x'] ?? ''),
             ], fn ($v) => $v !== '');
         }
 
@@ -770,6 +794,9 @@ class XrayOutboundController extends Controller
             'dialer_proxy' => (string) ($stream['sockopt']['dialerProxy'] ?? '') ?: null,
             // 中转出站：目标服务器（列表展示「去哪台服务器」用；手工出站为 null）
             'relay_target_node_id' => $outbound->relay_target_node_id,
+            'relay_target_port' => $outbound->relay_target_node_id
+                ? (int) ((($outbound->settings['vnext'][0]['port'] ?? null) ?? ($outbound->settings['servers'][0]['port'] ?? null)) ?? 0)
+                : null,
             'relay_target_node_name' => $outbound->relay_target_node_id
                 ? Node::query()->whereKey($outbound->relay_target_node_id)->value('name')
                 : null,

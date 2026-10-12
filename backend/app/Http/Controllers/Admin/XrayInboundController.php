@@ -202,7 +202,7 @@ class XrayInboundController extends Controller
             'tag' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9_-]+$/'],
             'port' => ['required', 'integer', 'between:1,65535'],
             'listen' => ['nullable', 'string', 'max:64'],
-            'network' => ['nullable', 'in:tcp,ws,grpc'],
+            'network' => ['nullable', 'in:tcp,ws,grpc,xhttp'],
             'security' => ['nullable', 'in:none,tls,reality'],
             // reality 参数
             'dest' => ['nullable', 'string', 'max:255'],
@@ -234,6 +234,9 @@ class XrayInboundController extends Controller
             // ws / tls 参数
             'ws_path' => ['nullable', 'string', 'max:255'],
             'ws_host' => ['nullable', 'string', 'max:255'],
+            'xhttp_path' => ['nullable', 'string', 'max:255'],
+            'xhttp_host' => ['nullable', 'string', 'max:255'],
+            'xhttp_mode' => ['nullable', 'string', 'max:32'],
             'tls_server_name' => ['nullable', 'string', 'max:255'],
             'tls_certificate' => ['nullable', 'string', 'max:65535'],
             'tls_key' => ['nullable', 'string', 'max:65535'],
@@ -338,6 +341,12 @@ class XrayInboundController extends Controller
                 'host' => (string) ($data['ws_host'] ?? ''),
             ], fn ($v) => $v !== '');
             $stream['wsSettings'] = $ws;
+        } elseif ($network === 'xhttp') {
+            $stream['xhttpSettings'] = array_filter([
+                'path' => (string) ($data['xhttp_path'] ?? '') !== '' ? (string) $data['xhttp_path'] : '/',
+                'host' => (string) ($data['xhttp_host'] ?? ''),
+                'mode' => (string) ($data['xhttp_mode'] ?? '') !== '' ? (string) $data['xhttp_mode'] : 'auto',
+            ], fn ($v) => $v !== '');
         }
 
         if ($security === 'tls') {
