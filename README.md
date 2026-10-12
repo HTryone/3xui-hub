@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.26.0**
+**版本：1.27.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,17 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.27.0 (2026-10-12)
+
+xray 跨机中转与运维体验：
+
+- 路由「目标出站」新增「其它机器」组：直接选别的节点 + 具体入站作为出口，保存时自动在源节点建中转出站、在目标节点建对应凭据（xray 节点走渲染注入、3x-ui 节点走面板 API），重复保存自动复用
+- 显示统一「节点名-端口-端口名」（如 `香港01-14443-vless-reality`）：路由来源入站、目标出站、出站列表三处都按这个格式显示，不再出现认不出的裸 tag（rl-*）；3x-ui 机器的入站端口/tag 在线时自动取（缓存 5 分钟）
+- WARP 合并进出站：出站页新建时协议可直接选 WARP（自动注册 + 应用生成 wireguard 出站）；路由目标候选里固定显示「WARP」
+- 定时任务减负：未启用 WARP 的机器不进 WARP 换 IP 调度；WARP 换 IP 频率每分钟改为每 5 分钟；邮件通知 / 订阅刷新 / 第三方抓取未配置时不再空转
+- `3hub update` 两段式：先换代码再 exec 新脚本执行后半段 —— 本次新增的自愈动作当次生效（此前要再跑一次 update 才生效）
+- 节点安装命令优化：去掉多余的 `--no-auto-deps` 兼容开关；命令改为「先下载脚本再执行」，避免管道中断时执行到半截
+
 ### v1.26.0 (2026-10-12)
 
 xray 出站 / 路由 / WARP / Reality 能力补齐：
@@ -310,7 +321,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.26.0**
+**Version: 1.27.0**
 
 ## Screenshots
 
@@ -380,7 +391,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.26.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.27.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

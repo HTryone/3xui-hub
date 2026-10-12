@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Drivers\Xray\OutboundLinkParser;
+use App\Drivers\Xray\WarpService;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\NodeApiCommand;
@@ -55,6 +56,13 @@ class XrayOutboundController extends Controller
     public function store(Request $request, Node $node): JsonResponse
     {
         $this->ensureXray($node);
+
+        // WARP 合并：协议选 WARP → 走 WarpService（注册设备 + 生成 wireguard 出站）。
+        // 已有 warp 出站时报错，避免顶掉在用的 WARP 账户/配置。
+        if ($request->input('protocol') === 'warp') {
+            return $this->storeWarp($node);
+        }
+
         $data = $this->validatePayload($request);
 
         $outbound = new XrayOutbound();
@@ -162,6 +170,36 @@ class XrayOutboundController extends Controller
     }
 
     // ── 内部 ─────────────────────────────────────────────
+
+    /**
+     * WARP 出站合并入口：注册 WARP 设备（若未注册）并 apply（生成 tag=warp 的 wireguard 出站）。
+     * 已有 warp 出站 → 报错（引导去 WARP 面板换 IP / 重置）。
+     */
+    private function storeWarp(Node $node): JsonResponse
+    {
+        $existing = $node->xrayOutbounds()->where('tag', 'warp')->exists();
+        if ($existing) {
+            return $this->error('该节点已有 WARP 出站，请到 WARP 面板管理（换 IP / 重新应用）');
+        }
+
+        $service = new WarpService($node);
+        try {
+            $service->register();
+        } catch (\Throwable $e) {
+            return $this->error('WARP 注册失败：' . $e->getMessage());
+        }
+
+        try {
+            $outbound = $service->apply();
+        } catch (\Throwable $e) {
+            return $this->error('WARP 应用失败：' . $e->getMessage());
+        }
+
+        return $this->success([
+            'outbound' => $this->present($outbound->fresh(), null),
+            'config_version' => $node->fresh()->xrayConfigVersion(),
+        ]);
+    }
 
     private function ensureXray(Node $node): void
     {
@@ -481,6 +519,11 @@ class XrayOutboundController extends Controller
             'network' => $stream['network'] ?? null,
             'security' => $stream['security'] ?? null,
             'dialer_proxy' => (string) ($stream['sockopt']['dialerProxy'] ?? '') ?: null,
+            // 中转出站：目标机器（列表展示「去哪台服务器」用；手工出站为 null）
+            'relay_target_node_id' => $outbound->relay_target_node_id,
+            'relay_target_node_name' => $outbound->relay_target_node_id
+                ? Node::query()->whereKey($outbound->relay_target_node_id)->value('name')
+                : null,
             'enabled' => $outbound->enabled,
             'sort' => $outbound->sort,
             'settings' => $settings,

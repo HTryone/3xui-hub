@@ -221,6 +221,7 @@ class Node extends Model
             $this->setNodeSecret($secret);
             $this->save();
         }
-        return "curl -fsSL {$panelBase}/node-install.sh | sudo bash -s -- --hub {$panelBase} --node {$name} --secret {$secret}";
+        // 先落盘再执行，不用 curl|bash 流式：脚本较长，管道中断会执行到半截。
+        return "curl -fsSL {$panelBase}/node-install.sh -o /tmp/controlhub-node-install.sh && sudo bash /tmp/controlhub-node-install.sh --hub {$panelBase} --node {$name} --secret {$secret}";
     }
 }

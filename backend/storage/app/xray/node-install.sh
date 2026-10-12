@@ -4,7 +4,6 @@
 # 用法：
 #   curl -fsSL {HUB}/node-install.sh | sudo bash -s -- \
 #       --hub https://hub.example.com --node my-node --secret xxxx
-#   可选追加 --no-auto-deps：关闭缺失依赖的自动安装（默认用 apt 自动装）
 # 动作：
 #   1. 检测 CPU 架构 → 映射面板资产 arch
 #   2. 从面板取 default 版本清单 → 下载对应 xray zip + sha256 自校验
@@ -21,13 +20,11 @@ SERVICE="controlhub-node.service"
 HUB=""
 NODE_NAME=""
 SECRET=""
-AUTO_DEPS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub)    HUB="$2"; shift 2 ;;
     --node)   NODE_NAME="$2"; shift 2 ;;
     --secret) SECRET="$2"; shift 2 ;;
-    --no-auto-deps) AUTO_DEPS=0; shift ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -47,26 +44,26 @@ fi
 # ── 依赖检查 ──────────────────────────────────────────────
 # python3 必须在此检查：脚本有 4 处用它解析面板清单（下方 manifest 解析），
 # 缺失时会在解析处以 127 直接中断，报错与真实原因无关（难排查），故提前拦。
-# 缺依赖默认用 apt 自动安装（--no-auto-deps 可关闭，退回旧的报错退出）。
+# 缺依赖直接用 apt 自动安装（节点环境即 Debian/Ubuntu，apt 标配）。
 declare -A DEP_PKG=([curl]=curl [unzip]=unzip [sha256sum]=coreutils [python3]=python3)
 MISSING=()
 for dep in curl unzip sha256sum python3; do
   command -v "$dep" >/dev/null 2>&1 || MISSING+=("${DEP_PKG[$dep]}")
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
-  if [ "$AUTO_DEPS" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
     echo "==> 自动安装缺失依赖: ${MISSING[*]}"
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}"
   else
-    echo "缺依赖: ${MISSING[*]}（Debian/Ubuntu: apt-get install -y ${MISSING[*]}；或用 --no-auto-deps 跳过本提示的自动安装逻辑）"
+    echo "缺依赖: ${MISSING[*]}（本机无 apt-get，请手动安装后重跑）"
     exit 1
   fi
 fi
-# 复核（装了还缺就真退出；--no-auto-deps 且已装则正常放行）
+# 复核：装了还缺 = 真失败（apt 源缺包等），报到具体是哪个
 for dep in curl unzip sha256sum python3; do
   if ! command -v "$dep" >/dev/null 2>&1; then
-    echo "缺依赖: $dep（自动安装未生效，请手动安装）"
+    echo "缺依赖: $dep（自动安装未生效，请手动安装后重跑）"
     exit 1
   fi
 done

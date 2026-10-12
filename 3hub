@@ -643,16 +643,33 @@ cmd_cli_opcache() {
     return 0
 }
 
-# 更新系统
+# 更新系统（两段式：第一段只换代码，随后 exec 重新执行刚落盘的新脚本）
+#
+# 为什么分两段：bash 启动时把脚本读进内存，git reset 换掉盘上代码后本进程仍跑旧函数，
+# 本次新增/修改的自愈逻辑当次一定不生效 —— 历史上靠「逐个改成子进程调用」绕，
+# 漏一个就要用户跑两次 update。两段式从结构上消灭这个坑。
 cmd_update() {
     check_install
     cd "$INSTALL_DIR"
 
     echo -e "${CYAN}更新中...${NC}"
 
-    # 重置到远程最新版本（清理本地 merge 提交）
+    # 第一段：只换代码（清理本地 merge 提交）
     git fetch origin 2>/dev/null
-    git reset --hard origin/main 2>&1
+    if ! git reset --hard origin/main 2>&1; then
+        echo -e "${RED}代码更新失败（git reset 未成功），请检查网络后重试${NC}"
+        return 1
+    fi
+
+    # 第二段：exec 重新执行刚落盘的新脚本（本进程被替换，exit 码即新脚本退出码）。
+    # 此后包括本次新加的自愈在内，全部是新代码，天然当次生效、无需再「记得绕」。
+    exec bash "$INSTALL_DIR/3hub" __update-phase2
+}
+
+# 更新后半段（内部命令；由 cmd_update 第一段 exec 进入，执行时一定是刚落盘的代码）
+cmd_update_phase2() {
+    check_install
+    cd "$INSTALL_DIR"
 
     # 更新后端依赖
     cd "$BACKEND_DIR"
@@ -667,10 +684,9 @@ cmd_update() {
     ensure_artisan_cron || echo -e "${YELLOW}定时任务未就绪，见上方提示${NC}"
 
     # CLI opcache：清理 v1.25.1 的残留 ini（回退为默认关）；必须在 worker 重启前完成，
-    # 否则 worker 起来时读到的还是旧配置。与 __fpm-tune 同理走子进程调「刚更新到盘上」
-    # 的脚本，老版本升级第一次也要跑到。
+    # 否则 worker 起来时读到的还是旧配置。两段式 exec 后这里已是新代码，直接调。
     echo -e "${CYAN}清理 CLI opcache 残留...${NC}"
-    bash "$INSTALL_DIR/3hub" __cli-opcache
+    cmd_cli_opcache
 
     # 配置数据库队列和常驻 Worker（内部会 restart 各 worker，重启后落到清理后的配置）
     configure_queue_worker
@@ -711,10 +727,9 @@ cmd_update() {
     cp -r "$INSTALL_DIR/frontend/dist/"* "$BACKEND_DIR/public/" 2>/dev/null || true
 
     # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的地方。
-    # 必须走子进程调「刚更新到盘上」的脚本：bash 启动时已把旧函数读进内存，直接调函数
-    # 在老版本升级的那一次跑不到（同 ensure_nginx_node_ws 那个坑）。
+    # 两段式 exec 后这里已是新代码（旧版「必须子进程绕」的坑已结构性消灭），直接调。
     echo -e "${CYAN}检查 php-fpm 并发...${NC}"
-    if ! bash "$INSTALL_DIR/3hub" __fpm-tune; then
+    if ! cmd_fpm_tune; then
         echo -e "${YELLOW}php-fpm 并发未调整（可手动执行: cd $BACKEND_DIR && php artisan fpm:tune）${NC}"
     fi
 
@@ -751,9 +766,9 @@ cmd_update() {
     # 顺序上不能提到 config:clear 那类步骤之前，否则还会被后续步骤重新污染。详见函数注释。
     fix_storage_ownership
 
-    # 从旧版本升上来的机器：本次运行的仍是旧脚本（bash 启动时已读入内存），
-    # 所以本次新增/修改的自愈函数（如 ensure_nginx_node_ws）这一次跑不到。
-    # 落盘检查并明确提示，避免用户以为已经自愈、实际要等下一条命令。
+    # 兜底落盘检查：两段式之后正常不会再缺；但「v1.26.x 及更老版本 → 本版本」的
+    # 第一次升级走的是旧脚本（没有 exec），新自愈当次不生效 —— 明确提示，
+    # 避免用户以为已自愈、实际还要再跑一条命令。
     if ! nginx_node_ws_applied; then
         echo ""
         echo -e "${YELLOW}⚠ 检测到 nginx 缺少节点资产 location（/node-ws、/node-install.sh）。${NC}"
@@ -1278,7 +1293,11 @@ run_cmd() {
         domain)       shift; cmd_domain "$@" ;;
         # 内部命令：只给 install.sh 安装期调用，让安装脚本和 3hub 复用同一份 cron 保障
         # 逻辑（旧版两处各写一份，更新路径那份没人管，线上丢过条目）。不列进帮助菜单。
+        # 保底：v1.26.x 及更老版本的 update 会以子进程方式调用前三个内部命令，
+        # 名字不能改、不能删（老脚本靠它们当次生效）；__update-phase2 由新版
+        # cmd_update 第一段 exec 进入，不要手动执行（跑之前必须已 git reset）。
         __ensure-cron) ensure_artisan_cron ;;
+        __update-phase2) cmd_update_phase2 ;;
         __fpm-tune)    shift; cmd_fpm_tune "$@" ;;
         __cli-opcache) cmd_cli_opcache ;;
         help|--help|-h) show_help ;;

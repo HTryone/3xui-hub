@@ -78,6 +78,18 @@ class MailNotifyService
         return SiteConfig::getValue("notify_{$scene}_enabled") === '1';
     }
 
+    /** 任意场景开启（调度条件用：四个通知全关时，邮件扫描任务整体跳过、不产生空转进程）。 */
+    public static function anyEnabled(): bool
+    {
+        foreach (array_keys(self::SCENES) as $scene) {
+            if (self::isEnabled($scene)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** 读取某场景的通知配置（合并默认值） */
     public static function configFor(string $scene): array
     {

@@ -8,6 +8,7 @@ use App\Models\XrayBalancer;
 use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
 use App\Models\XrayOutboundSubscription;
+use App\Models\XrayRelayClient;
 use App\Models\XrayRoutingRule;
 use Illuminate\Support\Collection;
 
@@ -128,6 +129,11 @@ class XrayConfigService
 
         $clients = $this->clientsFor($inbound, $users);
         if ($clients !== null) {
+            // 中转凭据（面板在目标入站上为来源节点自动生成的 client）一并注入；
+            // shadowsocks 单凭据模式在上面的分支已返回 null，不走到这里。
+            foreach (XrayRelayClient::clientsForInbound($inbound) as $relayClient) {
+                $clients[] = $relayClient;
+            }
             $settings['clients'] = $clients;
         }
 

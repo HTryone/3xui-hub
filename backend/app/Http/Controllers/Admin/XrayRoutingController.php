@@ -3,15 +3,19 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Drivers\Xray\XrayConfigService;
+use App\Drivers\Xray\XrayRelayService;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\XrayBalancer;
+use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
 use App\Models\XrayOutboundSubscription;
 use App\Models\XrayRoutingRule;
+use App\Services\ThreeXUiClientFactory;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -37,6 +41,8 @@ class XrayRoutingController extends Controller
 
     public function __construct(
         private readonly XrayConfigService $config,
+        private readonly XrayRelayService $relay,
+        private readonly ThreeXUiClientFactory $threeXClientFactory,
     ) {}
 
     /** GET /admin-api/nodes/{node}/xray-routing */
@@ -53,7 +59,10 @@ class XrayRoutingController extends Controller
             // 规则目标候选：出站 + 已启用 balancer（tag 全局唯一）
             'outbound_tags' => $this->targetTags($node),
             'outbound_only_tags' => $this->outboundTags($node),
-            'inbound_tags' => $node->xrayInbounds()->pluck('tag')->values()->all(),
+            // 来源入站候选：对象数组（供前端显示「端口 · 协议 · tag」；value 仍为 tag）
+            'inbounds' => $this->inboundCandidates($node),
+            // 目标出站候选「其它机器」组：启用节点 × 启用入站，value=relay:{nodeId}:{inboundId}
+            'relay_outbounds' => $this->relayCandidates($node),
             'settings' => $node->xrayRoutingSettings(),
             'strategies' => XrayBalancer::STRATEGIES,
             'domain_strategies' => self::DOMAIN_STRATEGIES,
@@ -67,6 +76,9 @@ class XrayRoutingController extends Controller
     {
         $this->ensureXray($node);
         $data = $this->validatePayload($request, $node);
+
+        // relay 目标：先确保中转出站 + 目标凭据就绪，再把规则落到该出站 tag 上
+        $data['outbound_tag'] = $this->resolveRelayTarget($node, (string) $data['outbound_tag']);
 
         $rule = new XrayRoutingRule();
         $rule->node_id = $node->id;
@@ -88,6 +100,7 @@ class XrayRoutingController extends Controller
         $this->ensureOwned($node, $rule);
 
         $data = $this->validatePayload($request, $node);
+        $data['outbound_tag'] = $this->resolveRelayTarget($node, (string) $data['outbound_tag']);
         $this->fillFromPayload($rule, $data);
         $rule->save();
 
@@ -97,6 +110,22 @@ class XrayRoutingController extends Controller
             'rule' => $this->present($rule->fresh()),
             'config_version' => $node->xrayConfigVersion(),
         ]);
+    }
+
+    /**
+     * 目标值为 relay:{n}:{i} 时执行中转自动化并返回落地出站 tag；否则原样返回。
+     */
+    private function resolveRelayTarget(Node $node, string $target): string
+    {
+        if (! str_starts_with($target, 'relay:')) {
+            return $target;
+        }
+        $parsed = $this->parseRelayTarget($target);
+        if ($parsed === null) {
+            throw ValidationException::withMessages(['outbound_tag' => '中转目标格式不正确']);
+        }
+
+        return $this->relay->ensureRelay($node, $parsed[0], $parsed[1]);
     }
 
     /** DELETE /admin-api/nodes/{node}/xray-routing/{rule} */
@@ -300,7 +329,10 @@ class XrayRoutingController extends Controller
             $seen[$outbound->tag] = true;
             $tags[] = [
                 'tag' => $outbound->tag,
-                'label' => $outbound->remark ?: $outbound->protocol,
+                // warp 出站固定显示 WARP（remark 可能为空的 wireguard 会认不出）
+                'label' => $outbound->tag === 'warp' ? 'WARP' : ($outbound->remark ?: $outbound->protocol),
+                // 中转出站标记：列表/下拉要显示「节点名」而非裸 tag（rl-* 看不出是谁的服务器）
+                'relay' => $outbound->relay_target_node_id !== null,
             ];
         }
 
@@ -320,6 +352,124 @@ class XrayRoutingController extends Controller
     private function outboundTagStrings(Node $node): array
     {
         return array_column($this->outboundTags($node), 'tag');
+    }
+
+    /**
+     * 来源入站候选：本节点启用入站的对象数组 {value,tag,port,protocol,label}。
+     * 前端显示「端口 · 协议 · tag」；value=tag（渲染层 inboundTag 用 xray tag 字符串）。
+     */
+    private function inboundCandidates(Node $node): array
+    {
+        return XrayInbound::enabledFor($node)->map(function (XrayInbound $in) {
+            $label = $in->port . '-' . $in->tag; // 端口-端口名（本机入站不带节点名）
+
+            return [
+                'value' => $in->tag,
+                'tag' => $in->tag,
+                'port' => (int) $in->port,
+                'protocol' => $in->protocol,
+                'label' => $label,
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * 目标出站候选「其它机器」组：启用节点 × 启用入站（排除本节点）。
+     * value = relay:{nodeId}:{inboundId}，label 如「→ 香港01 · 443 · vless」；
+     * warp 出站 label 显 WARP。该组**不**参与 balancer selector 候选（见 outboundTags）。
+     *
+     * - xray 目标：入站来自 xray_inbounds（inboundId = xray_inbounds.id）
+     * - 3x-ui 目标：入站来自 node_inbounds（inboundId = node_inbounds.inbound_id）
+     */
+    private function relayCandidates(Node $node): array
+    {
+        $out = [];
+        $nodes = Node::query()
+            ->where('enabled', true)
+            ->where('id', '!=', $node->id)
+            ->orderBy('name')
+            ->get();
+
+        foreach ($nodes as $target) {
+            if ($target->isXray()) {
+                foreach (XrayInbound::enabledFor($target) as $in) {
+                    $out[] = [
+                        'value' => 'relay:' . $target->id . ':' . $in->id,
+                        'node_id' => $target->id,
+                        'node_name' => $target->name,
+                        'inbound_id' => $in->id,
+                        'port' => (int) $in->port,
+                        'protocol' => $in->protocol,
+                        // 三段式「节点名-端口-端口名（tag）」
+                        'label' => $target->name . '-' . $in->port . '-' . $in->tag,
+                        'supported' => $in->protocol !== 'shadowsocks',
+                    ];
+                }
+                continue;
+            }
+
+            // 3x-ui 节点：node_inbounds 只有 inbound_id/protocol；端口/tag 按需从面板取
+            // （仅在线节点 + 5 分钟缓存，避免每次开路由页都打节点）。取不到时降级「节点名-协议」。
+            $opts = $this->threeXInboundMeta($target);
+            foreach ($target->inbounds as $row) {
+                $meta = $opts[(int) $row->inbound_id] ?? null;
+                $parts = [$target->name];
+                if ($meta !== null) {
+                    if (! empty($meta['port'])) {
+                        $parts[] = $meta['port'];
+                    }
+                    if (! empty($meta['tag'])) {
+                        $parts[] = $meta['tag'];
+                    }
+                } else {
+                    $parts[] = $row->protocol;
+                }
+                $out[] = [
+                    'value' => 'relay:' . $target->id . ':' . $row->inbound_id,
+                    'node_id' => $target->id,
+                    'node_name' => $target->name,
+                    'inbound_id' => (int) $row->inbound_id,
+                    'port' => $meta['port'] ?? null,
+                    'protocol' => $row->protocol,
+                    'label' => implode('-', $parts),
+                    'supported' => $row->protocol !== 'shadowsocks',
+                ];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * 3x-ui 节点入站元数据（inbound_id => {port, tag}）：在线节点从面板取并缓存 5 分钟；
+     * 离线 / 拉取失败返回空数组（候选 label 降级为「节点名-协议」）。
+     *
+     * @return array<int, array{port: int, tag: string}>
+     */
+    private function threeXInboundMeta(Node $target): array
+    {
+        if ($target->status !== 'online') {
+            return [];
+        }
+
+        try {
+            return Cache::remember("3x:inbound-opts:{$target->id}", 300, function () use ($target) {
+                $meta = [];
+                foreach ($this->threeXClientFactory->forNode($target)->inboundOptions() as $opt) {
+                    $id = (int) ($opt['id'] ?? 0);
+                    if ($id > 0) {
+                        $meta[$id] = [
+                            'port' => (int) ($opt['port'] ?? 0),
+                            'tag' => (string) ($opt['tag'] ?? ''),
+                        ];
+                    }
+                }
+
+                return $meta;
+            });
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     /** 本节点已启用 balancer 的 tag 列表。 */
@@ -365,13 +515,38 @@ class XrayRoutingController extends Controller
             throw ValidationException::withMessages(['domains' => '至少需要一个匹配条件（域名/IP/端口/网络/协议/入站）']);
         }
 
-        // 目标 tag 必须存在（内置出站 / 自定义出站 / 已启用 balancer）
-        $valid = array_column($this->targetTags($node), 'tag');
-        if (! in_array($data['outbound_tag'], $valid, true)) {
-            throw ValidationException::withMessages(['outbound_tag' => '目标出站不存在']);
+        // 目标 tag 必须存在（内置出站 / 自定义出站 / 已启用 balancer）——或 relay:{n}:{i} 中转目标
+        $target = (string) $data['outbound_tag'];
+        if (! str_starts_with($target, 'relay:')) {
+            $valid = array_column($this->targetTags($node), 'tag');
+            if (! in_array($target, $valid, true)) {
+                throw ValidationException::withMessages(['outbound_tag' => '目标出站不存在']);
+            }
+        } elseif ($this->parseRelayTarget($target) === null) {
+            throw ValidationException::withMessages(['outbound_tag' => '中转目标格式不正确']);
         }
 
         return $data;
+    }
+
+    /**
+     * 解析 relay:{nodeId}:{inboundId}；格式/数值非法返回 null。
+     *
+     * @return array{0:int,1:int}|null [targetNodeId, targetInboundId]
+     */
+    private function parseRelayTarget(string $value): ?array
+    {
+        $parts = explode(':', $value);
+        if (count($parts) !== 3 || $parts[0] !== 'relay') {
+            return null;
+        }
+        $nodeId = (int) $parts[1];
+        $inboundId = (int) $parts[2];
+        if ($nodeId <= 0 || $inboundId <= 0) {
+            return null;
+        }
+
+        return [$nodeId, $inboundId];
     }
 
     /**
