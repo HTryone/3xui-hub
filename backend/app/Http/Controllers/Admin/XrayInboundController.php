@@ -212,6 +212,25 @@ class XrayInboundController extends Controller
             'short_ids.*' => ['string', 'max:32'],
             'private_key' => ['nullable', 'string', 'max:255'],
             'public_key' => ['nullable', 'string', 'max:255'],
+            // reality 高级参数（3x-ui reality.ts 字段集；服务端字段 + 客户端字段）
+            'show' => ['nullable', 'boolean'],
+            'xver' => ['nullable', 'integer', 'min:0', 'max:2'],
+            'min_client_ver' => ['nullable', 'string', 'max:32', 'regex:/^\d+(\.\d+)*$/'],
+            'max_client_ver' => ['nullable', 'string', 'max:32', 'regex:/^\d+(\.\d+)*$/'],
+            'max_timediff' => ['nullable', 'integer', 'min:0', 'max:86400000'],
+            'mldsa65_seed' => ['nullable', 'string', 'max:8192'],
+            'mldsa65_verify' => ['nullable', 'string', 'max:8192'],
+            'master_key_log' => ['nullable', 'string', 'max:255'],
+            'fingerprint' => ['nullable', 'string', 'max:32'],
+            'spider_x' => ['nullable', 'string', 'max:255'],
+            'limit_fallback_upload' => ['nullable', 'array'],
+            'limit_fallback_upload.after_bytes' => ['nullable', 'integer', 'min:0'],
+            'limit_fallback_upload.bytes_per_sec' => ['nullable', 'integer', 'min:0'],
+            'limit_fallback_upload.burst_bytes_per_sec' => ['nullable', 'integer', 'min:0'],
+            'limit_fallback_download' => ['nullable', 'array'],
+            'limit_fallback_download.after_bytes' => ['nullable', 'integer', 'min:0'],
+            'limit_fallback_download.bytes_per_sec' => ['nullable', 'integer', 'min:0'],
+            'limit_fallback_download.burst_bytes_per_sec' => ['nullable', 'integer', 'min:0'],
             // ws / tls 参数
             'ws_path' => ['nullable', 'string', 'max:255'],
             'ws_host' => ['nullable', 'string', 'max:255'],
@@ -240,6 +259,18 @@ class XrayInboundController extends Controller
         }
         if ($protocol === 'shadowsocks' && ($security !== 'none' || $network !== 'tcp')) {
             throw ValidationException::withMessages(['protocol' => 'Shadowsocks 仅支持 tcp + 无附加安全层']);
+        }
+
+        // Reality 后量子：seed（服务端）与 verify（客户端）成对 —— 只在一边填会让 REALITY
+        // 握手后对端拿不到对应公钥材料，直接失败。校验放在建流之前，错误指回表单字段。
+        if ($security === 'reality') {
+            $seed = trim((string) ($data['mldsa65_seed'] ?? ''));
+            $verify = trim((string) ($data['mldsa65_verify'] ?? ''));
+            if (($seed === '') !== ($verify === '')) {
+                throw ValidationException::withMessages([
+                    'mldsa65_seed' => 'mldsa65Seed 与 mldsa65Verify 必须成对设置（同时填写或同时留空）',
+                ]);
+            }
         }
 
         // tag：缺省自动建议；唯一性预检（跨节点内唯一）
@@ -295,12 +326,7 @@ class XrayInboundController extends Controller
                     : '';
             }
 
-            $stream['realitySettings'] = [
-                'dest' => (string) ($data['dest'] ?? '') !== '' ? (string) $data['dest'] : XrayConfigService::DEFAULT_DEST,
-                'serverNames' => $this->stringList($data['server_names'] ?? [], XrayConfigService::DEFAULT_SNI),
-                'shortIds' => $this->stringList($data['short_ids'] ?? [], null) ?: [RealityKeyService::shortId()],
-                'publicKey' => $publicKey,
-            ];
+            $stream['realitySettings'] = $this->realitySettings($data, $publicKey);
             $inbound->setRealityPrivateKey($privateKey);
         } else {
             $inbound->setRealityPrivateKey(null);
@@ -354,6 +380,111 @@ class XrayInboundController extends Controller
         return $out;
     }
 
+    /**
+     * 组装 realitySettings：核心四字段 + 3x-ui 高级字段。
+     *
+     * 高级字段仅在管理员**显式提交**时写入（默认值不落库），老入站 round-trip 不变；
+     * 内核默认值统一由 XrayConfigService::realitySettingsFor 在渲染时补齐。
+     * 客户端段（fingerprint / spiderX / mldsa65Verify）供订阅链接生成使用。
+     */
+    private function realitySettings(array $data, string $publicKey): array
+    {
+        $settings = [
+            'dest' => (string) ($data['dest'] ?? '') !== '' ? (string) $data['dest'] : XrayConfigService::DEFAULT_DEST,
+            'serverNames' => $this->stringList($data['server_names'] ?? [], XrayConfigService::DEFAULT_SNI),
+            'shortIds' => $this->stringList($data['short_ids'] ?? [], null) ?: [RealityKeyService::shortId()],
+            'publicKey' => $publicKey,
+        ];
+
+        // xver/show：REALITY 前置反代场景；均为内核默认值（0/false）时不落库
+        if (array_key_exists('xver', $data) && (int) $data['xver'] !== 0) {
+            $settings['xver'] = (int) $data['xver'];
+        }
+        if (array_key_exists('show', $data) && (bool) $data['show']) {
+            $settings['show'] = true;
+        }
+
+        // 客户端版本窗口 / 时间差：空串与 0 即内核默认
+        foreach (['min_client_ver' => 'minClientVer', 'max_client_ver' => 'maxClientVer'] as $in => $out) {
+            $v = trim((string) ($data[$in] ?? ''));
+            if ($v !== '') {
+                $settings[$out] = $v;
+            }
+        }
+        if (array_key_exists('max_timediff', $data) && (int) $data['max_timediff'] !== 0) {
+            $settings['maxTimediff'] = (int) $data['max_timediff'];
+        }
+
+        // 服务端后量子种子 / 主密钥日志
+        $seed = trim((string) ($data['mldsa65_seed'] ?? ''));
+        if ($seed !== '') {
+            $settings['mldsa65Seed'] = $seed;
+        }
+        $log = trim((string) ($data['master_key_log'] ?? ''));
+        if ($log !== '') {
+            $settings['masterKeyLog'] = $log;
+        }
+
+        // fallback 限速（整块非零才写）
+        foreach (['limit_fallback_upload' => 'limitFallbackUpload', 'limit_fallback_download' => 'limitFallbackDownload'] as $in => $out) {
+            $block = $this->limitFallback($data[$in] ?? null);
+            if ($block !== null) {
+                $settings[$out] = $block;
+            }
+        }
+
+        // 客户端段（订阅链接：fp / spx / pqv）
+        $client = [];
+        $fp = trim((string) ($data['fingerprint'] ?? ''));
+        if ($fp !== '') {
+            $client['fingerprint'] = $fp;
+        }
+        if (array_key_exists('spider_x', $data) && (string) $data['spider_x'] !== '') {
+            $client['spiderX'] = (string) $data['spider_x'];
+        }
+        $verify = trim((string) ($data['mldsa65_verify'] ?? ''));
+        if ($verify !== '') {
+            $client['mldsa65Verify'] = $verify;
+        }
+        if ($client !== []) {
+            $settings['settings'] = $client;
+        }
+
+        return $settings;
+    }
+
+    /** fallback 限速块展示（无则三键全 0，供表单绑定）。 */
+    private function presentLimitFallback(mixed $block): array
+    {
+        $block = is_array($block) ? $block : [];
+
+        return [
+            'after_bytes' => (int) ($block['afterBytes'] ?? 0),
+            'bytes_per_sec' => (int) ($block['bytesPerSec'] ?? 0),
+            'burst_bytes_per_sec' => (int) ($block['burstBytesPerSec'] ?? 0),
+        ];
+    }
+
+    /** fallback 限速块：三字段全 0（或未提交）返回 null，否则补 0 后返回三键块。 */
+    private function limitFallback(?array $data): ?array
+    {
+        if (! is_array($data)) {
+            return null;
+        }
+        $after = (int) ($data['after_bytes'] ?? 0);
+        $rate = (int) ($data['bytes_per_sec'] ?? 0);
+        $burst = (int) ($data['burst_bytes_per_sec'] ?? 0);
+        if ($after === 0 && $rate === 0 && $burst === 0) {
+            return null;
+        }
+
+        return [
+            'afterBytes' => $after,
+            'bytesPerSec' => $rate,
+            'burstBytesPerSec' => $burst,
+        ];
+    }
+
     /** 建议 tag（协议-安全-传输，冲突自动加序号）。 */
     private function suggestTag(Node $node, string $protocol, string $security, string $network, ?int $excludeId): string
     {
@@ -387,6 +518,7 @@ class XrayInboundController extends Controller
     {
         $stream = $inbound->stream_settings ?? [];
         $reality = $stream['realitySettings'] ?? [];
+        $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
         $settings = $inbound->settings ?? [];
 
         $clientCount = $inbound->protocol === 'shadowsocks'
@@ -406,6 +538,20 @@ class XrayInboundController extends Controller
             'short_ids' => array_values((array) ($reality['shortIds'] ?? [])),
             'public_key' => $reality['publicKey'] ?? null,
             'has_private_key' => $inbound->reality_private_key !== null,
+            // reality 高级字段（编辑表单回填；mldsa65 为成对材料，随表单 round-trip，
+            // 私钥仍只进 config 不外泄）
+            'show' => (bool) ($reality['show'] ?? false),
+            'xver' => (int) ($reality['xver'] ?? 0),
+            'min_client_ver' => (string) ($reality['minClientVer'] ?? ''),
+            'max_client_ver' => (string) ($reality['maxClientVer'] ?? ''),
+            'max_timediff' => (int) ($reality['maxTimediff'] ?? 0),
+            'mldsa65_seed' => (string) ($reality['mldsa65Seed'] ?? ''),
+            'mldsa65_verify' => (string) ($client['mldsa65Verify'] ?? ''),
+            'master_key_log' => (string) ($reality['masterKeyLog'] ?? ''),
+            'fingerprint' => (string) ($client['fingerprint'] ?? ''),
+            'spider_x' => (string) ($client['spiderX'] ?? ($reality['spiderX'] ?? '')),
+            'limit_fallback_upload' => $this->presentLimitFallback($reality['limitFallbackUpload'] ?? null),
+            'limit_fallback_download' => $this->presentLimitFallback($reality['limitFallbackDownload'] ?? null),
             'ws_path' => $stream['wsSettings']['path'] ?? null,
             'ws_host' => $stream['wsSettings']['host'] ?? null,
             'tls_server_name' => $stream['tlsSettings']['serverName'] ?? null,

@@ -46,6 +46,9 @@ class WarpService
      */
     public function register(): NodeWarpAccount
     {
+        // 首次注册时该关系在 $this->node 上被缓存为 null；注册写入账户后必须清缓存，
+        // 否则紧随其后的 apply() 会读到旧的 null 关系并误报「尚未注册」。
+        $this->node->unsetRelation('warpAccount');
         $existingLicense = $this->node->warpAccount?->license_key;
 
         [$privateKey, $publicKey] = self::generateWireguardKeypair();
@@ -130,6 +133,8 @@ class WarpService
     /** 应用/更新到节点：组装 wireguard 出站写入 xray_outbounds 并 bump 版本。 */
     public function apply(): XrayOutbound
     {
+        // 与 register 同源：调用方实例上可能缓存了注册前的空关系，取前先失效
+        $this->node->unsetRelation('warpAccount');
         $account = $this->node->warpAccount;
         if ($account === null) {
             throw new \RuntimeException('尚未注册 WARP，请先注册');

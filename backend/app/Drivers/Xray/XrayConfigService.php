@@ -4,8 +4,10 @@ namespace App\Drivers\Xray;
 
 use App\Models\Node;
 use App\Models\User;
+use App\Models\XrayBalancer;
 use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
+use App\Models\XrayOutboundSubscription;
 use App\Models\XrayRoutingRule;
 use Illuminate\Support\Collection;
 
@@ -39,6 +41,16 @@ class XrayConfigService
     public const DEFAULT_DEST = 'www.cloudflare.com:443';
     public const DEFAULT_SNI = 'www.cloudflare.com';
 
+    /** Reality 高级字段缺省语（3x-ui reality.ts 字段集，内核默认值）。 */
+    private const REALITY_ADV_DEFAULTS = [
+        'xver' => 0,
+        'show' => false,
+        'minClientVer' => '',
+        'maxClientVer' => '',
+        'maxTimediff' => 0,
+        'mldsa65Seed' => '',
+    ];
+
     // ── 全量渲染 ─────────────────────────────────────────
 
     /**
@@ -53,7 +65,7 @@ class XrayConfigService
             $inbounds[] = $this->renderInbound($inbound, $users);
         }
 
-        return [
+        return array_merge([
             'log' => ['loglevel' => 'warning'],
             'api' => [
                 'tag' => 'api',
@@ -65,7 +77,7 @@ class XrayConfigService
             'outbounds' => $this->renderOutbounds($node),
             'routing' => $this->renderRouting($node),
             'inbounds' => $inbounds,
-        ];
+        ], $this->renderObservatory($node)); // observatory / burstObservatory（顶层，balancer 需要时）
     }
 
     /** 渲染并编码为 JSON 字符串（ETag 与响应体的唯一编码口径）。 */
@@ -176,6 +188,26 @@ class XrayConfigService
             $settings['privateKey'] = $privateKey;
         }
 
+        // 内核默认值原样输出（3x-ui reality.ts 全字段），显式设置覆盖之
+        foreach (self::REALITY_ADV_DEFAULTS as $key => $default) {
+            $settings[$key] = $public[$key] ?? $default;
+        }
+
+        // masterKeyLog / fallback 限速：可选块，仅显式设置时输出
+        if (trim((string) ($public['masterKeyLog'] ?? '')) !== '') {
+            $settings['masterKeyLog'] = (string) $public['masterKeyLog'];
+        }
+        foreach (['limitFallbackUpload', 'limitFallbackDownload'] as $key) {
+            $block = $public[$key] ?? null;
+            if (is_array($block)) {
+                $settings[$key] = [
+                    'afterBytes' => (int) ($block['afterBytes'] ?? 0),
+                    'bytesPerSec' => (int) ($block['bytesPerSec'] ?? 0),
+                    'burstBytesPerSec' => (int) ($block['burstBytesPerSec'] ?? 0),
+                ];
+            }
+        }
+
         return $settings;
     }
 
@@ -261,11 +293,16 @@ class XrayConfigService
 
     /**
      * 出站段：内置 direct（freedom + finalRules 阻私有网段）+ blocked（blackhole），
-     * 其后按 sort 追加节点自定义出站。
+     * 其后按 sort 追加节点自定义出站，并合并该节点的「出站订阅」出站。
+     *
+     * 顺序（对齐 3x-ui mergeSubscriptionOutbounds）：
+     *   内置 direct/blocked → 订阅 prepend → 自定义出站 → 订阅 append
+     * 内置出站恒在最前，保证 direct 作为默认兜底出口不被订阅顶掉。
+     * 订阅 tag 与已有 tag 冲突时丢弃（自定义/内置为准），避免 xray 报重复 tag。
      */
     public function renderOutbounds(Node $node): array
     {
-        $outbounds = [
+        $system = [
             [
                 'tag' => 'direct',
                 'protocol' => 'freedom',
@@ -283,10 +320,13 @@ class XrayConfigService
             ],
         ];
 
+        $custom = [];
+        $seen = ['direct' => true, 'blocked' => true, 'api' => true];
         foreach (XrayOutbound::enabledFor($node) as $outbound) {
-            if (in_array($outbound->tag, ['direct', 'blocked', 'api'], true)) {
-                continue; // 系统保留 tag 不可占用
+            if (isset($seen[$outbound->tag])) {
+                continue; // 系统保留 tag / 重复 tag 不可占用
             }
+            $seen[$outbound->tag] = true;
 
             $frag = [
                 'tag' => $outbound->tag,
@@ -297,10 +337,31 @@ class XrayConfigService
             if ($stream !== []) {
                 $frag['streamSettings'] = $stream;
             }
-            $outbounds[] = $frag;
+            $custom[] = $frag;
         }
 
-        return $outbounds;
+        // 订阅出站：prepend 排自定义出站之前、append 排其后；与已有 tag 冲突则丢弃
+        $split = XrayOutboundSubscription::activeOutboundsSplit($node);
+        $prepend = [];
+        foreach ($split['prepend'] as $ob) {
+            $tag = (string) ($ob['tag'] ?? '');
+            if ($tag === '' || isset($seen[$tag])) {
+                continue;
+            }
+            $seen[$tag] = true;
+            $prepend[] = $ob;
+        }
+        $append = [];
+        foreach ($split['append'] as $ob) {
+            $tag = (string) ($ob['tag'] ?? '');
+            if ($tag === '' || isset($seen[$tag])) {
+                continue;
+            }
+            $seen[$tag] = true;
+            $append[] = $ob;
+        }
+
+        return array_merge($system, $prepend, $custom, $append);
     }
 
     /** 出站 settings 组装（wireguard 私钥解密注入；空 settings 出 {}）。 */
@@ -338,8 +399,11 @@ class XrayConfigService
             ],
         ];
 
+        // balancer tag 集合：规则目标命中 balancer 时渲染成 balancerTag（而非 outboundTag）
+        $balancerTags = XrayBalancer::enabledFor($node)->pluck('tag')->flip();
+
         foreach (XrayRoutingRule::enabledFor($node) as $rule) {
-            $frag = ['type' => 'field', 'outboundTag' => $rule->outbound_tag];
+            $frag = ['type' => 'field'];
             if (! empty($rule->domains)) {
                 $frag['domain'] = array_values(array_filter((array) $rule->domains, 'is_string'));
             }
@@ -358,16 +422,124 @@ class XrayConfigService
             if (! empty($rule->inbound_tag)) {
                 $frag['inboundTag'] = [(string) $rule->inbound_tag];
             }
-            // 空规则（无任何匹配条件）会命中全部流量，跳过防误配
-            if (count($frag) <= 2) {
+            // 空规则（无任何匹配条件）会命中全部流量，跳过防误配（frag 此时只有 type）
+            if (count($frag) <= 1) {
                 continue;
             }
+            // 同一规则既可能指向出站，也可能指向 balancer（tag 全局唯一，哪个在册用哪个）
+            $key = $balancerTags->has($rule->outbound_tag) ? 'balancerTag' : 'outboundTag';
+            $frag[$key] = $rule->outbound_tag;
             $rules[] = $frag;
         }
 
+        $settings = $node->xrayRoutingSettings();
+        $routing = ['domainStrategy' => $settings['domainStrategy']];
+        if ($settings['domainMatcher'] !== '') {
+            $routing['domainMatcher'] = $settings['domainMatcher'];
+        }
+
+        // 负载均衡器（xray 前缀匹配 selector）；least* 策略需观测器数据，渲染层自动补齐
+        $balancers = $this->renderBalancers($node);
+        if ($balancers !== []) {
+            $routing['balancers'] = $balancers;
+        }
+
+        $routing['rules'] = $rules;
+
+        return $routing;
+    }
+
+    /**
+     * balancer 段渲染。
+     *
+     * leastPing / leastLoad 及「random|roundRobin + fallbackTag」策略在 xray-core 里
+     * 需要观测器数据，否则启动即报 "not all dependencies are resolved"
+     * （已用本地 xray 26.3.27 实测）。观测器由 renderObservatory() 据同一批 balancer
+     * 在顶层输出，此处只产出 balancers 数组。
+     */
+    private function renderBalancers(Node $node): array
+    {
+        $balancers = [];
+        foreach (XrayBalancer::enabledFor($node) as $b) {
+            $selectors = array_values(array_filter((array) $b->selectors, fn ($s) => is_string($s) && $s !== ''));
+            if ($selectors === []) {
+                continue; // 无 selector 的 balancer 选不出任何出站，跳过防误配
+            }
+            $frag = [
+                'tag' => $b->tag,
+                'selector' => $selectors,
+                'strategy' => ['type' => $b->strategy],
+            ];
+            if (! empty($b->fallback_tag)) {
+                $frag['fallbackTag'] = $b->fallback_tag;
+            }
+            $balancers[] = $frag;
+        }
+
+        return $balancers;
+    }
+
+    /**
+     * 顶层观测器段（observatory / burstObservatory）—— xray 要求它们位于 config 根，
+     * 而非 routing 内。据启用的 balancer 策略决定类型与 subjectSelector；无需求时返回 []。
+     *
+     * @return array{observatory?: array, burstObservatory?: array}
+     */
+    public function renderObservatory(Node $node): array
+    {
+        $observatorySelectors = [];   // leastPing → observatory
+        $burstSelectors = [];         // leastLoad / roundRobin(+fallback) → burstObservatory
+
+        foreach (XrayBalancer::enabledFor($node) as $b) {
+            $selectors = array_values(array_filter((array) $b->selectors, fn ($s) => is_string($s) && $s !== ''));
+            if ($selectors === []) {
+                continue;
+            }
+            if ($b->strategy === 'leastPing') {
+                $observatorySelectors = array_merge($observatorySelectors, $selectors);
+            } elseif ($b->strategy === 'leastLoad'
+                || (in_array($b->strategy, ['random', 'roundRobin'], true) && ! empty($b->fallback_tag))) {
+                $burstSelectors = array_merge($burstSelectors, $selectors);
+            }
+        }
+
+        if ($burstSelectors !== []) {
+            // 有 burst 需求时，把 leastPing 的 selector 一并并入 burst（避免内核解析到无数据的 observatory）
+            return ['burstObservatory' => $this->burstObservatory(
+                array_values(array_unique(array_merge($burstSelectors, $observatorySelectors)))
+            )];
+        }
+        if ($observatorySelectors !== []) {
+            return ['observatory' => $this->observatory(array_values(array_unique($observatorySelectors)))];
+        }
+
+        return [];
+    }
+
+    /** xray 主动探测观测器段（leastPing 的延迟数据源）。 */
+    private function observatory(array $selectors): array
+    {
         return [
-            'domainStrategy' => 'AsIs',
-            'rules' => $rules,
+            'subjectSelector' => $selectors,
+            'probeURL' => 'https://www.google.com/generate_204',
+            'probeInterval' => '1m',
+            'enableConcurrency' => true,
+        ];
+    }
+
+    /** xray 突发探测观测器段（leastLoad / roundRobin+fallback 的数据源）。 */
+    private function burstObservatory(array $selectors): array
+    {
+        return [
+            'subjectSelector' => $selectors,
+            'pingConfig' => [
+                'destination' => 'https://www.google.com/generate_204',
+                'interval' => '1m',
+                'connectivity' => '',
+                'timeout' => '5s',
+                'sampling' => 2,
+                'httpMethod' => 'HEAD',
+            ],
         ];
     }
 
@@ -432,10 +604,15 @@ class XrayConfigService
         $security = $stream['security'] ?? 'none';
         $network = $stream['network'] ?? 'tcp';
 
-        $query = 'type=' . $network . '&security=' . $security . '&fp=chrome';
+        $query = 'type=' . $network . '&security=' . $security;
 
         if ($security === 'reality') {
             $public = $stream['realitySettings'] ?? [];
+            $client = is_array($public['settings'] ?? null) ? $public['settings'] : [];
+            // uTLS 指纹：入站未指定则回落 chrome（历史行为）
+            $fp = trim((string) ($client['fingerprint'] ?? '')) ?: 'chrome';
+            $query .= '&fp=' . rawurlencode($fp);
+
             $sni = $public['serverNames'][0] ?? self::DEFAULT_SNI;
             $query .= '&sni=' . rawurlencode((string) $sni)
                 . '&pbk=' . rawurlencode((string) ($public['publicKey'] ?? ''));
@@ -443,12 +620,24 @@ class XrayConfigService
             if ($sid !== '') {
                 $query .= '&sid=' . rawurlencode((string) $sid);
             }
+            // spiderX：客户端段优先，兼容旧写法落在 realitySettings 顶层
+            $spx = (string) ($client['spiderX'] ?? ($public['spiderX'] ?? ''));
+            if ($spx !== '') {
+                $query .= '&spx=' . rawurlencode($spx);
+            }
+            // 后量子校验（pqv）
+            $pqv = trim((string) ($client['mldsa65Verify'] ?? ''));
+            if ($pqv !== '') {
+                $query .= '&pqv=' . rawurlencode($pqv);
+            }
             if ($this->flowApplies($inbound)) {
                 $query .= '&flow=' . self::FLOW;
             }
         } elseif ($security === 'tls') {
             $tls = $stream['tlsSettings'] ?? [];
-            $query .= '&sni=' . rawurlencode((string) ($tls['serverName'] ?? $host));
+            $query .= '&fp=chrome&sni=' . rawurlencode((string) ($tls['serverName'] ?? $host));
+        } else {
+            $query .= '&fp=chrome';
         }
 
         if ($network === 'ws') {

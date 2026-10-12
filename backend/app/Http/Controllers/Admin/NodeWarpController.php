@@ -28,18 +28,31 @@ class NodeWarpController extends Controller
         return $this->success($this->present($node));
     }
 
-    /** POST /admin-api/nodes/{node}/warp/register */
+    /** POST /admin-api/nodes/{node}/warp/register —— 注册并应用（一步到位）。 */
     public function register(Node $node): JsonResponse
     {
         $this->ensureXray($node);
 
+        $service = new WarpService($node);
         try {
-            (new WarpService($node))->register();
+            $service->register();
         } catch (\Throwable $e) {
             return $this->error('WARP 注册失败：' . $e->getMessage());
         }
 
-        return $this->success($this->present($node->fresh()));
+        // 注册成功即自动应用（生成 wireguard 出站下发节点）。apply 失败不阻断注册
+        // —— 账户已就绪，管理员可在页面点「重新应用」；错误随响应回传以便提示。
+        $applyError = null;
+        try {
+            $service->apply();
+        } catch (\Throwable $e) {
+            $applyError = $e->getMessage();
+        }
+
+        return $this->success([
+            ...$this->present($node->fresh()),
+            'apply_error' => $applyError,
+        ]);
     }
 
     /** POST /admin-api/nodes/{node}/warp/apply */

@@ -30,6 +30,9 @@ class XrayOutboundController extends Controller
     /** 系统保留 tag（与 XrayConfigService 内置出站一致，不可占用）。 */
     private const RESERVED_TAGS = ['direct', 'blocked', 'api'];
 
+    /** 不可作「借道出站」的目标协议：blackhole 无出口、freedom 语义等同直连（与 3x-ui 排除 blackhole 一致）。 */
+    private const PROXY_UNSUPPORTED_PROTOCOLS = ['freedom', 'blackhole'];
+
     /** GET /admin-api/nodes/{node}/xray-outbounds */
     public function index(Node $node): JsonResponse
     {
@@ -197,6 +200,8 @@ class XrayOutboundController extends Controller
             'ws_path' => ['nullable', 'string', 'max:255'],
             'ws_host' => ['nullable', 'string', 'max:255'],
             'tls_server_name' => ['nullable', 'string', 'max:255'],
+            // 中转「借道」：本出站的连接先经同节点另一出站拨出（xray sockopt.dialerProxy）
+            'dialer_proxy' => ['nullable', 'string', 'max:64'],
             // wireguard（高级透传兜底；WARP 功能外的手工 wireguard）
             'wg_secret_key' => ['nullable', 'string', 'max:255'],
             'wg_address' => ['nullable', 'string', 'max:512'], // 逗号分隔
@@ -236,7 +241,7 @@ class XrayOutboundController extends Controller
             $settings = $this->buildSettings($protocol, $data);
         }
         if ($stream === null) {
-            $stream = $this->buildStream($protocol, $data);
+            $stream = $this->buildStream($protocol, $data, $node, $existing);
         }
 
         // wireguard 私钥分离存储（加密列）
@@ -336,8 +341,19 @@ class XrayOutboundController extends Controller
      * 为了让「高级 JSON 透传」与「表单组装」统一，这里把 secretKey 从 settings 中剥离，
      * 渲染层（XrayConfigService::outboundSettings）统一从 secret_key 列注入。
      */
-    private function buildStream(string $protocol, array $data): array
+    /**
+     * 按协议组装 streamSettings（结构化字段路径）。
+     *
+     * 「借道出站」（dialer_proxy）对 freedom/blackhole 不适用，故在早退之前先校验；
+     * 校验通过才写入 `sockopt.dialerProxy`。
+     */
+    private function buildStream(string $protocol, array $data, Node $node, ?XrayOutbound $existing): array
     {
+        $dialerProxy = trim((string) ($data['dialer_proxy'] ?? ''));
+        if ($dialerProxy !== '') {
+            $this->validateDialerProxy($dialerProxy, $node, $existing);
+        }
+
         if (in_array($protocol, ['freedom', 'blackhole'], true)) {
             return [];
         }
@@ -361,7 +377,35 @@ class XrayOutboundController extends Controller
             ], fn ($v) => $v !== '');
         }
 
+        // 「借道出站」：sockopt.dialerProxy = 同节点另一出站的 tag（排除自身/blackhole/不存在）
+        if ($dialerProxy !== '') {
+            $stream['sockopt'] = array_merge($stream['sockopt'] ?? [], ['dialerProxy' => $dialerProxy]);
+        }
+
         return $stream;
+    }
+
+    /**
+     * 校验「借道出站」目标：必须是同节点内已存在、且能作为出口的另一条出站。
+     *
+     * @param  XrayOutbound|null  $existing  编辑时的自身（自引用直接拒绝）
+     */
+    private function validateDialerProxy(string $tag, Node $node, ?XrayOutbound $existing): void
+    {
+        if ($existing !== null && $tag === $existing->tag) {
+            throw ValidationException::withMessages(['dialer_proxy' => '借道出站不能指向自身']);
+        }
+
+        $target = $node->xrayOutbounds()->where('tag', $tag)
+            ->when($existing, fn ($q) => $q->where('id', '!=', $existing->id))
+            ->first();
+
+        if ($target === null) {
+            throw ValidationException::withMessages(['dialer_proxy' => "借道出站 {$tag} 不存在"]);
+        }
+        if (in_array($target->protocol, self::PROXY_UNSUPPORTED_PROTOCOLS, true)) {
+            throw ValidationException::withMessages(['dialer_proxy' => "借道出站 {$tag}（{$target->protocol}）不能作为出口"]);
+        }
     }
 
     private function requireField(string $value, string $field): string
@@ -436,6 +480,7 @@ class XrayOutboundController extends Controller
             'port' => is_array($first) ? ($first['port'] ?? null) : null,
             'network' => $stream['network'] ?? null,
             'security' => $stream['security'] ?? null,
+            'dialer_proxy' => (string) ($stream['sockopt']['dialerProxy'] ?? '') ?: null,
             'enabled' => $outbound->enabled,
             'sort' => $outbound->sort,
             'settings' => $settings,

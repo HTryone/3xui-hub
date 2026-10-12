@@ -48,3 +48,7 @@ Schedule::command('third-party:fetch')->everyTwoHours()->name('third-party-fetch
 // WARP 定时换 IP：每分钟检查各节点 WARP 账户的 auto_rotate_hours 是否到点（0=关闭）。
 // 到点换 IP = 重新注册设备 → 重组 wireguard 出站 → bump config → 节点秒级拉取生效。
 Schedule::command('xray:warp-rotate')->everyMinute()->name('xray-warp-rotate')->withoutOverlapping();
+
+// 出站订阅刷新：每 5 分钟检查各节点订阅是否到期（last_fetched_at + update_interval）。
+// 内容变化则 bump 节点 config_version → 节点秒级拉新。无订阅时命令直接跳过。
+Schedule::command('xray:refresh-outbound-subs')->everyFiveMinutes()->name('xray-refresh-outbound-subs')->withoutOverlapping();

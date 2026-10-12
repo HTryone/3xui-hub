@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.25.4**
+**版本：1.26.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,18 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.26.0 (2026-10-12)
+
+xray 出站 / 路由 / WARP / Reality 能力补齐：
+
+- 出站「中转」：可指定另一出站作为出口（`sockopt.dialerProxy`），表单下拉选择
+- 出站支持粘贴分享链接导入（vless / vmess / trojan / ss / socks / http）
+- 出站订阅（服务器池）：粘贴订阅地址即得一组出口；标签跨刷新稳定、SSRF 防护、定时自动刷新
+- 路由：新增负载均衡（balancers：轮询 / 最低延迟 / 最低负载）+ 域名解析策略可配 + 规则命中测试器
+- WARP：注册后自动应用（一步生成 wireguard 出站），随即可在路由中被选择
+- Reality 入站：补齐 12 项高级参数（xver / spiderX / maxTimediff / mldsa65 抗量子 / fallback 限速等）；订阅链接指纹不再写死
+- 节点安装脚本：state.json 原子写入、重复安装跳过重下（幂等）、缺失依赖自动安装
+
 ### v1.25.4 (2026-10-12)
 
 - 修复卸载脚本漏清 `3xui-hub-queue-mail` / `3xui-hub-node-ws` 服务：卸载后面板机不再残留重启循环与僵尸服务；多域名助手（3hub-domain + sudoers）也随卸载一并清理
@@ -298,7 +310,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.25.4**
+**Version: 1.26.0**
 
 ## Screenshots
 
@@ -368,7 +380,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.25.4-blue
+[version-shield]: https://img.shields.io/badge/version-1.26.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

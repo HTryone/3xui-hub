@@ -5,7 +5,9 @@ namespace App\Http\Controllers\Admin;
 use App\Drivers\Xray\XrayConfigService;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
+use App\Models\XrayBalancer;
 use App\Models\XrayOutbound;
+use App\Models\XrayOutboundSubscription;
 use App\Models\XrayRoutingRule;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -15,7 +17,9 @@ use Illuminate\Validation\ValidationException;
 /**
  * Admin xray 节点路由管理（/admin-api/nodes/{node}/xray-routing）。
  *
- * - 规则 CRUD（域名/IP/端口/网络/协议/入站 → 目标出站）
+ * - 规则 CRUD（域名/IP/端口/网络/协议/入站 → 目标出站 / balancer）
+ * - 负载均衡器（balancer）CRUD：selector 前缀 → 多个出站间分摊
+ * - 基础设置（routing.domainStrategy / domainMatcher）存取
  * - 路由测试器：输入域名或 IP，按渲染口径（内置基础规则 + 自定义规则）
  *   逐条模拟匹配，返回命中的规则与最终出站
  *
@@ -24,6 +28,12 @@ use Illuminate\Validation\ValidationException;
 class XrayRoutingController extends Controller
 {
     use ApiResponse;
+
+    /** routing.domainStrategy 合法值（xray routing 枚举）。 */
+    public const DOMAIN_STRATEGIES = ['AsIs', 'IPIfNonMatch', 'IPOnDemand'];
+
+    /** routing.domainMatcher 合法值（空=内核默认）。 */
+    public const DOMAIN_MATCHERS = ['', 'mph', 'hybrid'];
 
     public function __construct(
         private readonly XrayConfigService $config,
@@ -35,11 +45,19 @@ class XrayRoutingController extends Controller
         $this->ensureXray($node);
 
         $rules = $node->xrayRoutingRules()->orderBy('sort')->orderBy('id')->get();
+        $balancers = $node->xrayBalancers()->orderBy('sort')->orderBy('id')->get();
 
         return $this->success([
             'rules' => $rules->map(fn (XrayRoutingRule $r) => $this->present($r))->values()->all(),
-            'outbound_tags' => $this->outboundTags($node),
+            'balancers' => $balancers->map(fn (XrayBalancer $b) => $this->presentBalancer($b))->values()->all(),
+            // 规则目标候选：出站 + 已启用 balancer（tag 全局唯一）
+            'outbound_tags' => $this->targetTags($node),
+            'outbound_only_tags' => $this->outboundTags($node),
             'inbound_tags' => $node->xrayInbounds()->pluck('tag')->values()->all(),
+            'settings' => $node->xrayRoutingSettings(),
+            'strategies' => XrayBalancer::STRATEGIES,
+            'domain_strategies' => self::DOMAIN_STRATEGIES,
+            'domain_matchers' => self::DOMAIN_MATCHERS,
             'config_version' => $node->xrayConfigVersion(),
         ]);
     }
@@ -91,6 +109,85 @@ class XrayRoutingController extends Controller
         $node->bumpXrayConfigVersion();
 
         return $this->success(['config_version' => $node->xrayConfigVersion()]);
+    }
+
+    // ── 负载均衡器（balancer） ────────────────────────────
+
+    /** POST /admin-api/nodes/{node}/xray-routing/balancers */
+    public function storeBalancer(Request $request, Node $node): JsonResponse
+    {
+        $this->ensureXray($node);
+        $data = $this->validateBalancer($request, $node);
+
+        $balancer = new XrayBalancer();
+        $balancer->node_id = $node->id;
+        $this->fillBalancer($balancer, $data);
+        $balancer->save();
+
+        $node->bumpXrayConfigVersion();
+
+        return $this->success([
+            'balancer' => $this->presentBalancer($balancer->fresh()),
+            'config_version' => $node->xrayConfigVersion(),
+        ]);
+    }
+
+    /** PUT /admin-api/nodes/{node}/xray-routing/balancers/{balancer} */
+    public function updateBalancer(Request $request, Node $node, XrayBalancer $balancer): JsonResponse
+    {
+        $this->ensureXray($node);
+        if ((int) $balancer->node_id !== (int) $node->id) {
+            abort(404);
+        }
+
+        $data = $this->validateBalancer($request, $node, $balancer);
+        $this->fillBalancer($balancer, $data);
+        $balancer->save();
+
+        $node->bumpXrayConfigVersion();
+
+        return $this->success([
+            'balancer' => $this->presentBalancer($balancer->fresh()),
+            'config_version' => $node->xrayConfigVersion(),
+        ]);
+    }
+
+    /** DELETE /admin-api/nodes/{node}/xray-routing/balancers/{balancer} */
+    public function destroyBalancer(Node $node, XrayBalancer $balancer): JsonResponse
+    {
+        $this->ensureXray($node);
+        if ((int) $balancer->node_id !== (int) $node->id) {
+            abort(404);
+        }
+
+        $balancer->delete();
+        $node->bumpXrayConfigVersion();
+
+        return $this->success(['config_version' => $node->xrayConfigVersion()]);
+    }
+
+    // ── 基础设置（domainStrategy / domainMatcher） ────────
+
+    /** PUT /admin-api/nodes/{node}/xray-routing/settings */
+    public function updateSettings(Request $request, Node $node): JsonResponse
+    {
+        $this->ensureXray($node);
+
+        $data = $request->validate([
+            'domain_strategy' => ['nullable', 'string', 'in:' . implode(',', self::DOMAIN_STRATEGIES)],
+            'domain_matcher' => ['nullable', 'string', 'in:' . implode(',', array_filter(self::DOMAIN_MATCHERS, fn ($m) => $m !== ''))],
+        ]);
+
+        $node->setXrayRoutingSettings(
+            (string) ($data['domain_strategy'] ?? 'AsIs'),
+            (string) ($data['domain_matcher'] ?? ''),
+        );
+        $node->bumpXrayConfigVersion();
+
+        return $this->success([
+            'settings' => $node->xrayRoutingSettings(),
+            'config_version' => $node->xrayConfigVersion(),
+        ]);
     }
 
     /**
@@ -152,7 +249,9 @@ class XrayRoutingController extends Controller
                 $matched = [
                     'index' => $idx,
                     'rule' => $rule,
-                    'outbound' => $rule['outboundTag'],
+                    // 规则目标是 balancer 时只有 balancerTag（最终出口由选举决定）
+                    'outbound' => $rule['balancerTag'] ?? $rule['outboundTag'] ?? null,
+                    'is_balancer' => isset($rule['balancerTag']),
                     'notes' => $notes,
                 ];
                 break;
@@ -163,6 +262,8 @@ class XrayRoutingController extends Controller
             'matched' => $matched,
             // 未命中任何规则：走第一条出站（xray 默认行为 = direct）
             'outbound' => $matched['outbound'] ?? 'direct',
+            // 默认出口（规则链未命中时的兜底），供前端显式展示「最终出口从何而来」
+            'default_outbound' => 'direct',
             'rules_checked' => count($rules),
         ]);
     }
@@ -183,18 +284,59 @@ class XrayRoutingController extends Controller
         }
     }
 
-    /** 可选目标出站：内置 + 自定义 + warp。 */
+    /** 可选目标出站：内置 + 自定义 + warp + 订阅。 */
     private function outboundTags(Node $node): array
     {
         $tags = [
             ['tag' => 'direct', 'label' => '直连（内置）'],
             ['tag' => 'blocked', 'label' => '拦截（内置）'],
         ];
+        $seen = ['direct' => true, 'blocked' => true, 'api' => true];
+
         foreach (XrayOutbound::enabledFor($node) as $outbound) {
+            if (isset($seen[$outbound->tag])) {
+                continue;
+            }
+            $seen[$outbound->tag] = true;
             $tags[] = [
                 'tag' => $outbound->tag,
                 'label' => $outbound->remark ?: $outbound->protocol,
             ];
+        }
+
+        // 订阅出站（服务器池）也是合法路由目标
+        foreach (XrayOutboundSubscription::activeTags($node) as $tag) {
+            if (isset($seen[$tag])) {
+                continue;
+            }
+            $seen[$tag] = true;
+            $tags[] = ['tag' => $tag, 'label' => '订阅'];
+        }
+
+        return $tags;
+    }
+
+    /** 出站 tag 纯字符串列表（balancer selector 匹配的候选）。 */
+    private function outboundTagStrings(Node $node): array
+    {
+        return array_column($this->outboundTags($node), 'tag');
+    }
+
+    /** 本节点已启用 balancer 的 tag 列表。 */
+    private function balancerTagStrings(Node $node): array
+    {
+        return XrayBalancer::enabledFor($node)->pluck('tag')->all();
+    }
+
+    /**
+     * 规则目标候选：出站（内置 + 自定义）+ 已启用 balancer。
+     * tag 全局唯一 → 前端下拉直接以 tag 为值，渲染层按在册情况判定 outboundTag / balancerTag。
+     */
+    private function targetTags(Node $node): array
+    {
+        $tags = $this->outboundTags($node);
+        foreach (XrayBalancer::enabledFor($node) as $b) {
+            $tags[] = ['tag' => $b->tag, 'label' => '负载均衡：' . ($b->remark ?: $b->strategy)];
         }
 
         return $tags;
@@ -223,13 +365,100 @@ class XrayRoutingController extends Controller
             throw ValidationException::withMessages(['domains' => '至少需要一个匹配条件（域名/IP/端口/网络/协议/入站）']);
         }
 
-        // 目标出站必须存在（内置或已配置）
-        $valid = array_column($this->outboundTags($node), 'tag');
+        // 目标 tag 必须存在（内置出站 / 自定义出站 / 已启用 balancer）
+        $valid = array_column($this->targetTags($node), 'tag');
         if (! in_array($data['outbound_tag'], $valid, true)) {
             throw ValidationException::withMessages(['outbound_tag' => '目标出站不存在']);
         }
 
         return $data;
+    }
+
+    /**
+     * balancer 载荷校验。
+     *
+     * - tag 同节点唯一（更新时排除自身）
+     * - selector 至少一条，且每条都前缀匹配到「存在的出站」（xray selector 为前缀匹配）
+     * - fallback_tag 若填，必须是存在的出站（balancer 不作为回退目标，避免环）
+     */
+    private function validateBalancer(Request $request, Node $node, ?XrayBalancer $self = null): array
+    {
+        $data = $request->validate([
+            'tag' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9._-]+$/'],
+            'selectors' => ['required', 'array', 'min:1', 'max:50'],
+            'selectors.*' => ['string', 'max:64'],
+            'strategy' => ['required', 'string', 'in:' . implode(',', XrayBalancer::STRATEGIES)],
+            'fallback_tag' => ['nullable', 'string', 'max:64'],
+            'remark' => ['nullable', 'string', 'max:128'],
+            'enabled' => ['nullable', 'boolean'],
+            'sort' => ['nullable', 'integer', 'min:0', 'max:65535'],
+        ]);
+
+        $tag = trim($data['tag']);
+        $dupQuery = XrayBalancer::where('node_id', $node->id)->where('tag', $tag);
+        if ($self !== null) {
+            $dupQuery->where('id', '!=', $self->id);
+        }
+        if ($dupQuery->exists()) {
+            throw ValidationException::withMessages(['tag' => '该负载均衡 tag 已存在']);
+        }
+
+        // tag 不能与出站 tag 撞名（渲染层 outboundTag / balancerTag 靠唯一 tag 区分）
+        if (in_array($tag, $this->outboundTagStrings($node), true)) {
+            throw ValidationException::withMessages(['tag' => '该 tag 与已有出站 tag 冲突']);
+        }
+
+        $outboundTags = $this->outboundTagStrings($node);
+        $selectors = array_values(array_filter(array_map('trim', $data['selectors']), fn ($s) => $s !== ''));
+        if ($selectors === []) {
+            throw ValidationException::withMessages(['selectors' => '至少需要一个 selector']);
+        }
+        foreach ($selectors as $selector) {
+            $matched = array_filter($outboundTags, fn ($t) => str_starts_with($t, $selector));
+            if ($matched === []) {
+                throw ValidationException::withMessages(['selectors' => "selector「{$selector}」没有匹配到任何出站"]);
+            }
+        }
+
+        $fallback = trim((string) ($data['fallback_tag'] ?? ''));
+        if ($fallback !== '' && ! in_array($fallback, $outboundTags, true)) {
+            throw ValidationException::withMessages(['fallback_tag' => '回退出站不存在']);
+        }
+
+        $data['tag'] = $tag;
+        $data['selectors'] = $selectors;
+        $data['fallback_tag'] = $fallback !== '' ? $fallback : null;
+
+        return $data;
+    }
+
+    private function fillBalancer(XrayBalancer $balancer, array $data): void
+    {
+        $balancer->tag = (string) $data['tag'];
+        $balancer->selectors = $data['selectors'];
+        $balancer->strategy = (string) $data['strategy'];
+        $balancer->fallback_tag = $data['fallback_tag'];
+        $balancer->remark = (string) ($data['remark'] ?? '') !== '' ? (string) $data['remark'] : null;
+        if (array_key_exists('enabled', $data)) {
+            $balancer->enabled = (bool) $data['enabled'];
+        }
+        if (array_key_exists('sort', $data)) {
+            $balancer->sort = (int) $data['sort'];
+        }
+    }
+
+    private function presentBalancer(XrayBalancer $balancer): array
+    {
+        return [
+            'id' => $balancer->id,
+            'tag' => $balancer->tag,
+            'selectors' => array_values((array) ($balancer->selectors ?? [])),
+            'strategy' => $balancer->strategy,
+            'fallback_tag' => $balancer->fallback_tag,
+            'remark' => $balancer->remark,
+            'enabled' => $balancer->enabled,
+            'sort' => $balancer->sort,
+        ];
     }
 
     private function fillFromPayload(XrayRoutingRule $rule, array $data): void

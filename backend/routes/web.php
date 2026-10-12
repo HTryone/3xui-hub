@@ -24,6 +24,7 @@ use App\Http\Controllers\Admin\XrayInboundController as AdminXrayInboundControll
 use App\Http\Controllers\Admin\XrayOutboundController as AdminXrayOutboundController;
 use App\Http\Controllers\Admin\XrayRoutingController as AdminXrayRoutingController;
 use App\Http\Controllers\Admin\NodeWarpController as AdminNodeWarpController;
+use App\Http\Controllers\Admin\OutboundSubscriptionController as AdminOutboundSubscriptionController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -107,9 +108,21 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::delete('/nodes/{node}/xray-outbounds/{outbound}', [AdminXrayOutboundController::class, 'destroy']);
     Route::post('/nodes/{node}/xray-outbounds/{outbound}/test', [AdminXrayOutboundController::class, 'test']);
 
+    // 出站订阅（服务器池）：静态段（refresh）必须排在 {subscription} 参数路由之前
+    Route::get('/nodes/{node}/xray-outbound-subscriptions', [AdminOutboundSubscriptionController::class, 'index']);
+    Route::post('/nodes/{node}/xray-outbound-subscriptions', [AdminOutboundSubscriptionController::class, 'store']);
+    Route::put('/nodes/{node}/xray-outbound-subscriptions/{subscription}', [AdminOutboundSubscriptionController::class, 'update']);
+    Route::delete('/nodes/{node}/xray-outbound-subscriptions/{subscription}', [AdminOutboundSubscriptionController::class, 'destroy']);
+    Route::post('/nodes/{node}/xray-outbound-subscriptions/{subscription}/refresh', [AdminOutboundSubscriptionController::class, 'refresh']);
+
     Route::get('/nodes/{node}/xray-routing', [AdminXrayRoutingController::class, 'index']);
     Route::post('/nodes/{node}/xray-routing', [AdminXrayRoutingController::class, 'store']);
     Route::post('/nodes/{node}/xray-routing/test', [AdminXrayRoutingController::class, 'test']);
+    // 负载均衡器 + 基础设置：字面量段必须排在 {rule} 参数路由之前（同 reality-keypair 的先例）
+    Route::post('/nodes/{node}/xray-routing/balancers', [AdminXrayRoutingController::class, 'storeBalancer']);
+    Route::put('/nodes/{node}/xray-routing/balancers/{balancer}', [AdminXrayRoutingController::class, 'updateBalancer']);
+    Route::delete('/nodes/{node}/xray-routing/balancers/{balancer}', [AdminXrayRoutingController::class, 'destroyBalancer']);
+    Route::put('/nodes/{node}/xray-routing/settings', [AdminXrayRoutingController::class, 'updateSettings']);
     Route::put('/nodes/{node}/xray-routing/{rule}', [AdminXrayRoutingController::class, 'update']);
     Route::delete('/nodes/{node}/xray-routing/{rule}', [AdminXrayRoutingController::class, 'destroy']);
 

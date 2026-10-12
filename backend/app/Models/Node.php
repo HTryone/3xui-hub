@@ -63,6 +63,18 @@ class Node extends Model
         return $this->hasMany(XrayRoutingRule::class);
     }
 
+    /** xray 节点出站订阅（服务器池，xray_outbound_subscriptions）。 */
+    public function xrayOutboundSubscriptions(): HasMany
+    {
+        return $this->hasMany(XrayOutboundSubscription::class);
+    }
+
+    /** xray 节点路由负载均衡器（xray_balancers）。 */
+    public function xrayBalancers(): HasMany
+    {
+        return $this->hasMany(XrayBalancer::class);
+    }
+
     /** WARP 账户（每节点一份）。 */
     public function warpAccount(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
@@ -163,6 +175,36 @@ class Node extends Model
         $this->driver_config = $cfg;
         $this->save();
         return $cfg['config_version'];
+    }
+
+    /**
+     * xray 路由基础设置：{domainStrategy, domainMatcher}。
+     *
+     * 存在 driver_config.xray_routing（JSON 列，免建表）。未设时返回默认口径
+     * （AsIs / 空 —— 与旧渲染的硬编码 'AsIs' 行为一致，老节点升级后配置不变）。
+     *
+     * @return array{domainStrategy: string, domainMatcher: string}
+     */
+    public function xrayRoutingSettings(): array
+    {
+        $s = $this->driver_config['xray_routing'] ?? [];
+
+        return [
+            'domainStrategy' => (string) ($s['domainStrategy'] ?? 'AsIs'),
+            'domainMatcher' => (string) ($s['domainMatcher'] ?? ''),
+        ];
+    }
+
+    /** 写入 xray 路由基础设置并落库（调用方随后自行 bump 版本）。 */
+    public function setXrayRoutingSettings(string $domainStrategy, string $domainMatcher): void
+    {
+        $cfg = $this->driver_config ?? [];
+        $cfg['xray_routing'] = [
+            'domainStrategy' => $domainStrategy,
+            'domainMatcher' => $domainMatcher,
+        ];
+        $this->driver_config = $cfg;
+        $this->save();
     }
 
     /**

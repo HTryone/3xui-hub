@@ -4,6 +4,7 @@
 # 用法：
 #   curl -fsSL {HUB}/node-install.sh | sudo bash -s -- \
 #       --hub https://hub.example.com --node my-node --secret xxxx
+#   可选追加 --no-auto-deps：关闭缺失依赖的自动安装（默认用 apt 自动装）
 # 动作：
 #   1. 检测 CPU 架构 → 映射面板资产 arch
 #   2. 从面板取 default 版本清单 → 下载对应 xray zip + sha256 自校验
@@ -20,11 +21,13 @@ SERVICE="controlhub-node.service"
 HUB=""
 NODE_NAME=""
 SECRET=""
+AUTO_DEPS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub)    HUB="$2"; shift 2 ;;
     --node)   NODE_NAME="$2"; shift 2 ;;
     --secret) SECRET="$2"; shift 2 ;;
+    --no-auto-deps) AUTO_DEPS=0; shift ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -43,10 +46,27 @@ fi
 
 # ── 依赖检查 ──────────────────────────────────────────────
 # python3 必须在此检查：脚本有 4 处用它解析面板清单（下方 manifest 解析），
-# 缺失时不会报错退出，而是产出空值后继续跑，报出与真实原因无关的错。
+# 缺失时会在解析处以 127 直接中断，报错与真实原因无关（难排查），故提前拦。
+# 缺依赖默认用 apt 自动安装（--no-auto-deps 可关闭，退回旧的报错退出）。
+declare -A DEP_PKG=([curl]=curl [unzip]=unzip [sha256sum]=coreutils [python3]=python3)
+MISSING=()
+for dep in curl unzip sha256sum python3; do
+  command -v "$dep" >/dev/null 2>&1 || MISSING+=("${DEP_PKG[$dep]}")
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+  if [ "$AUTO_DEPS" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+    echo "==> 自动安装缺失依赖: ${MISSING[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}"
+  else
+    echo "缺依赖: ${MISSING[*]}（Debian/Ubuntu: apt-get install -y ${MISSING[*]}；或用 --no-auto-deps 跳过本提示的自动安装逻辑）"
+    exit 1
+  fi
+fi
+# 复核（装了还缺就真退出；--no-auto-deps 且已装则正常放行）
 for dep in curl unzip sha256sum python3; do
   if ! command -v "$dep" >/dev/null 2>&1; then
-    echo "缺依赖: $dep（Debian/Ubuntu: apt-get install -y $dep）"
+    echo "缺依赖: $dep（自动安装未生效，请手动安装）"
     exit 1
   fi
 done
@@ -72,19 +92,26 @@ echo "  默认内核版本: v$DEFAULT_VER，资产: $FILE"
 echo "==> 下载 xray v$DEFAULT_VER ($ARCH)"
 mkdir -p "$NODE_DIR"
 ZIP="$NODE_DIR/xray.zip"
-curl -fsSL "$HUB/node-bin/$DEFAULT_VER/$FILE" -o "$ZIP"
-# sha256 自校验（面板 manifest 下发 + 下载后本地复验，双保险）
-ACTUAL=$(sha256sum "$ZIP" | awk '{print $1}')
-if [ "$ACTUAL" != "$SHA" ]; then
-  echo "sha256 校验失败！期望 $SHA，实际 $ACTUAL（网络可能被篡改，终止）"
-  rm -f "$ZIP"; exit 1
-fi
-echo "  sha256 校验通过: $ACTUAL"
+STAMP="$NODE_DIR/.xray.sha256"
+# 幂等：已装同一份资产（落地章 SHA 与清单一致）则跳过重下 + 解压，避免重复下载
+if [ -x "$NODE_DIR/xray" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$SHA" ]; then
+  echo "  已装同版本资产（sha256 匹配），跳过下载"
+else
+  curl -fsSL "$HUB/node-bin/$DEFAULT_VER/$FILE" -o "$ZIP"
+  # sha256 自校验（面板 manifest 下发 + 下载后本地复验，双保险）
+  ACTUAL=$(sha256sum "$ZIP" | awk '{print $1}')
+  if [ "$ACTUAL" != "$SHA" ]; then
+    echo "sha256 校验失败！期望 $SHA，实际 $ACTUAL（网络可能被篡改，终止）"
+    rm -f "$ZIP"; exit 1
+  fi
+  echo "  sha256 校验通过: $ACTUAL"
 
-echo "==> 解压内核"
-unzip -oq "$ZIP" -d "$NODE_DIR"
-chmod +x "$NODE_DIR/xray"
-rm -f "$ZIP"
+  echo "==> 解压内核"
+  unzip -oq "$ZIP" -d "$NODE_DIR"
+  chmod +x "$NODE_DIR/xray"
+  rm -f "$ZIP"
+  printf '%s' "$SHA" > "$STAMP"
+fi
 # 先收全量输出再截取：head -1 会让 xray 收 SIGPIPE，pipefail 下整条管道返回 141，
 # 被 set -e 当成失败。原写法靠 `|| echo unknown` 压住不中断，副作用是 unknown 被拼进
 # 版本号成了两行，写进 state.json 就是非法 JSON（agent 起不来）。这里改成不产生 SIGPIPE。
@@ -96,25 +123,42 @@ echo "  xray 就位，版本: $XRAY_VER"
 echo "==> 下载 agent 二进制（Go 版）"
 AGENT_SHA=$(printf '%s' "$MANIFEST_JSON" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print([a["sha256"] for a in d["agent"]["assets"] if a["arch"]=="'$ARCH'"][0])')
-curl -fsSL "$HUB/node-bin/agent/$ARCH" -o "$NODE_DIR/agent"
-AGENT_ACTUAL=$(sha256sum "$NODE_DIR/agent" | awk '{print $1}')
-if [ "$AGENT_ACTUAL" != "$AGENT_SHA" ]; then
-  echo "agent sha256 校验失败！期望 $AGENT_SHA，实际 $AGENT_ACTUAL（终止）"
-  rm -f "$NODE_DIR/agent"; exit 1
+AGENT_STAMP="$NODE_DIR/.agent.sha256"
+# 幂等：已装同一份 agent（落地章与清单一致）则跳过重下
+if [ -x "$NODE_DIR/agent" ] && [ -f "$AGENT_STAMP" ] && [ "$(cat "$AGENT_STAMP")" = "$AGENT_SHA" ]; then
+  echo "  已装同版本 agent（sha256 匹配），跳过下载"
+else
+  curl -fsSL "$HUB/node-bin/agent/$ARCH" -o "$NODE_DIR/agent"
+  AGENT_ACTUAL=$(sha256sum "$NODE_DIR/agent" | awk '{print $1}')
+  if [ "$AGENT_ACTUAL" != "$AGENT_SHA" ]; then
+    echo "agent sha256 校验失败！期望 $AGENT_SHA，实际 $AGENT_ACTUAL（终止）"
+    rm -f "$NODE_DIR/agent"; exit 1
+  fi
+  chmod +x "$NODE_DIR/agent"
+  printf '%s' "$AGENT_SHA" > "$AGENT_STAMP"
+  echo "  agent 就位（sha256 校验通过）"
 fi
-chmod +x "$NODE_DIR/agent"
-echo "  agent 就位（sha256 校验通过）"
 
 echo "==> 写入节点状态 state.json（权限 600，含密钥）"
-cat > "$NODE_DIR/state.json" <<STATE
-{
-  "hub_url": "$HUB",
-  "node_name": "$NODE_NAME",
-  "node_secret": "$SECRET",
-  "xray_version": "$XRAY_VER",
-  "kernel_arch": "$ARCH"
+# 用 python3 json.dump 生成：值经 JSON 转义，密钥/名称含特殊字符（" \ 换行）也不会拼坏；
+# 先写临时文件再 mv 原子替换，避免写入中途中断留下半截非法 JSON 把 agent 卡死。
+STATE_TMP="$NODE_DIR/state.json.tmp"
+HUB="$HUB" NODE_NAME="$NODE_NAME" SECRET="$SECRET" \
+XRAY_VER="$XRAY_VER" ARCH="$ARCH" STATE_TMP="$STATE_TMP" python3 - <<'PY' || { rm -f "$STATE_TMP"; echo "state.json 生成失败"; exit 1; }
+import json, os
+state = {
+    "hub_url": os.environ["HUB"],
+    "node_name": os.environ["NODE_NAME"],
+    "node_secret": os.environ["SECRET"],
+    "xray_version": os.environ["XRAY_VER"],
+    "kernel_arch": os.environ["ARCH"],
 }
-STATE
+with open(os.environ["STATE_TMP"], "w") as f:
+    json.dump(state, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+chmod 600 "$STATE_TMP"
+mv -f "$STATE_TMP" "$NODE_DIR/state.json"
 chmod 600 "$NODE_DIR/state.json"
 
 echo "==> 安装 systemd 守护服务"
