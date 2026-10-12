@@ -47,6 +47,7 @@ error()   { echo -e "${RED}[ERROR]${NC} $1"; }    # 错误
 INSTALL_DIR="/www/wwwroot/3xui-hub"        # 项目根目录（git clone 的位置）
 NGINX_CONF="/etc/nginx/conf.d/3xui-hub.conf"  # Nginx 站点配置文件
 HUB_BIN="/usr/local/bin/3hub"              # 3hub 管理命令（install.sh 里 cp 过去的）
+HUB_DOMAIN_BIN="/usr/local/bin/3hub-domain" # 多域名助手（install.sh 的 install_domain_support 装的）
 COMPOSER_BIN="/usr/local/bin/composer"     # Composer 可执行文件
 LOG_FILE="/tmp/3xui-hub-uninstall.log"     # 卸载日志文件路径
 DB_NAME="controlhub"                       # 面板使用的数据库名
@@ -243,6 +244,27 @@ remove_hub_bin() {
 }
 
 # ------------------------------------------------------------
+# 删除多域名助手（3hub-domain + sudoers）
+# install.sh 的 install_domain_support 会装两个文件：
+#   /usr/local/bin/3hub-domain   （root 助手脚本，面板借此管理子域名）
+#   /etc/sudoers.d/3xui-hub      （受限 sudoers：只放行 3hub-domain 的几个子命令）
+# 卸载时一并清掉；没装过则静默跳过（幂等）。
+# 注：删除 sudoers.d 下的文件不会破坏 sudoers 语法（只有写入才需要 visudo 校验）。
+# ------------------------------------------------------------
+remove_domain_support() {
+    if [ -f "$HUB_DOMAIN_BIN" ]; then
+        info "删除多域名助手: $HUB_DOMAIN_BIN"
+        rm -f "$HUB_DOMAIN_BIN"
+        log "已删除 $HUB_DOMAIN_BIN"
+    fi
+    if [ -f /etc/sudoers.d/3xui-hub ]; then
+        info "删除 sudoers 配置: /etc/sudoers.d/3xui-hub"
+        rm -f /etc/sudoers.d/3xui-hub
+        log "已删除 /etc/sudoers.d/3xui-hub"
+    fi
+}
+
+# ------------------------------------------------------------
 # 清理 cron 定时任务
 # install.sh 配了 `* * * * * cd ... && php artisan schedule:run` 用于流量同步
 # 只删包含 "3xui-hub" 的行，保留用户其他 cron 任务
@@ -260,18 +282,21 @@ remove_cron() {
 }
 
 # ------------------------------------------------------------
-# 停止并删除队列 Worker 服务
-# install.sh / 3hub 会生成：
+# 停止并删除队列 Worker / 节点服务
+# install.sh / 3hub 会生成 4 个单元：
 #   3xui-hub-queue.service          （default 队列，定时任务）
+#   3xui-hub-queue-mail.service     （mail 队列）
+#   3xui-hub-node-ws.service        （xray 节点 WS 长连接，worker）
 #   3xui-hub-queue-node@.service    （node-ops 队列，模板单元，实例 1/2）
 # 必须在删除项目目录之前执行：worker 是 Restart=always，项目目录被删后
 # 它会不停重启失败、刷满 journal 日志，留下指向空目录的僵尸服务。
 # ------------------------------------------------------------
 remove_queue_services() {
-    info "停止队列 Worker 服务..."
+    info "停止队列 Worker / 节点服务..."
     local unit link inst
-    # default 是固定单元名，直接 stop/disable
-    for unit in "3xui-hub-queue.service"; do
+    # 固定单元名直接 stop/disable（三个逐一覆盖：漏掉任何一个都会变成
+    # 指向已删项目目录的重启循环 / 僵尸进程）
+    for unit in 3xui-hub-queue.service 3xui-hub-queue-mail.service 3xui-hub-node-ws.service; do
         systemctl stop "$unit" 2>/dev/null || true
         systemctl disable "$unit" 2>/dev/null || true
     done
@@ -287,10 +312,14 @@ remove_queue_services() {
     done
     # 单元文件本体（模板单元只有一份）
     rm -f /etc/systemd/system/3xui-hub-queue.service 2>/dev/null || true
+    rm -f /etc/systemd/system/3xui-hub-queue-mail.service 2>/dev/null || true
+    rm -f /etc/systemd/system/3xui-hub-node-ws.service 2>/dev/null || true
     rm -f /etc/systemd/system/3xui-hub-queue-node@.service 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
-    success "队列 Worker 服务已清理"
-    log "已清理队列 Worker 服务"
+    # 清掉失败状态残留（漏清的 worker 陷入重启失败循环时会在 systemd 留下 failed 记录）
+    systemctl reset-failed 2>/dev/null || true
+    success "队列 Worker / 节点服务已清理"
+    log "已清理队列 Worker / 节点服务"
 }
 
 # ------------------------------------------------------------
@@ -584,9 +613,10 @@ do_uninstall() {
     remove_cli_opcache   # 2. 删 CLI opcache 增量 ini（php 可用时才探测）
     remove_queue_services # 3. 停并删队列 Worker 服务（先于删目录，避免僵尸服务）
     remove_nginx_conf    # 4. 删 Nginx 站点配置 + reload
-    remove_hub_bin       # 5. 删 /usr/local/bin/3hub 命令
-    remove_cron          # 6. 清理 cron 定时任务
-    remove_project       # 7. 删 /www/wwwroot/3xui-hub 项目目录
+    remove_hub_bin        # 5. 删 /usr/local/bin/3hub 命令
+    remove_domain_support # 6. 删多域名助手（3hub-domain + sudoers）
+    remove_cron           # 7. 清理 cron 定时任务
+    remove_project        # 8. 删 /www/wwwroot/3xui-hub 项目目录
 
     # === --app / --all：额外删数据库 ===
     if [ "$MODE" = "app" ] || [ "$MODE" = "all" ]; then

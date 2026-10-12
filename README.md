@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.25.3**
+**版本：1.25.4**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,11 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.25.4 (2026-10-12)
+
+- 修复卸载脚本漏清 `3xui-hub-queue-mail` / `3xui-hub-node-ws` 服务：卸载后面板机不再残留重启循环与僵尸服务；多域名助手（3hub-domain + sudoers）也随卸载一并清理
+- xray 节点注册时自动回填连接地址（host 为空且来源为公网 IP 时；不覆盖已有值）：修复节点未手填地址导致用户订阅为空的问题；订阅生成不出任何链接时给出明确提示，不再静默返回空内容
+
 ### v1.25.3 (2026-10-12)
 
 - 修正：v1.25.1 的「CLI opcache 默认开」回退为关闭 —— 实测 OPcache 共享在 systemd 独立 worker 间不成立，开启反而每进程多占约 7MB（2 核机型 6 个常驻进程合计约 34MB）；已装 v1.25.1 的机器更新时自动清理残留配置
@@ -293,7 +298,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.25.3**
+**Version: 1.25.4**
 
 ## Screenshots
 
@@ -363,7 +368,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.25.3-blue
+[version-shield]: https://img.shields.io/badge/version-1.25.4-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

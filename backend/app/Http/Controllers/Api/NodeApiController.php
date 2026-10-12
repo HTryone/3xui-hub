@@ -73,6 +73,17 @@ class NodeApiController extends Controller
         // agent 刚从重启流程进来，WS 尚未连接（连上后由 WS 服务写 true）
         $cfg['ws'] = ['connected' => false, 'at' => now()->toIso8601String()];
 
+        // 连接地址自动回填：xray 节点的 host 为空时，用 agent 本次请求的来源公网
+        // IP 预填 —— 订阅链接依赖 host 生成，空值会让用户订阅静默为空。
+        // 仅回填公网地址：内网/回环（面板与节点同机/同内网）无法用于客户端连接，
+        // 保持为空、由订阅侧给出诊断提示；管理员随时可在节点编辑中覆盖。
+        if ($node->isXray() && (string) $node->host === '') {
+            $ip = (string) $request->ip();
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false) {
+                $node->host = $ip;
+            }
+        }
+
         $node->forceFill([
             'driver_config' => $cfg,
             'status' => 'online',

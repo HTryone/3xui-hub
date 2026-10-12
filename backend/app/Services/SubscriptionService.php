@@ -39,6 +39,21 @@ class SubscriptionService
         $links = $this->getLinks($user);
 
         if (empty($links)) {
+            // 全空时不静默返回：xray 节点最常见的原因是「已启用、在线，但没填
+            // 连接地址」—— 链接由 host 拼出，host 为空则一条都产不出。这里给出
+            // 可诊断、可行动的提示（404 + 说明），而不是让用户对着空订阅猜。
+            $blankHost = Node::where('enabled', true)
+                ->where('status', 'online')
+                ->where('driver_type', 'xray')
+                ->where(function ($q) {
+                    $q->whereNull('host')->orWhere('host', '');
+                })
+                ->exists();
+
+            if ($blankHost) {
+                throw new SubscriptionException('暂无可用的节点配置：节点尚未设置连接地址，请联系管理员在面板中补充', 404);
+            }
+
             return '';
         }
 
