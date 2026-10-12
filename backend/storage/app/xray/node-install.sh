@@ -128,13 +128,19 @@ AGENT_STAMP="$NODE_DIR/.agent.sha256"
 if [ -x "$NODE_DIR/agent" ] && [ -f "$AGENT_STAMP" ] && [ "$(cat "$AGENT_STAMP")" = "$AGENT_SHA" ]; then
   echo "  已装同版本 agent（sha256 匹配），跳过下载"
 else
-  curl -fsSL "$HUB/node-bin/agent/$ARCH" -o "$NODE_DIR/agent"
-  AGENT_ACTUAL=$(sha256sum "$NODE_DIR/agent" | awk '{print $1}')
+  # 注意：agent 可能**正在运行**（重复安装/升级场景）——不能直接 -o 覆盖运行中的
+  # 可执行文件（内核拒绝写入，curl 报 (23) Failure writing output to destination，
+  # 老机器重跑安装脚本必踩）。先下载到临时文件、校验通过后 mv 原子替换
+  # （rename 不受"运行中"限制），与 state.json 的原子写同思路。
+  AGENT_TMP="$NODE_DIR/agent.new"
+  curl -fsSL "$HUB/node-bin/agent/$ARCH" -o "$AGENT_TMP"
+  AGENT_ACTUAL=$(sha256sum "$AGENT_TMP" | awk '{print $1}')
   if [ "$AGENT_ACTUAL" != "$AGENT_SHA" ]; then
     echo "agent sha256 校验失败！期望 $AGENT_SHA，实际 $AGENT_ACTUAL（终止）"
-    rm -f "$NODE_DIR/agent"; exit 1
+    rm -f "$AGENT_TMP"; exit 1
   fi
-  chmod +x "$NODE_DIR/agent"
+  chmod +x "$AGENT_TMP"
+  mv -f "$AGENT_TMP" "$NODE_DIR/agent"
   printf '%s' "$AGENT_SHA" > "$AGENT_STAMP"
   echo "  agent 就位（sha256 校验通过）"
 fi
