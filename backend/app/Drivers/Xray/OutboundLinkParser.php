@@ -129,7 +129,12 @@ class OutboundLinkParser
     private static function parseTrojan(string $link): array
     {
         $parts = parse_url($link);
-        if ($parts === false || empty($parts['host']) || empty($parts['pass'])) {
+        // trojan 链接的标准格式把密码放在 user 段（trojan://password@host:port?...#name），
+        // parse_url 对无冒号的 userinfo 不产生 'pass' 键——旧写法只认 'pass'，
+        // 导致标准 trojan 链接一律解析失败被丢弃。这里 pass 优先、user 兜底
+        // （兼容 trojan://user:pass@ 双段写法，此时密码取 pass 段）。
+        $password = (string) ($parts['pass'] ?? $parts['user'] ?? '');
+        if ($parts === false || empty($parts['host']) || $password === '') {
             throw new \InvalidArgumentException('trojan 链接解析失败');
         }
         $query = [];
@@ -154,7 +159,7 @@ class OutboundLinkParser
                 'servers' => [[
                     'address' => (string) $parts['host'],
                     'port' => (int) ($parts['port'] ?? 443),
-                    'password' => rawurldecode((string) $parts['pass']),
+                    'password' => rawurldecode($password),
                 ]],
             ],
             'stream_settings' => $stream,
