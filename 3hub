@@ -1156,7 +1156,7 @@ cmd_restart() {
 cmd_domain_usage() {
     echo -e "${CYAN}用法:${NC} 3hub domain {add|renew|remove|status} <域名>"
     echo ""
-    echo -e "  ${GREEN}add${NC}    <域名>  申请/续签证书并写入 Nginx 多域名配置"
+    echo -e "  ${GREEN}add${NC}    <域名>  登记域名并申请证书（等效面板「添加域名」）"
     echo -e "  ${GREEN}renew${NC}  <域名>  强制续签证书"
     echo -e "  ${GREEN}remove${NC} <域名>  按 domains 表重建 Nginx 配置（需先在面板删除）"
     echo -e "  ${GREEN}status${NC} <域名>  查看该域名证书状态"
@@ -1201,9 +1201,42 @@ cmd_domain() {
         return 1
     fi
 
+    # add = 面板「添加域名」的命令行等价：面板走 Controller 写库，命令行没有应用层，
+    # 这里按同一语义先落 domains 表（幂等；表内无 enabled 行时设为主域），再透传助手 apply。
+    # 其余子命令语义不变；remove 沿用「需先在面板删除」的现有口径。
+    if [ "$SUB" = "add" ]; then
+        if [[ "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] && command -v mysql >/dev/null 2>&1; then
+            local DB_NAME ENABLED_CNT IS_PRIMARY
+            DB_NAME=$(grep -oP '^DB_DATABASE=\K.*' "$BACKEND_DIR/.env" 2>/dev/null || echo "controlhub")
+            ENABLED_CNT=$(mysql -u root -N -B "$DB_NAME" -e "SELECT COUNT(*) FROM domains WHERE enabled=1;" 2>/dev/null || echo 0)
+            IS_PRIMARY=0
+            [ "${ENABLED_CNT:-0}" = "0" ] && IS_PRIMARY=1
+            mysql -u root "$DB_NAME" -e \
+                "INSERT INTO domains (domain, is_primary, enabled, ssl_status, created_at, updated_at) VALUES ('${DOMAIN}', ${IS_PRIMARY}, 1, 'pending', NOW(), NOW()) ON DUPLICATE KEY UPDATE enabled=1;" 2>/dev/null \
+                && echo -e "${GREEN}domains 表已登记: ${DOMAIN}${NC}" \
+                || echo -e "${YELLOW}domains 表登记失败（已存在或 DB 不可达），继续助手流程${NC}"
+        fi
+        SUB="apply"
+    fi
+
     # 3hub-domain 以 root 执行；非 root 时走 sudo（面板 www-data 走受限 sudoers）
     if [ "$(id -u)" -eq 0 ]; then
-        "$DOMAIN_HELPER" "$SUB" "$DOMAIN"
+        if [ "$SUB" = "apply" ]; then
+            # 命令行 apply 后与面板 apply 路径保持数据一致：按助手 JSON 回写域名页状态
+            local OUT EXP
+            OUT=$("$DOMAIN_HELPER" "$SUB" "$DOMAIN")
+            echo "$OUT"
+            if echo "$OUT" | grep -q '"ssl_status":"ok"'; then
+                EXP=$(echo "$OUT" | grep -oP '"cert_expires_at":"\K[^"]*' | head -1)
+                if [ -n "$EXP" ]; then
+                    EXP="${EXP%Z}"; EXP="${EXP/T/ }"
+                    mysql -u root "${DB_NAME:-controlhub}" -e \
+                        "UPDATE domains SET ssl_status='ok', cert_expires_at='${EXP}' WHERE domain='${DOMAIN}';" 2>/dev/null || true
+                fi
+            fi
+        else
+            "$DOMAIN_HELPER" "$SUB" "$DOMAIN"
+        fi
     else
         NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
         NGINX_USER=${NGINX_USER:-www-data}

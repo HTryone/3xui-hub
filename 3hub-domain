@@ -406,6 +406,22 @@ server {
         root ${WEBROOT};
     }
 
+    # 节点通道（agent WS 长连接 + 安装脚本/资产）——缺了节点机拿不到脚本、连不上 WS
+    location /node-ws {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
     location ~ ^/(api|admin-api) {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
