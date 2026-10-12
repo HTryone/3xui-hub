@@ -238,42 +238,33 @@ tune_php_fpm() {
     return 0
 }
 
-# 开启 CLI opcache
+# 清理历史 CLI opcache 配置（v1.25.1 曾默认开启，v1.25.3 回退为默认关）
 #
-# 为什么需要：面板的常驻进程（队列 worker / WS 服务 / 调度）都是 php-cli 跑的，
-# 而发行版默认 CLI 的 opcache 是 Off（`opcache.enable_cli=0`）—— 每个常驻 worker
-# 都会在启动时各自把整套 Laravel 重新编译一遍，占内存也拖启动。给 CLI 打开 opcache 后，
-# 每个进程常驻省下约 30MB，小内存机器上收益明显。
+# 为什么回退：面板的常驻进程（队列 worker / WS 服务）由 systemd 各自 fork+exec 拉起，
+# 而 OPcache 的共享段只能被 fork 的子进程共享（php-fpm / workerman 的 worker 属于
+# 这种情况，共享有效）—— 独立进程之间一个字节都共享不到。给 CLI 打开 opcache 后，
+# 每个进程反而净增约 7MB（实测；2 核机型 6 个常驻进程合计约 34MB），零收益。
 #
-# 和 FPM 一样，CLI 的增量 ini 也放在「扫描目录」（php --ini 的
-# "Scan for additional .ini files in"）。目录读不到 / 为 (none) / php 不可用时只告警跳过，
-# 绝不中断安装 —— 这只是个优化，装不上面板也得能装。
-setup_cli_opcache() {
+# v1.25.1 装过的机器会在「扫描目录」（php --ini 的 "Scan for additional .ini files in"）
+# 残留 99-3xui-hub-opcache.ini：安装/更新时按同一方式探测路径删除。
+# 目录读不到 / 为 (none) / php 不可用时只告警跳过，绝不中断安装 —— 删不掉也不影响面板。
+remove_cli_opcache() {
     if ! command -v php >/dev/null 2>&1; then
-        warn "php 不可用，跳过 CLI opcache 配置"
+        warn "php 不可用，跳过 CLI opcache 配置清理"
         return 0
     fi
 
-    local scan_dir
+    local scan_dir ini
     scan_dir=$(php --ini 2>/dev/null | awk -F': ' '/Scan for additional .ini files in/ {print $2; exit}')
     if [ -z "$scan_dir" ] || [ "$scan_dir" = "(none)" ] || [ ! -d "$scan_dir" ]; then
-        warn "未找到 PHP 的 ini 扫描目录（php --ini），跳过 CLI opcache 配置"
+        warn "未找到 PHP 的 ini 扫描目录（php --ini），跳过 CLI opcache 配置清理"
         return 0
     fi
 
-    local ini="${scan_dir}/99-3xui-hub-opcache.ini"
-    cat > "$ini" << 'EOF'
-; 3xui-hub：为 CLI 常驻进程（队列 worker / WS 服务 / 调度）打开 opcache。
-; 发行版默认 opcache.enable_cli=0，每个常驻 worker 都会各自重新编译整套 Laravel，
-; 多占约 30MB 内存并拖慢启动；打开后由 opcache 缓存字节码。
-opcache.enable_cli=1
-opcache.max_accelerated_files=20000
-EOF
-
+    ini="${scan_dir}/99-3xui-hub-opcache.ini"
     if [ -f "$ini" ]; then
-        success "CLI opcache 已开启（${ini}）"
-    else
-        warn "写入 ${ini} 失败，跳过 CLI opcache 配置"
+        rm -f "$ini"
+        success "已清理历史 CLI opcache 配置（${ini}）"
     fi
 
     return 0
@@ -288,6 +279,8 @@ install_php() {
             # 已装机器也要调优：重跑 install.sh（更新流程）不能因为 PHP 已装就跳过
             detect_fpm_target
             tune_php_fpm "${FPM_CONF:-}" "${FPM_SERVICE:-php-fpm}"
+            # 同理清理历史 CLI opcache 残留（v1.25.1 写过 ini；重跑安装同样要能清掉）
+            remove_cli_opcache
             return 0
         else
             warn "当前 PHP 版本: $PHP_VER，需要 8.4，将重新安装"
@@ -384,7 +377,7 @@ install_php() {
     tune_php_fpm "${FPM_CONF:-}" "${FPM_SERVICE:-php-fpm}"
 
     # CLI opcache（与 fpm 调优并列：都改 PHP 运行参数，且都在 PHP 装好后）
-    setup_cli_opcache
+    remove_cli_opcache
 
     # 配置 PHP（禁用 putenv）
     PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')

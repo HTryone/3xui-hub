@@ -106,9 +106,10 @@ Docker 部署改 `docker/supervisord.conf`：照着加一段 `[program:queue-nod
 - **php-fpm 并发下限已修正**：面板的 `pm.max_children` 推荐值不再被死抬到 10。下限 = 
   `min(10, 按内存算, 按核数算)`、最低 2 —— 1 核/937MB 算出 4，避免 10×50MB≈450MB 把
   MySQL 挤到 OOM。可用 `php artisan fpm:tune` 查看/应用。
-- **CLI opcache 已默认开**：安装/更新时给 php-cli 写 `99-3xui-hub-opcache.ini`
-  （`opcache.enable_cli=1`），常驻 worker / 调度不再各自重新编译整套 Laravel，
-  每个进程约省 30MB。
+- **CLI 不启用 opcache**：常驻 worker 由 systemd 各自独立拉起，opcache 的共享内存
+  只能在 fork 的子进程之间共享 —— 独立进程间零共享，开启反而每进程多占约 7MB
+  （实测 2 核机型 6 个常驻进程合计约 34MB）。v1.25.1 曾默认开启，已回退；
+  老机器更新时自动清理残留配置。
 
 想再挤出内存，可以把邮件任务退回 default 队列，省掉一个常驻 worker（**约 60MB**）：
 在 `backend/.env` 里把 `PANEL_MAIL_QUEUE=mail` 改成 `PANEL_MAIL_QUEUE=default`（或删掉该行），

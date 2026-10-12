@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.25.2**
+**版本：1.25.3**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,10 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.25.3 (2026-10-12)
+
+- 修正：v1.25.1 的「CLI opcache 默认开」回退为关闭 —— 实测 OPcache 共享在 systemd 独立 worker 间不成立，开启反而每进程多占约 7MB（2 核机型 6 个常驻进程合计约 34MB）；已装 v1.25.1 的机器更新时自动清理残留配置
+
 ### v1.25.2 (2026-10-12)
 
 - 修复 3x-ui 面板节点「内存」读不到的问题（3x-ui 内存字段的对象格式未正确解析；CPU 不受影响）
@@ -289,7 +293,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.25.2**
+**Version: 1.25.3**
 
 ## Screenshots
 
@@ -359,7 +363,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.25.2-blue
+[version-shield]: https://img.shields.io/badge/version-1.25.3-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
