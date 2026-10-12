@@ -953,10 +953,24 @@ cmd_ssl() {
     echo -e "  APP_URL: ${GREEN}$CURRENT_URL${NC}"
     echo ""
 
-    read -rp "请输入域名（直接回车取消）: " DOMAIN
+    read -rp "请输入域名或 IP（直接回车取消）: " DOMAIN
     if [ -z "$DOMAIN" ]; then
         echo -e "${YELLOW}已取消${NC}"
         return 0
+    fi
+
+    # 判别输入类型：IPv6 / IPv4 / 域名。
+    # IP 走 Let's Encrypt IP 证书（shortlived profile，约 6 天、acme.sh 自动续期）。
+    # 域名分支 ACME_PROFILE_ARGS 保持为空 —— 参数与行为完全不变（回归）。
+    ACME_PROFILE_ARGS=()
+    if echo "$DOMAIN" | grep -q ':'; then
+        echo -e "${YELLOW}暂不支持 IPv6 证书申请，请改用 IPv4 或域名${NC}"
+        return 0
+    elif echo "$DOMAIN" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+        echo -e "${CYAN}检测到 IPv4，将申请 Let's Encrypt IP 证书${NC}"
+        echo -e "  有效期约 6 天 · acme.sh 自动续期"
+        echo -e "  ${YELLOW}需 80 端口对公网开放（安全组）${NC}"
+        ACME_PROFILE_ARGS=(--certificate-profile shortlived --days 3)
     fi
 
     echo ""
@@ -973,7 +987,7 @@ cmd_ssl() {
         # 申请证书（用 pipefail 捕获 acme.sh 真实退出码）
         echo -e "${BLUE}申请 SSL 证书...${NC}"
         set -o pipefail
-        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$BACKEND_DIR/public" --server letsencrypt --reloadcmd "systemctl reload nginx" 2>&1)
+        ACME_OUTPUT=$($HOME/.acme.sh/acme.sh --issue -d "$DOMAIN" --webroot "$BACKEND_DIR/public" "${ACME_PROFILE_ARGS[@]}" --server letsencrypt --reloadcmd "systemctl reload nginx" 2>&1)
         ACME_EXIT=$?
         set +o pipefail
         echo "$ACME_OUTPUT" | tail -5
@@ -1074,6 +1088,10 @@ NGINX_HTTP
         sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /etc/nginx/conf.d/3xui-hub.conf
         sed -i "s|BACKEND_PLACEHOLDER|${BACKEND_DIR}|g" /etc/nginx/conf.d/3xui-hub.conf
     fi
+
+    # 上面重写了整份 conf：模板未含节点通道（/node-ws 长连接 + node-install 资产）两段，
+    # 直接覆盖会把它们冲掉 → 节点连不上面板。复用 fix-nginx 的幂等实现补回（锚点在 api 段前）。
+    ensure_nginx_node_ws
 
     # 更新 .env
     sed -i "s|APP_URL=.*|APP_URL=${PROTO}://${DOMAIN}|" "$BACKEND_DIR/.env"

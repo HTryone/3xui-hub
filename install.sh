@@ -1307,7 +1307,7 @@ show_result() {
     echo ""
     echo -e "  ${RED}首次登录后请立即修改密码！${NC}"
     echo ""
-    echo -e "  绑定域名/SSL:  ${BLUE}3hub ssl${NC}"
+    echo -e "  绑定域名/IP + SSL:  ${BLUE}3hub ssl${NC}"
     echo -e "  管理命令:  ${BLUE}3hub${NC} 查看所有可用命令"
     echo ""
     echo -e "${GREEN}============================================================${NC}"
