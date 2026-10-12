@@ -104,6 +104,8 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::get('/nodes/{node}/xray-outbounds', [AdminXrayOutboundController::class, 'index']);
     Route::post('/nodes/{node}/xray-outbounds', [AdminXrayOutboundController::class, 'store']);
     Route::post('/nodes/{node}/xray-outbounds/import', [AdminXrayOutboundController::class, 'import']);
+    // 出站 → 客户端分享链接（只读，不写配置）；wireguard 等无标准格式由后端返回「不支持」
+    Route::get('/nodes/{node}/xray-outbounds/{outbound}/link', [AdminXrayOutboundController::class, 'shareLink']);
     Route::put('/nodes/{node}/xray-outbounds/{outbound}', [AdminXrayOutboundController::class, 'update']);
     Route::delete('/nodes/{node}/xray-outbounds/{outbound}', [AdminXrayOutboundController::class, 'destroy']);
     Route::post('/nodes/{node}/xray-outbounds/{outbound}/test', [AdminXrayOutboundController::class, 'test']);

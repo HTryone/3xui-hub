@@ -41,12 +41,18 @@ class OutboundLinkParser
         $tls = strtolower((string) ($d['tls'] ?? '')) === 'tls';
 
         $stream = ['network' => $net, 'security' => $tls ? 'tls' : 'none'];
+        // 传输层：ws / xhttp（vmess JSON 的 path/host 两者共用同名字段）
         if ($net === 'ws') {
             $ws = ['path' => (string) ($d['path'] ?? '/')];
             if (! empty($d['host'])) {
                 $ws['headers'] = ['Host' => (string) $d['host']];
             }
             $stream['wsSettings'] = $ws;
+        } elseif ($net === 'xhttp') {
+            $stream['xhttpSettings'] = array_filter([
+                'path' => (string) ($d['path'] ?? '/'),
+                'host' => (string) ($d['host'] ?? ''),
+            ], fn ($v) => $v !== '');
         }
         if ($tls) {
             $tlsSettings = [];
@@ -94,19 +100,14 @@ class OutboundLinkParser
                 'publicKey' => (string) ($query['pbk'] ?? ''),
                 'shortId' => (string) ($query['sid'] ?? ''),
                 'fingerprint' => (string) ($query['fp'] ?? ''),
+                'spiderX' => (string) ($query['spx'] ?? ''),
             ], fn ($v) => $v !== '');
         } elseif ($security === 'tls') {
             $stream['tlsSettings'] = array_filter([
                 'serverName' => (string) ($query['sni'] ?? $parts['host']),
             ], fn ($v) => $v !== '');
         }
-        if ($network === 'ws') {
-            $ws = ['path' => (string) ($query['path'] ?? '/')];
-            if (! empty($query['host'])) {
-                $ws['headers'] = ['Host' => (string) $query['host']];
-            }
-            $stream['wsSettings'] = $ws;
-        }
+        self::applyTransport($stream, $network, $query);
 
         return [
             'protocol' => 'vless',
@@ -149,9 +150,7 @@ class OutboundLinkParser
                 'serverName' => (string) ($query['sni'] ?? $parts['host']),
             ], fn ($v) => $v !== '');
         }
-        if ($network === 'ws') {
-            $stream['wsSettings'] = ['path' => (string) ($query['path'] ?? '/')];
-        }
+        self::applyTransport($stream, $network, $query);
 
         return [
             'protocol' => 'trojan',
@@ -268,6 +267,32 @@ class OutboundLinkParser
             'stream_settings' => [],
             'tag' => self::fragment($link) ?: (string) $parts['host'],
         ];
+    }
+
+    /**
+     * 传入 vless/trojan 的传输层查询串 → 写入 stream（ws / xhttp / grpc），
+     * 与 {@see OutboundLinkGenerator::transportQuery()} 对称。
+     */
+    private static function applyTransport(array &$stream, string $network, array $query): void
+    {
+        if ($network === 'ws') {
+            $ws = ['path' => (string) ($query['path'] ?? '/')];
+            if (! empty($query['host'])) {
+                $ws['headers'] = ['Host' => (string) $query['host']];
+            }
+            $stream['wsSettings'] = $ws;
+        } elseif ($network === 'xhttp') {
+            $stream['xhttpSettings'] = array_filter([
+                'path' => (string) ($query['path'] ?? '/'),
+                'host' => (string) ($query['host'] ?? ''),
+                'mode' => (string) ($query['mode'] ?? ''),
+            ], fn ($v) => $v !== '');
+        } elseif ($network === 'grpc') {
+            $stream['grpcSettings'] = array_filter([
+                'serviceName' => (string) ($query['serviceName'] ?? ''),
+                'authority' => (string) ($query['authority'] ?? ''),
+            ], fn ($v) => $v !== '');
+        }
     }
 
     /** URL fragment（节点名），兼容 URL-safe 与百分号编码。 */

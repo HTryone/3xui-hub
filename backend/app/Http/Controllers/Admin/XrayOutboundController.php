@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Drivers\Xray\OutboundLinkGenerator;
 use App\Drivers\Xray\OutboundLinkParser;
 use App\Drivers\Xray\WarpService;
 use App\Drivers\Xray\XrayRelayService;
@@ -157,6 +158,64 @@ class XrayOutboundController extends Controller
         }
 
         return $this->success(['parsed' => $parsed]);
+    }
+
+    /**
+     * GET /admin-api/nodes/{node}/xray-outbounds/{outbound}/link
+     *
+     * 出站 → 客户端分享链接（只读，不写配置、不改任何出站/中转逻辑）。
+     *
+     * 首选「优先取回」：xray 侧中转出站是在对方节点上由我们建的凭据，对方面板能直接
+     * 生成完整链接（含对方实际端口/传输/reality 参数），故走 3x 的 clients/links 接口
+     * 取回，而非本地拼装（见 Task 说明：3x 目标出站优先直接取回）。
+     *
+     * 回退本地生成：非中转出站 / 对方不可达 / 对方没有该 email 时，按 outbound 的
+     * settings/stream_settings 本地生成（vless/vmess/trojan/ss/socks/http）；wireguard
+     * 等无标准链接格式 → 返回 code!=0 并带「不支持」文案，前端据此禁用按钮并说明原因。
+     */
+    public function shareLink(Node $node, XrayOutbound $outbound): JsonResponse
+    {
+        $this->ensureXray($node);
+        $this->ensureOwned($node, $outbound);
+
+        // 1) 中转出站：优先取对方面板生成的完整链接（同 UserAdminService 的 email 口径）
+        if ($outbound->relay_target_node_id !== null && $outbound->relay_target_inbound_id !== null) {
+            $target = Node::query()->whereKey($outbound->relay_target_node_id)->first();
+            if ($target !== null && ! $target->isXray()) {
+                $email = substr(sprintf('relay_%d_%d', $node->id, (int) $outbound->relay_target_inbound_id), 0, 128);
+                try {
+                    $links = $this->threeXFactory->forNode($target)->getClientLinks($email);
+                    if (! empty($links)) {
+                        return $this->success([
+                            'supported' => true,
+                            'link' => (string) $links[0],
+                            'links' => $links,
+                            'source' => '3x',
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    Log::debug('shareLink：读取 3x 面板 links 失败，回退本地生成', [
+                        'node_id' => $node->id,
+                        'outbound_id' => $outbound->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        // 2) 本地按协议生成；不支持的协议返回「不支持」说明（前端禁用按钮）
+        try {
+            $link = OutboundLinkGenerator::generate($outbound);
+        } catch (\InvalidArgumentException $e) {
+            return $this->error($e->getMessage());
+        }
+
+        return $this->success([
+            'supported' => true,
+            'link' => $link,
+            'links' => [$link],
+            'source' => 'local',
+        ]);
     }
 
     /**
@@ -716,6 +775,8 @@ class XrayOutboundController extends Controller
                 : null,
             'enabled' => $outbound->enabled,
             'sort' => $outbound->sort,
+            // 「复制链接」按钮可用性：wireguard/freedom/blackhole 无标准分享链接（前端据此禁用并给原因）
+            'link_supported' => in_array((string) $outbound->protocol, OutboundLinkGenerator::SUPPORTED, true),
             'settings' => $settings,
             'stream_settings' => $stream,
             'has_secret_key' => $outbound->secret_key !== null,
