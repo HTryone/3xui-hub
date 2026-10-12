@@ -12,7 +12,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * xray 中转自动化：出站页以「其它机器」为目标新建出站时，保存即自动：
+ * xray 中转自动化：出站页以「本站服务器」为目标新建出站时，保存即自动：
  *
  *   1) 在**源节点**建一条中转出站（xray_outbounds，tag 前缀 rl-{目标nodeId}-{目标port}）——
  *      协议取目标入站协议（vless/vmess/trojan），凭据与传输/reality 公开值取目标入站
@@ -97,9 +97,9 @@ class XrayRelayService
         $port = $port ?: 443;
         $clientId = $this->ensureThreeXClient($source, $target, $targetInboundId, $protocol);
 
-        // remark 用三段式「节点名-端口-端口名（tag）」，列表/下拉直接可读
-        $remark = implode('-', array_values(array_filter(
-            [$target->name, (string) $port, $tag],
+        // remark 与出站页候选 label 同格式「服务器名 · 端口 · 入站名 · 协议」（入站名取 tag），列表/下拉直接可读
+        $remark = implode(' · ', array_values(array_filter(
+            [$target->name, (string) $port, $tag, $protocol],
             fn ($v) => $v !== '',
         )));
 
@@ -119,7 +119,7 @@ class XrayRelayService
      * 删除一条路由规则后回收其可能引用的中转出站。
      *
      * 若该规则引用的出站是自动中转出站（relay_target_node_id 非空）且**没有其它规则再引用它**
-     * → 删除该出站并清理对方节点上的承接凭据（见 deleteRelayOutbound）；仍有其它规则引用时保留。
+     * → 删除该出站并清理对方服务器上的承接凭据（见 deleteRelayOutbound）；仍有其它规则引用时保留。
      *
      * 调用方须在规则删除**之后**调用（此时引用计数已不含该规则）。
      */
@@ -146,13 +146,13 @@ class XrayRelayService
     }
 
     /**
-     * 删除一条中转出站：清理对方节点上的承接凭据 + 删本地出站记录。
+     * 删除一条中转出站：清理对方服务器上的承接凭据 + 删本地出站记录。
      *
      * - xray 目标 → 删 xray_relay_clients 行
      * - 3x-ui 目标 → 调面板 clients/del 删 client（email 口径与 ensureThreeXClient 一致）
      *
      * 对方清理失败不阻断本地删除（best-effort）：面板不可达时仍要能让出站删掉，
-     * 残留的孤儿凭据可在对方节点手工清理。
+     * 残留的孤儿凭据可在对方服务器手工清理。
      */
     public function deleteRelayOutbound(XrayOutbound $outbound): void
     {
@@ -168,7 +168,7 @@ class XrayRelayService
     /**
      * 清理「源节点 × 目标入站」在目标节点上的承接凭据（best-effort）。
      *
-     * @param int|null $targetNodeId    对方节点（null → 非中转出站，跳过）
+     * @param int|null $targetNodeId    对方服务器（null → 非中转出站，跳过）
      * @param int|null $targetInboundId 对方入站
      */
     public function cleanupRelayClient(?int $sourceNodeId, ?int $targetNodeId, ?int $targetInboundId): void
@@ -179,7 +179,7 @@ class XrayRelayService
 
         $target = Node::find($targetNodeId);
         if ($target === null) {
-            return; // 对方节点已删，无处可清理
+            return; // 对方服务器已删，无处可清理
         }
 
         if ($target->isXray()) {

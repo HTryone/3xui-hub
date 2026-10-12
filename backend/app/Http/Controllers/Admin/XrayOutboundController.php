@@ -10,17 +10,20 @@ use App\Models\Node;
 use App\Models\NodeApiCommand;
 use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
+use App\Services\ThreeXUiClientFactory;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
  * Admin xray 节点出站管理（/admin-api/nodes/{node}/xray-outbounds）。
  *
  * - 结构化 CRUD（协议/服务器/凭据/传输 + 高级 JSON 透传兜底）
- * - 目标来源选「其它机器」→ 自动中转出站（XrayRelayService::ensureRelay：读对方面板、
+ * - 目标来源选「本站服务器」→ 自动中转出站（XrayRelayService::ensureRelay：读对方面板、
  *   在对方建承接凭据、在本地 upsert 中转出站）；路由页只引用已有出站，不再触发中转创建
  * - URI 一键导入（vless/vmess/trojan/ss/socks/http 分享链接）
  * - 连通测试（下发 test_outbound 指令，由节点侧 TCP 探活回执）
@@ -38,8 +41,13 @@ class XrayOutboundController extends Controller
     /** 不可作「借道出站」的目标协议：blackhole 无出口、freedom 语义等同直连（与 3x-ui 排除 blackhole 一致）。 */
     private const PROXY_UNSUPPORTED_PROTOCOLS = ['freedom', 'blackhole'];
 
+    /** 3x 目标入站清单（含端口/入站名）缓存时长与键前缀。 */
+    private const INBOUND_LIST_TTL = 300;          // 5 分钟
+    private const INBOUND_LIST_KEY = 'relay-target-inbounds:';
+
     public function __construct(
         private readonly XrayRelayService $relay,
+        private readonly ThreeXUiClientFactory $threeXFactory,
     ) {}
 
     /** GET /admin-api/nodes/{node}/xray-outbounds */
@@ -56,7 +64,7 @@ class XrayOutboundController extends Controller
 
         return $this->success([
             'outbounds' => $outbounds->map(fn (XrayOutbound $o) => $this->present($o, $traffic->get($o->tag)))->values()->all(),
-            // 目标来源「其它机器」候选：启用节点 × 启用入站（排除本节点）
+            // 目标来源「本站服务器」候选：启用节点 × 启用入站（排除本节点）
             'relay_targets' => $this->relayTargets($node),
             'config_version' => $node->xrayConfigVersion(),
         ]);
@@ -67,7 +75,7 @@ class XrayOutboundController extends Controller
     {
         $this->ensureXray($node);
 
-        // 目标来源选「其它机器」→ 中转自动化（在对方建承接凭据 + 本地建中转出站）
+        // 目标来源选「本站服务器」→ 中转自动化（在对方建承接凭据 + 本地建中转出站）
         if ((string) $request->input('target_source') === 'relay') {
             return $this->storeRelay($request, $node);
         }
@@ -121,7 +129,7 @@ class XrayOutboundController extends Controller
             throw ValidationException::withMessages(['tag' => 'WARP 出站由 WARP 功能管理，请到 WARP 面板操作']);
         }
 
-        // 中转出站：连带清理对方节点上的承接凭据（不留垃圾 client）
+        // 中转出站：连带清理对方服务器上的承接凭据（不留垃圾 client）
         if ($outbound->relay_target_node_id !== null) {
             $this->relay->deleteRelayOutbound($outbound);
         } else {
@@ -192,7 +200,7 @@ class XrayOutboundController extends Controller
     // ── 内部 ─────────────────────────────────────────────
 
     /**
-     * 「其它机器」目标来源：调用 XrayRelayService 在对方建承接凭据 + 本地 upsert 中转出站。
+     * 「本站服务器」目标来源：调用 XrayRelayService 在对方建承接凭据 + 本地 upsert 中转出站。
      * body: {target_node_id, target_inbound_id} → 返回生成的中转出站。
      */
     private function storeRelay(Request $request, Node $node): JsonResponse
@@ -215,11 +223,13 @@ class XrayOutboundController extends Controller
     }
 
     /**
-     * 出站页「目标来源 = 其它机器」候选：启用节点 × 启用入站（排除本节点）。
-     * value = {node_id, inbound_id}，label 如「香港01-443-vless-reality」。
+     * 出站页「目标来源 = 本站服务器」候选：启用服务器 × 启用入站（排除本服务器）。
+     * value = {node_id, inbound_id}，label 统一为「服务器名 · 端口 · 入站名 · 协议」。
      *
-     * - xray 目标：入站来自 xray_inbounds（inbound_id = xray_inbounds.id）
-     * - 3x-ui 目标：入站来自 node_inbounds（inbound_id = node_inbounds.inbound_id）
+     * - xray 目标：入站来自 xray_inbounds（inbound_id = xray_inbounds.id），无需打面板
+     * - 3x-ui 目标：入站来自 node_inbounds（inbound_id = node_inbounds.inbound_id）。
+     *   端口与入站名不在库里，需实时读对方面板 listInbounds 取（5 分钟缓存，key 含节点 id）；
+     *   面板不可达时降级为「服务器名 · 协议」，不报错、不阻断开页。
      */
     private function relayTargets(Node $node): array
     {
@@ -239,29 +249,103 @@ class XrayOutboundController extends Controller
                         'inbound_id' => $in->id,
                         'port' => (int) $in->port,
                         'protocol' => $in->protocol,
-                        'label' => $target->name . '-' . $in->port . '-' . $in->tag,
+                        'label' => self::relayLabel($target->name, $in->port, $in->tag, $in->protocol),
                         'supported' => $in->protocol !== 'shadowsocks',
                     ];
                 }
                 continue;
             }
 
-            // 3x-ui 节点：node_inbounds 只有 inbound_id/protocol；端口/tag 在保存时由
-            // XrayRelayService 从面板读取，此处 label 降级为「节点名-协议」避免每次开页打节点。
+            // 3x-ui 服务器：node_inbounds 只有 inbound_id/protocol，端口/入站名实时读面板（带缓存）
+            $meta = $this->threeXInboundMetaMap($target);
             foreach ($target->inbounds as $row) {
+                $inboundId = (int) $row->inbound_id;
+                $info = $meta[$inboundId] ?? null;
+
                 $out[] = [
                     'node_id' => $target->id,
                     'node_name' => $target->name,
-                    'inbound_id' => (int) $row->inbound_id,
-                    'port' => null,
+                    'inbound_id' => $inboundId,
+                    'port' => $info['port'] ?? null,
                     'protocol' => $row->protocol,
-                    'label' => $target->name . '-' . $row->protocol,
+                    'label' => $info !== null
+                        ? self::relayLabel($target->name, $info['port'], $info['name'], $row->protocol)
+                        : self::relayLabel($target->name, null, null, $row->protocol),
                     'supported' => $row->protocol !== 'shadowsocks',
                 ];
             }
         }
 
         return $out;
+    }
+
+    /**
+     * 3x-ui 服务器入站清单 → [inbound_id => ['port'=>int, 'name'=>string]]。
+     *
+     * 端口与入站名（优先备注 remark，无则 tag）都不在 node_inbounds 库里，只能读面板。
+     * 结果缓存 5 分钟（key 含节点 id，不含 node 其它属性）；面板不可达时返回空数组，
+     * 调用侧据此降级为「服务器名 · 协议」两段文案，不抛不阻断。
+     *
+     * @return array<int, array{port:int, name:string}>
+     */
+    private function threeXInboundMetaMap(Node $target): array
+    {
+        $key = self::INBOUND_LIST_KEY . $target->id;
+
+        try {
+            $cached = Cache::get($key);
+        } catch (\Throwable) {
+            $cached = null; // 缓存不可用（未引导 / driver 异常）→ 当作未命中，直接读面板
+        }
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        try {
+            $inbounds = $this->threeXFactory->forNode($target)->listInbounds();
+        } catch (\Throwable $e) {
+            Log::debug('relay 候选：读取 3x 面板入站清单失败，降级为服务器名·协议', [
+                'node_id' => $target->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+
+        $map = [];
+        foreach ($inbounds as $inbound) {
+            if (! is_array($inbound)) {
+                continue;
+            }
+            $id = (int) ($inbound['id'] ?? 0);
+            if ($id === 0) {
+                continue;
+            }
+            $remark = trim((string) ($inbound['remark'] ?? ''));
+            $map[$id] = [
+                'port' => (int) ($inbound['port'] ?? 0),
+                'name' => $remark !== '' ? $remark : (string) ($inbound['tag'] ?? ''),
+            ];
+        }
+
+        try {
+            Cache::put($key, $map, self::INBOUND_LIST_TTL);
+        } catch (\Throwable) {
+            // 写缓存失败只影响下次是否重读，不影响本次返回
+        }
+
+        return $map;
+    }
+
+    /** 统一中转候选 label：「服务器名 · 端口 · 入站名 · 协议」，空段自动跳过。 */
+    private static function relayLabel(string $node, ?int $port, ?string $name, string $protocol): string
+    {
+        $parts = array_filter(
+            [$node, $port ? (string) $port : '', (string) $name, $protocol],
+            fn ($v) => $v !== '',
+        );
+
+        return implode(' · ', $parts);
     }
 
     /**
@@ -612,7 +696,7 @@ class XrayOutboundController extends Controller
             'network' => $stream['network'] ?? null,
             'security' => $stream['security'] ?? null,
             'dialer_proxy' => (string) ($stream['sockopt']['dialerProxy'] ?? '') ?: null,
-            // 中转出站：目标机器（列表展示「去哪台服务器」用；手工出站为 null）
+            // 中转出站：目标服务器（列表展示「去哪台服务器」用；手工出站为 null）
             'relay_target_node_id' => $outbound->relay_target_node_id,
             'relay_target_node_name' => $outbound->relay_target_node_id
                 ? Node::query()->whereKey($outbound->relay_target_node_id)->value('name')

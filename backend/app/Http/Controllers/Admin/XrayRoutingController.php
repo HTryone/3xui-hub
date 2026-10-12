@@ -54,7 +54,7 @@ class XrayRoutingController extends Controller
             'rules' => $rules->map(fn (XrayRoutingRule $r) => $this->present($r))->values()->all(),
             'balancers' => $balancers->map(fn (XrayBalancer $b) => $this->presentBalancer($b))->values()->all(),
             // 规则目标候选：仅本节点已有出站 + 已启用 balancer（tag 全局唯一）。
-            // 「其它机器」中转出口由出站页创建（见 XrayOutboundController::storeRelay），
+            // 「本站服务器」中转出口由出站页创建（见 XrayOutboundController::storeRelay），
             // 路由页只引用已建出的中转出站，不再生成 relay 候选。
             'outbound_tags' => $this->targetTags($node),
             'outbound_only_tags' => $this->outboundTags($node),

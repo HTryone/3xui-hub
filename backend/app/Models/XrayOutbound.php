@@ -23,7 +23,7 @@ use Illuminate\Support\Facades\Crypt;
     'enabled',
     'sort',
     'remark',
-    // 中转目标定位（路由选「其它机器的入站」自动生成时写入；手工出站为 NULL）
+    // 中转目标定位（路由选「本站服务器的入站」自动生成时写入；手工出站为 NULL）
     'relay_target_node_id',
     'relay_target_inbound_id',
 ])]
