@@ -6,12 +6,13 @@ use App\Models\Node;
 use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
 use App\Models\XrayRelayClient;
+use App\Models\XrayRoutingRule;
 use App\Services\ThreeXUiClientFactory;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * xray 中转自动化：路由目标选「其它机器的入站」时，保存规则即自动：
+ * xray 中转自动化：出站页以「其它机器」为目标新建出站时，保存即自动：
  *
  *   1) 在**源节点**建一条中转出站（xray_outbounds，tag 前缀 rl-{目标nodeId}-{目标port}）——
  *      协议取目标入站协议（vless/vmess/trojan），凭据与传输/reality 公开值取目标入站
@@ -22,6 +23,9 @@ use Illuminate\Validation\ValidationException;
  *      - xray 目标 → xray_relay_clients 落库，渲染时经 XrayConfigService::renderInbound
  *        注入该入站 clients（照 clientsFor 口径）
  *      - 3x-ui 目标 → ThreeXUiClient addClient + attach（inbound_id 取 node_inbounds）
+ *
+ * 删除回收（见 deleteRelayOutbound / cleanupRelayClient）：删除中转出站或删除引用它的
+ * 最后一条路由规则时，回收目标节点上的承接凭据，不留垃圾 client。
  *
  * 幂等：同一「源节点 × 目标入站」重复保存复用已有出站/凭据，不产生重复。
  */
@@ -109,6 +113,97 @@ class XrayRelayService
             $this->outboundStreamFromThreeX($stream, (string) $target->host),
             $remark,
         );
+    }
+
+    /**
+     * 删除一条路由规则后回收其可能引用的中转出站。
+     *
+     * 若该规则引用的出站是自动中转出站（relay_target_node_id 非空）且**没有其它规则再引用它**
+     * → 删除该出站并清理对方节点上的承接凭据（见 deleteRelayOutbound）；仍有其它规则引用时保留。
+     *
+     * 调用方须在规则删除**之后**调用（此时引用计数已不含该规则）。
+     */
+    public function cleanupOutboundForRule(Node $node, XrayRoutingRule $rule): void
+    {
+        $outbound = XrayOutbound::where('node_id', $node->id)
+            ->where('tag', $rule->outbound_tag)
+            ->whereNotNull('relay_target_node_id')
+            ->first();
+
+        if ($outbound === null) {
+            return; // 非中转出站 / 已不存在
+        }
+
+        $stillReferenced = $node->xrayRoutingRules()
+            ->where('outbound_tag', $outbound->tag)
+            ->exists();
+
+        if ($stillReferenced) {
+            return; // 还有别的规则引用它 → 保留出站与凭据
+        }
+
+        $this->deleteRelayOutbound($outbound);
+    }
+
+    /**
+     * 删除一条中转出站：清理对方节点上的承接凭据 + 删本地出站记录。
+     *
+     * - xray 目标 → 删 xray_relay_clients 行
+     * - 3x-ui 目标 → 调面板 clients/del 删 client（email 口径与 ensureThreeXClient 一致）
+     *
+     * 对方清理失败不阻断本地删除（best-effort）：面板不可达时仍要能让出站删掉，
+     * 残留的孤儿凭据可在对方节点手工清理。
+     */
+    public function deleteRelayOutbound(XrayOutbound $outbound): void
+    {
+        $this->cleanupRelayClient(
+            (int) $outbound->node_id,
+            $outbound->relay_target_node_id !== null ? (int) $outbound->relay_target_node_id : null,
+            $outbound->relay_target_inbound_id !== null ? (int) $outbound->relay_target_inbound_id : null,
+        );
+
+        $outbound->delete();
+    }
+
+    /**
+     * 清理「源节点 × 目标入站」在目标节点上的承接凭据（best-effort）。
+     *
+     * @param int|null $targetNodeId    对方节点（null → 非中转出站，跳过）
+     * @param int|null $targetInboundId 对方入站
+     */
+    public function cleanupRelayClient(?int $sourceNodeId, ?int $targetNodeId, ?int $targetInboundId): void
+    {
+        if ($targetNodeId === null || $targetInboundId === null) {
+            return;
+        }
+
+        $target = Node::find($targetNodeId);
+        if ($target === null) {
+            return; // 对方节点已删，无处可清理
+        }
+
+        if ($target->isXray()) {
+            // xray 目标：仅删本「源节点」在目标入站上的那条凭据，不影响该入站其它用户。
+            if ($sourceNodeId !== null) {
+                XrayRelayClient::where('node_id', $target->id)
+                    ->where('inbound_id', $targetInboundId)
+                    ->where('source_node_id', $sourceNodeId)
+                    ->delete();
+            }
+
+            return;
+        }
+
+        // 3x-ui 目标：email 口径与 ensureThreeXClient 一致（relay_{源}_{目标入站}）
+        if ($sourceNodeId === null) {
+            return;
+        }
+        $email = substr(sprintf('relay_%d_%d', $sourceNodeId, $targetInboundId), 0, 128);
+        try {
+            $this->factory->forNode($target)->deleteClient($email);
+        } catch (\Throwable) {
+            // 面板不可达 / client 已不存在 → 不阻断本地删除
+        }
     }
 
     /**

@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.27.1**
+**版本：1.28.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,15 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.28.0 (2026-10-13)
+
+中转流程重构：**出口先在出站页建，路由只选已有出站**（职责更清楚，不再在保存路由时隐式创建出站）：
+
+- 出站页新建出站时，目标来源可选「其它机器」：选服务器 + 入站即自动生成出站（地址/端口/凭据/reality·xhttp 等传输参数全部自动读取），并在对方服务器上自动建好承接凭据
+- 路由页「目标出站」只列本节点已有出站，末尾保留「＋ 新建中转出口」入口（点击跳转到出站页）
+- 删除路由规则时自动回收它引用的中转出站（确认无其它规则引用后），并清理对方服务器上的承接凭据；删除中转出站同样清理对方凭据
+- 管理后台措辞：侧边栏与页面「节点列表」改为「节点服务器」
+
 ### v1.27.1 (2026-10-13)
 
 - 修复「跨机中转」到 3x-ui 目标节点时不通（现象：测出口 IP 不是目标机器的 IP）：
@@ -328,7 +337,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.27.1**
+**Version: 1.28.0**
 
 ## Screenshots
 
@@ -398,7 +407,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.27.1-blue
+[version-shield]: https://img.shields.io/badge/version-1.28.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

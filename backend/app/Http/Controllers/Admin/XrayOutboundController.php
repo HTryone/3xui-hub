@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Admin;
 
 use App\Drivers\Xray\OutboundLinkParser;
 use App\Drivers\Xray\WarpService;
+use App\Drivers\Xray\XrayRelayService;
 use App\Http\Controllers\Controller;
 use App\Models\Node;
 use App\Models\NodeApiCommand;
+use App\Models\XrayInbound;
 use App\Models\XrayOutbound;
 use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -18,6 +20,8 @@ use Illuminate\Validation\ValidationException;
  * Admin xray 节点出站管理（/admin-api/nodes/{node}/xray-outbounds）。
  *
  * - 结构化 CRUD（协议/服务器/凭据/传输 + 高级 JSON 透传兜底）
+ * - 目标来源选「其它机器」→ 自动中转出站（XrayRelayService::ensureRelay：读对方面板、
+ *   在对方建承接凭据、在本地 upsert 中转出站）；路由页只引用已有出站，不再触发中转创建
  * - URI 一键导入（vless/vmess/trojan/ss/socks/http 分享链接）
  * - 连通测试（下发 test_outbound 指令，由节点侧 TCP 探活回执）
  * - 列表附出站流量（agent 上报的 xray_outbound_traffic 覆盖写快照）
@@ -34,6 +38,10 @@ class XrayOutboundController extends Controller
     /** 不可作「借道出站」的目标协议：blackhole 无出口、freedom 语义等同直连（与 3x-ui 排除 blackhole 一致）。 */
     private const PROXY_UNSUPPORTED_PROTOCOLS = ['freedom', 'blackhole'];
 
+    public function __construct(
+        private readonly XrayRelayService $relay,
+    ) {}
+
     /** GET /admin-api/nodes/{node}/xray-outbounds */
     public function index(Node $node): JsonResponse
     {
@@ -48,6 +56,8 @@ class XrayOutboundController extends Controller
 
         return $this->success([
             'outbounds' => $outbounds->map(fn (XrayOutbound $o) => $this->present($o, $traffic->get($o->tag)))->values()->all(),
+            // 目标来源「其它机器」候选：启用节点 × 启用入站（排除本节点）
+            'relay_targets' => $this->relayTargets($node),
             'config_version' => $node->xrayConfigVersion(),
         ]);
     }
@@ -56,6 +66,11 @@ class XrayOutboundController extends Controller
     public function store(Request $request, Node $node): JsonResponse
     {
         $this->ensureXray($node);
+
+        // 目标来源选「其它机器」→ 中转自动化（在对方建承接凭据 + 本地建中转出站）
+        if ((string) $request->input('target_source') === 'relay') {
+            return $this->storeRelay($request, $node);
+        }
 
         // WARP 合并：协议选 WARP → 走 WarpService（注册设备 + 生成 wireguard 出站）。
         // 已有 warp 出站时报错，避免顶掉在用的 WARP 账户/配置。
@@ -106,7 +121,12 @@ class XrayOutboundController extends Controller
             throw ValidationException::withMessages(['tag' => 'WARP 出站由 WARP 功能管理，请到 WARP 面板操作']);
         }
 
-        $outbound->delete();
+        // 中转出站：连带清理对方节点上的承接凭据（不留垃圾 client）
+        if ($outbound->relay_target_node_id !== null) {
+            $this->relay->deleteRelayOutbound($outbound);
+        } else {
+            $outbound->delete();
+        }
         $node->bumpXrayConfigVersion();
 
         return $this->success(['config_version' => $node->xrayConfigVersion()]);
@@ -170,6 +190,79 @@ class XrayOutboundController extends Controller
     }
 
     // ── 内部 ─────────────────────────────────────────────
+
+    /**
+     * 「其它机器」目标来源：调用 XrayRelayService 在对方建承接凭据 + 本地 upsert 中转出站。
+     * body: {target_node_id, target_inbound_id} → 返回生成的中转出站。
+     */
+    private function storeRelay(Request $request, Node $node): JsonResponse
+    {
+        $data = $request->validate([
+            'target_node_id' => ['required', 'integer'],
+            'target_inbound_id' => ['required', 'integer'],
+        ]);
+
+        $tag = $this->relay->ensureRelay($node, (int) $data['target_node_id'], (int) $data['target_inbound_id']);
+
+        $outbound = $node->xrayOutbounds()->where('tag', $tag)->firstOrFail();
+
+        $node->bumpXrayConfigVersion();
+
+        return $this->success([
+            'outbound' => $this->present($outbound, null),
+            'config_version' => $node->xrayConfigVersion(),
+        ]);
+    }
+
+    /**
+     * 出站页「目标来源 = 其它机器」候选：启用节点 × 启用入站（排除本节点）。
+     * value = {node_id, inbound_id}，label 如「香港01-443-vless-reality」。
+     *
+     * - xray 目标：入站来自 xray_inbounds（inbound_id = xray_inbounds.id）
+     * - 3x-ui 目标：入站来自 node_inbounds（inbound_id = node_inbounds.inbound_id）
+     */
+    private function relayTargets(Node $node): array
+    {
+        $out = [];
+        $nodes = Node::query()
+            ->where('enabled', true)
+            ->where('id', '!=', $node->id)
+            ->orderBy('name')
+            ->get();
+
+        foreach ($nodes as $target) {
+            if ($target->isXray()) {
+                foreach (XrayInbound::enabledFor($target) as $in) {
+                    $out[] = [
+                        'node_id' => $target->id,
+                        'node_name' => $target->name,
+                        'inbound_id' => $in->id,
+                        'port' => (int) $in->port,
+                        'protocol' => $in->protocol,
+                        'label' => $target->name . '-' . $in->port . '-' . $in->tag,
+                        'supported' => $in->protocol !== 'shadowsocks',
+                    ];
+                }
+                continue;
+            }
+
+            // 3x-ui 节点：node_inbounds 只有 inbound_id/protocol；端口/tag 在保存时由
+            // XrayRelayService 从面板读取，此处 label 降级为「节点名-协议」避免每次开页打节点。
+            foreach ($target->inbounds as $row) {
+                $out[] = [
+                    'node_id' => $target->id,
+                    'node_name' => $target->name,
+                    'inbound_id' => (int) $row->inbound_id,
+                    'port' => null,
+                    'protocol' => $row->protocol,
+                    'label' => $target->name . '-' . $row->protocol,
+                    'supported' => $row->protocol !== 'shadowsocks',
+                ];
+            }
+        }
+
+        return $out;
+    }
 
     /**
      * WARP 出站合并入口：注册 WARP 设备（若未注册）并 apply（生成 tag=warp 的 wireguard 出站）。
