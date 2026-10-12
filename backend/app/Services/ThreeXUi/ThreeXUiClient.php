@@ -237,7 +237,14 @@ class ThreeXUiClient
     {
         $obj = $this->requestNullable('GET', self::EP_CLIENTS_GET . rawurlencode($email));
 
-        return is_array($obj) ? $obj : null;
+        if (! is_array($obj)) {
+            return null;
+        }
+
+        // 回执把 client 对象包在 client 键里（实测：{"client":{"id":131,"uuid":"…"}}），
+        // 个别版本直接返回 client 对象。统一剥成 client 对象：调用方若把 id
+        // （clients 表自增行号）当成 uuid 用，会让对端覆盖真 uuid、导致凭据失效。
+        return is_array($obj['client'] ?? null) ? $obj['client'] : $obj;
     }
 
     /**

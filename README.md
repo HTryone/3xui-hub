@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.27.0**
+**版本：1.27.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -170,6 +170,13 @@ docker-compose up -d --build # 更新并重启
 
 ## 版本记录
 
+### v1.27.1 (2026-10-13)
+
+- 修复「跨机中转」到 3x-ui 目标节点时不通（现象：测出口 IP 不是目标机器的 IP）：
+  - 取客户端凭据时未剥去 3x-ui 回执外层的 `client` 包裹，导致中转出站里始终没有写入 uuid（trojan 目标还会漏掉 password）
+  - 中转出站的传输参数一直是空的，现按目标入站配置生成（reality / xhttp / tls / ws / grpc）
+  - 已存在的坏中转出站，在再次保存对应路由规则时自动刷新修正
+
 ### v1.27.0 (2026-10-12)
 
 xray 跨机中转与运维体验：
@@ -321,7 +328,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.27.0**
+**Version: 1.27.1**
 
 ## Screenshots
 
@@ -391,7 +398,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.27.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.27.1-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

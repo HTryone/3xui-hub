@@ -89,9 +89,9 @@ class XrayRelayService
             throw ValidationException::withMessages(['outbound_tag' => '目标入站协议（shadowsocks）暂不支持自动中转']);
         }
 
-        [$port, $tag] = $this->threeXInboundMeta($target, $targetInboundId);
+        [$port, $tag, $stream] = $this->threeXInboundMeta($target, $targetInboundId);
         $port = $port ?: 443;
-        $clientId = $this->ensureThreeXClient($source, $target, $targetInboundId);
+        $clientId = $this->ensureThreeXClient($source, $target, $targetInboundId, $protocol);
 
         // remark 用三段式「节点名-端口-端口名（tag）」，列表/下拉直接可读
         $remark = implode('-', array_values(array_filter(
@@ -106,15 +106,20 @@ class XrayRelayService
             $targetInboundId,
             $protocol,
             $this->outboundSettings($protocol, $clientId, (string) $target->host, $port),
-            [],
+            $this->outboundStreamFromThreeX($stream, (string) $target->host),
             $remark,
         );
     }
 
     /**
-     * 源节点中转出站「已存在则复用，否则落库」。返回出站 tag。
+     * 源节点中转出站「已存在则刷新，否则落库」。返回出站 tag。
      *
-     * 幂等键 =（源节点, relay_target_node_id, relay_target_inbound_id）。
+     * 幂等键 =（源节点, relay_target_node_id, relay_target_inbound_id）——同一对
+     * 「源节点 × 目标入站」恒为一条记录，重复保存不产生重复。
+     *
+     * 命中已有行时**仍回写 settings/stream/remark**：目标入站的凭据、
+     * reality/xhttp 参数可能在首次保存后才补齐或被改动，沿用旧值会让中转一直握
+     * 着不含 uuid 的出站（实测因此打不出目标出口 IP）。tag 保持不变，路由规则引用不受影响。
      */
     private function ensureRelayOutbound(
         Node $source,
@@ -130,10 +135,6 @@ class XrayRelayService
             ->where('relay_target_node_id', $target->id)
             ->where('relay_target_inbound_id', $targetInboundId)
             ->first();
-
-        if ($existing !== null && $existing->protocol === $protocol) {
-            return $existing->tag;
-        }
 
         $outbound = $existing ?? new XrayOutbound(['node_id' => $source->id]);
         if ($existing === null) {
@@ -180,12 +181,16 @@ class XrayRelayService
     }
 
     /**
-     * 3x-ui 目标：ensure client（email 幂等）→ attach 到目标入站。返回 client 的 uuid。
+     * 3x-ui 目标：ensure client（email 幂等）→ attach 到目标入站。返回 Xray 用的 client id（uuid）。
      *
      * email 口径：同「源节点 × 目标入站」稳定不变，重复保存复用同一 client。
-     * 3x-ui addClient 服务端生成 uuid；attach 后回查一次取 id。
+     * 3x-ui addClient 服务端生成 uuid；attach 后回查一次取其 **uuid**。
+     *
+     * 取值口径与 UserAdminService::provisionThreeXClient 一致：3x-ui v3.7.0 的 clients/get
+     * 回执里 `id` 是 clients 表自增行号、`uuid` 才是 Xray 的 client id。中转出站 vnext.users.id
+     * 必须写 uuid，写行号会让对端把该 client 的 uuid 覆盖成数字而断连（实测表现为出站无凭据可用）。
      */
-    private function ensureThreeXClient(Node $source, Node $target, int $targetInboundId): string
+    private function ensureThreeXClient(Node $source, Node $target, int $targetInboundId, string $protocol = 'vless'): string
     {
         $email = substr(sprintf('relay_%d_%d', $source->id, $targetInboundId), 0, 128);
         $client = $this->factory->forNode($target);
@@ -206,28 +211,43 @@ class XrayRelayService
         $client->attachClient($email, [$targetInboundId]);
 
         $fresh = $client->getClient($email);
+        if ($fresh === null) {
+            return '';
+        }
 
-        return (string) ($fresh['id'] ?? $fresh['uuid'] ?? '');
+        // trojan 凭据在 password，vless/vmess 在 uuid。都取不到时返回空：
+        // 宁可上层建成「无凭据出站」，也不能回退写 id —— 那是 clients 表自增行号，
+        // 写进 vnext.users.id 会让对端把该 client 的真 uuid 覆盖成数字而断连。
+        return (string) ($protocol === 'trojan'
+            ? ($fresh['password'] ?? '')
+            : ($fresh['uuid'] ?? ''));
     }
 
     /**
-     * 3x-ui 入站端口 + tag（listInbounds 里取）。
+     * 3x-ui 入站元数据（listInbounds 里取）：端口 + tag + 已解析的 streamSettings。
      *
-     * @return array{0:int,1:string} [port, tag]；拿不到返回 [0, '']（调用侧回落）
+     * streamSettings 在 3x-ui 的 list 响应里是 JSON **字符串**（历史版本为对象），此处
+     * 统一解析成数组供 outboundStreamFromThreeX 使用。
+     *
+     * @return array{0:int,1:string,2:array} [port, tag, streamSettings]；拿不到返回 [0, '', []]
      */
     private function threeXInboundMeta(Node $target, int $inboundId): array
     {
         try {
             foreach ($this->factory->forNode($target)->listInbounds() as $inbound) {
                 if ((int) ($inbound['id'] ?? 0) === $inboundId) {
-                    return [(int) ($inbound['port'] ?? 0), (string) ($inbound['tag'] ?? '')];
+                    return [
+                        (int) ($inbound['port'] ?? 0),
+                        (string) ($inbound['tag'] ?? ''),
+                        $this->normalizeStream($inbound['streamSettings'] ?? []),
+                    ];
                 }
             }
         } catch (\Throwable) {
-            // 拉不到面板入站清单不阻断中转（端口/tag 缺失只影响展示）
+            // 拉不到面板入站清单不阻断中转（端口/tag/stream 缺失只影响展示/传输）
         }
 
-        return [0, ''];
+        return [0, '', []];
     }
 
     // ── 出站结构与渲染口径 ─────────────────────────────
@@ -327,7 +347,101 @@ class XrayRelayService
         return $out;
     }
 
+    /**
+     * 3x-ui 目标入站的 streamSettings（面板格式）→ 中转出站客户端 streamSettings。
+     *
+     * 与 xray 目标的 outboundStream 关键差异（已按实测线上数据核对）：
+     *   - reality 的 **publicKey 在 realitySettings 顶层**（不在客户端段 settings 里），
+     *     客户端段 settings 只放 fingerprint / spiderX / mldsa65Verify；而 xray 目标的
+     *     publicKey 恰在 settings 里。故 publicKey 必须顶层优先、兼容 settings 回退。
+     *   - 网络类型在 `network`（auto→tcp）；xhttp 参数在 `xhttpSettings`（path/host/mode）。
+     *   - serverNames/shortIds 在顶层；取值口径与订阅链接同源（各取第 0 个，不涉私钥）。
+     *   - 目标入站用 xhttp 时 vless 出站用户**不带 flow**（vision 仅限 tcp），
+     *     否则对端按 vision 处理而客户端没带 → 握手失败。
+     */
+    private function outboundStreamFromThreeX(array $stream, string $host): array
+    {
+        if ($stream === []) {
+            return [];
+        }
+
+        $security = (string) ($stream['security'] ?? 'none');
+        $network = (string) ($stream['network'] ?? 'tcp');
+        if ($network === '' || $network === 'auto') {
+            $network = 'tcp';
+        }
+
+        $out = ['network' => $network, 'security' => $security];
+
+        if ($security === 'reality') {
+            $reality = is_array($stream['realitySettings'] ?? null) ? $stream['realitySettings'] : [];
+            $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
+            $setting = [
+                'serverName' => (string) ($reality['serverNames'][0] ?? XrayConfigService::DEFAULT_SNI),
+                // publicKey 顶层优先（3x-ui），settings 回退（xray 写法）
+                'publicKey' => (string) ($reality['publicKey'] ?? ($client['publicKey'] ?? '')),
+                'fingerprint' => (string) ($client['fingerprint'] ?? 'chrome') ?: 'chrome',
+            ];
+            $shortId = (string) ($reality['shortIds'][0] ?? '');
+            if ($shortId !== '') {
+                $setting['shortId'] = $shortId;
+            }
+            if (! empty($client['spiderX'])) {
+                $setting['spiderX'] = (string) $client['spiderX'];
+            }
+            $out['realitySettings'] = $setting;
+        } elseif ($security === 'tls') {
+            $tls = $stream['tlsSettings'] ?? [];
+            $out['tlsSettings'] = array_filter([
+                'serverName' => (string) ($tls['serverName'] ?? $host),
+            ], fn ($v) => $v !== '');
+        }
+
+        if ($network === 'ws') {
+            $ws = $stream['wsSettings'] ?? [];
+            $out['wsSettings'] = array_filter([
+                'path' => (string) ($ws['path'] ?? '/'),
+                'headers' => ! empty($ws['host']) ? ['Host' => (string) $ws['host']] : null,
+            ], fn ($v) => $v !== null);
+        } elseif ($network === 'xhttp') {
+            $xhttp = $stream['xhttpSettings'] ?? [];
+            $out['xhttpSettings'] = array_filter([
+                'path' => (string) ($xhttp['path'] ?? '/'),
+                'host' => (string) ($xhttp['host'] ?? ''),
+                'mode' => (string) ($xhttp['mode'] ?? 'auto') ?: 'auto',
+            ], fn ($v) => $v !== '');
+        } elseif ($network === 'grpc') {
+            $grpc = $stream['grpcSettings'] ?? [];
+            $out['grpcSettings'] = array_filter([
+                'serviceName' => (string) ($grpc['serviceName'] ?? ''),
+                'authority' => (string) ($grpc['authority'] ?? ''),
+            ], fn ($v) => $v !== '');
+        }
+
+        return $out;
+    }
+
     // ── 工具 ─────────────────────────────────────────────
+
+    /**
+     * 归一化「传输设置」为数组：3x-ui 的 listInbounds 把 streamSettings 序列化成
+     * JSON **字符串**，个别版本返回对象。读取目标入站传输参数前统一走这里。
+     *
+     * @return array 解析失败 / 空值 → []（调用侧按「无传输配置」处理）
+     */
+    private function normalizeStream(mixed $stream): array
+    {
+        if (is_string($stream)) {
+            if ($stream === '') {
+                return [];
+            }
+            $decoded = json_decode($stream, true);
+
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return is_array($stream) ? $stream : [];
+    }
 
     /** 源节点内唯一的 tag：rl-{目标节点}-{port}，冲突自动加序号。 */
     private function uniqueTag(Node $source, int $targetNodeId, int $port): string
