@@ -593,9 +593,35 @@ class ThreeXUiClient
             'ok' => true,
             'latencyMs' => $latencyMs,
             'cpu' => $obj['cpu'] ?? null,
-            'mem' => $obj['mem'] ?? null,
+            'mem' => self::memPercent($obj['mem'] ?? null),
             'xrayState' => $obj['xray']['state'] ?? null,
         ];
+    }
+
+    /**
+     * 归一化 /server/status 的 mem 字段为「已用百分比」。
+     *
+     * 3x-ui v2.8.11 起 mem 是对象 {current:<已用字节>, total:<总字节>}（官方源码 Mem struct），
+     * 直接当标量取会得到数组 → 上层 is_numeric 判 false 被丢弃。这里统一成百分比，同时兼容
+     * 旧面板 / 其他驱动可能仍返回的标量百分比：
+     *   - 对象 且 total > 0 → current / total * 100，保留 1 位小数
+     *   - 数字 / 数字字符串 → 原样转 float
+     *   - 缺字段 / total<=0 / 非数值 → null（上层 HealthCheckService::metric() 当「无数据」）
+     */
+    private static function memPercent(mixed $mem): ?float
+    {
+        if (is_array($mem)) {
+            $current = $mem['current'] ?? null;
+            $total = $mem['total'] ?? null;
+
+            if (is_numeric($current) && is_numeric($total) && (float) $total > 0) {
+                return round((float) $current / (float) $total * 100, 1);
+            }
+
+            return null;
+        }
+
+        return is_numeric($mem) ? (float) $mem : null;
     }
 
     /**
@@ -655,7 +681,7 @@ class ThreeXUiClient
                     'ok' => true,
                     'latencyMs' => $latencyMs,
                     'cpu' => $obj['cpu'] ?? null,
-                    'mem' => $obj['mem'] ?? null,
+                    'mem' => self::memPercent($obj['mem'] ?? null),
                     'xrayState' => $obj['xray']['state'] ?? null,
                 ];
             })

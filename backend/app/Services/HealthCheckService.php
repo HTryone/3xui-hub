@@ -229,7 +229,9 @@ class HealthCheckService
 
     /**
      * 从 healthCheck() 的返回值里取一个数值指标，非数值一律当「无数据」。
-     * 3x-ui 的 /server/status 返回的是字符串数字，xray 驱动压根不返回 cpu/mem。
+     * 3x-ui 的 /server/status：cpu 是数字；mem 原始是 {current,total} 对象，已由
+     * ThreeXUiClient::memPercent() 归一化成百分比数字（缺字段 / total=0 时为 null）。
+     * xray 驱动压根不返回 cpu/mem。
      */
     private function metric(?array $health, string $key): ?float
     {
