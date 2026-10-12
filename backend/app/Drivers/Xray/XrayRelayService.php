@@ -31,8 +31,11 @@ use Illuminate\Validation\ValidationException;
  */
 class XrayRelayService
 {
-    /** 中转出站 tag 前缀（区分手工出站，便于识别/回收）。 */
+    /** 中转出站 tag 前缀（默认 tag 用；自定义 tag 不强制带此前缀）。 */
     public const TAG_PREFIX = 'rl-';
+
+    /** 系统保留 tag（与 XrayConfigService 内置出站一致，不可占用默认或自定义 tag）。 */
+    private const RESERVED_TAGS = ['direct', 'blocked', 'api'];
 
     public function __construct(
         private readonly ThreeXUiClientFactory $factory,
@@ -43,12 +46,26 @@ class XrayRelayService
      *
      * @param  int  $targetNodeId    目标节点
      * @param  int  $targetInboundId 目标入站（xray 目标 = xray_inbounds.id；3x 目标 = node_inbounds.inbound_id）
+     * @param  string|null  $customTag     自定义标识（留空 → 默认「节点名-端口-入站名」）；与已有出站重名直接报错，不静默覆盖
+     * @param  string|null  $customRemark  自定义备注（留空 → 空字符串；不自动填三段式）
      */
-    public function ensureRelay(Node $source, int $targetNodeId, int $targetInboundId): string
+    public function ensureRelay(Node $source, int $targetNodeId, int $targetInboundId, ?string $customTag = null, ?string $customRemark = null): string
     {
+        $customTag = $customTag !== null && trim($customTag) !== '' ? trim($customTag) : null;
+        $customRemark = $customRemark !== null && trim($customRemark) !== '' ? trim($customRemark) : null;
+
         $target = Node::find($targetNodeId);
         if ($target === null) {
             throw ValidationException::withMessages(['outbound_tag' => '目标节点不存在']);
+        }
+
+        // 自定义标识先校验（保留字/长度/与本节点已有出站重名）——在动对方服务器凭据之前拒绝，
+        // 避免「重名报错却已在对方建了承接凭据」的脏状态。
+        if ($customTag !== null && ! $this->relayExists($source, $target->id, $targetInboundId)) {
+            $this->validateCustomTag($customTag);
+            if ($this->tagTaken($source, $customTag)) {
+                throw ValidationException::withMessages(['outbound_tag' => "标识 {$customTag} 已存在"]);
+            }
         }
 
         if ($target->isXray()) {
@@ -79,7 +96,9 @@ class XrayRelayService
                     $this->flowFor($inbound),
                 ),
                 $this->outboundStream($inbound, (string) $target->host),
-                $target->name . '-' . $inbound->port . '-' . $inbound->tag,
+                $customRemark ?? '',
+                $customTag ?? ($target->name . '-' . $inbound->port . '-' . $inbound->tag),
+                $customTag !== null,
             );
         }
 
@@ -97,12 +116,6 @@ class XrayRelayService
         $port = $port ?: 443;
         $clientId = $this->ensureThreeXClient($source, $target, $targetInboundId, $protocol);
 
-        // remark 与出站页候选 label 同格式「服务器名 · 端口 · 入站名 · 协议」（入站名取 tag），列表/下拉直接可读
-        $remark = implode(' · ', array_values(array_filter(
-            [$target->name, (string) $port, $tag, $protocol],
-            fn ($v) => $v !== '',
-        )));
-
         return $this->ensureRelayOutbound(
             $source,
             $target,
@@ -111,7 +124,9 @@ class XrayRelayService
             $protocol,
             $this->outboundSettings($protocol, $clientId, (string) $target->host, $port),
             $this->outboundStreamFromThreeX($stream, (string) $target->host),
-            $remark,
+            $customRemark ?? '',
+            $customTag ?? ($target->name . '-' . $port . '-' . $tag),
+            $customTag !== null,
         );
     }
 
@@ -215,6 +230,10 @@ class XrayRelayService
      * 命中已有行时**仍回写 settings/stream/remark**：目标入站的凭据、
      * reality/xhttp 参数可能在首次保存后才补齐或被改动，沿用旧值会让中转一直握
      * 着不含 uuid 的出站（实测因此打不出目标出口 IP）。tag 保持不变，路由规则引用不受影响。
+     *
+     * 新建行的 tag：$customTag 非空时用**自定义标识**（校验通过后原样落库，允许中文；
+     * 与已有出站重名直接报错，不自动加后缀、不静默覆盖）；否则用 $defaultTag
+     * （「节点名-端口-入站名」）。$defaultTag 命中原有 rl- 形态冲突时仍自增后缀（默认路径）。
      */
     private function ensureRelayOutbound(
         Node $source,
@@ -224,7 +243,9 @@ class XrayRelayService
         string $protocol,
         array $settings,
         array $stream,
-        string $remark,
+        string $remark = '',
+        ?string $defaultTag = null,
+        bool $isCustomTag = false,
     ): string {
         $existing = XrayOutbound::where('node_id', $source->id)
             ->where('relay_target_node_id', $target->id)
@@ -233,7 +254,7 @@ class XrayRelayService
 
         $outbound = $existing ?? new XrayOutbound(['node_id' => $source->id]);
         if ($existing === null) {
-            $outbound->tag = $this->uniqueTag($source, $target->id, $port ?: $targetInboundId);
+            $outbound->tag = $this->resolveTag($source, $defaultTag, $isCustomTag, $target->id, $port ?: $targetInboundId);
         }
         $outbound->protocol = $protocol;
         $outbound->relay_target_node_id = $target->id;
@@ -536,6 +557,56 @@ class XrayRelayService
         }
 
         return is_array($stream) ? $stream : [];
+    }
+
+    /**
+     * 新建中转出站时决定 tag：
+     * - 自定义：$tag（已由 ensureRelay 校验通过）原样使用（允许中文）——不做 uniqueTag 兜底，
+     *   保持「重名即报错、不自动加后缀、不静默覆盖」的语义
+     * - 默认：$tag（「节点名-端口-入站名」）；被占用时回退 uniqueTag 生成 rl- 形态并自增后缀
+     */
+    private function resolveTag(Node $source, ?string $tag, bool $isCustomTag, int $targetNodeId, int $port): string
+    {
+        $tag = $tag !== null && trim($tag) !== '' ? trim($tag) : '';
+
+        if ($isCustomTag && $tag !== '') {
+            return $tag; // 重名已在 ensureRelay 前置拦截；此处不再兜底改后缀
+        }
+
+        if ($tag !== '' && ! $this->tagTaken($source, $tag)) {
+            return $tag;
+        }
+
+        return $this->uniqueTag($source, $targetNodeId, $port);
+    }
+
+    /**
+     * 自定义 tag 校验：系统保留字拒绝；空白标签拒绝；长度与库列（varchar 64）一致。
+     * 允许中文等任意非空字符（实测 xray 支持中文 tag），唯一性在调用处另行检查。
+     */
+    private function validateCustomTag(string $tag): void
+    {
+        if (in_array(strtolower($tag), self::RESERVED_TAGS, true)) {
+            throw ValidationException::withMessages(['outbound_tag' => "标识 {$tag} 为系统保留"]);
+        }
+        if (strlen($tag) > 64) {
+            throw ValidationException::withMessages(['outbound_tag' => '标识最长 64 个字符']);
+        }
+    }
+
+    /** 该源节点内是否已有同 tag 出站。 */
+    private function tagTaken(Node $source, string $tag): bool
+    {
+        return $source->xrayOutbounds()->where('tag', $tag)->exists();
+    }
+
+    /** 该「源节点 × 目标入站」是否已有中转出站（幂等命中；命中时 tag 不变，不做自定义标识校验）。 */
+    private function relayExists(Node $source, int $targetNodeId, int $targetInboundId): bool
+    {
+        return XrayOutbound::where('node_id', $source->id)
+            ->where('relay_target_node_id', $targetNodeId)
+            ->where('relay_target_inbound_id', $targetInboundId)
+            ->exists();
     }
 
     /** 源节点内唯一的 tag：rl-{目标节点}-{port}，冲突自动加序号。 */

@@ -201,16 +201,27 @@ class XrayOutboundController extends Controller
 
     /**
      * 「本站服务器」目标来源：调用 XrayRelayService 在对方建承接凭据 + 本地 upsert 中转出站。
-     * body: {target_node_id, target_inbound_id} → 返回生成的中转出站。
+     * body: {target_node_id, target_inbound_id, tag?, remark?}
+     *   - tag 可选：留空 → 默认「节点名-端口-入站名」；填了则用自定义标识（与已有出站重名报错）
+     *   - remark 可选：留空 → 空字符串（不再自动填三段式）；填了则在列表展示
+     * → 返回生成的中转出站。
      */
     private function storeRelay(Request $request, Node $node): JsonResponse
     {
         $data = $request->validate([
             'target_node_id' => ['required', 'integer'],
             'target_inbound_id' => ['required', 'integer'],
+            'tag' => ['nullable', 'string', 'max:64'],
+            'remark' => ['nullable', 'string', 'max:128'],
         ]);
 
-        $tag = $this->relay->ensureRelay($node, (int) $data['target_node_id'], (int) $data['target_inbound_id']);
+        $tag = $this->relay->ensureRelay(
+            $node,
+            (int) $data['target_node_id'],
+            (int) $data['target_inbound_id'],
+            isset($data['tag']) ? (string) $data['tag'] : null,
+            isset($data['remark']) ? (string) $data['remark'] : null,
+        );
 
         $outbound = $node->xrayOutbounds()->where('tag', $tag)->firstOrFail();
 
@@ -395,7 +406,9 @@ class XrayOutboundController extends Controller
     private function validatePayload(Request $request): array
     {
         return $request->validate([
-            'tag' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9_.-]+$/'],
+            // 标识允许中文等任意非空字符（实测 xray 26.3.27 支持中文 tag）；长度/保留字/重名在
+            // fillFromPayload 或中转侧另行校验
+            'tag' => ['required', 'string', 'max:64', 'regex:/\S/'],
             'protocol' => ['required', 'in:freedom,blackhole,vmess,vless,trojan,shadowsocks,socks,http,wireguard'],
             'remark' => ['nullable', 'string', 'max:128'],
             'enabled' => ['nullable', 'boolean'],
