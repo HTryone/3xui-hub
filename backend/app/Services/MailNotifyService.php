@@ -185,69 +185,76 @@ class MailNotifyService
     }
 
     /**
-     * 该用户当前的通知「时代号」。
-     *
-     * 防重 key 里带上它：时代号一变，该用户所有场景的旧防重标记全部自动作废
-     * （旧 key 永远不会再被读到），不需要逐场景去清标记。
-     * 时代号只会被 restoreReminders() 递增；Cache 丢失时回落 0，代价仅是
-     * 「极端情况下多收一封」，不会漏发。
-     */
-    private static function claimGenerationKey(User $user): string
-    {
-        return "mail_notify_gen:{$user->id}";
-    }
-
-    private static function generationOf(User $user): int
-    {
-        return (int) Cache::get(self::claimGenerationKey($user), 0);
-    }
-
-    /**
      * 恢复该用户的所有自动通知（重新购买 / 续费 / 重置流量后调用）。
      *
-     * 原理：递增时代号 → 该用户所有场景的「已发过」标记立即全部失效，
-     * 之后任何场景再次触发条件都会重新提醒一次。
+     * 原理：直接清掉「已发过」标记，之后任何场景再次触发条件都会重新提醒。
+     * （早期实现是往 key 里拼「时代号」、靠递增让旧 key 永远读不到；但时代号按用户 ID 记、
+     * 防重按邮箱记，同一邮箱的多个账号时代号不一致时 key 各不相同，防重会被击穿，
+     * 故改为无状态 key + 显式清标记。）
      * 调用方：applyPlan（购买/续费/管理员改套餐）、renew（总量续费）、
      * resetTraffic（管理员重置）、completeResetOrder（付费重置订单）。
      */
     public static function restoreReminders(User $user): void
     {
-        $key = self::claimGenerationKey($user);
+        $store = self::claimStore();
 
-        Cache::put($key, self::generationOf($user) + 1, now()->addDays(400));
+        // 收件人是用户本人时按邮箱去重（whoOf 的口径），所以要把「当前邮箱」下的
+        // 标记清掉；管理员通知按触发用户记（admin:{id}），一并清掉才完整。
+        foreach (self::whoKeysForUser($user) as $key) {
+            $store->forget($key);
+        }
+    }
+
+    /** 该用户名下可能存在的全部防重 key（所有场景 × 邮箱维度 + admin 维度）。 */
+    private static function whoKeysForUser(User $user): array
+    {
+        $keys = [];
+
+        foreach (array_keys(self::SCENES) as $scene) {
+            $keys[] = self::claimKeyFor($scene, self::whoOf('user', $user, (string) $user->email));
+            $keys[] = self::claimKeyFor($scene, self::whoOf('admin', $user, ''));
+        }
+
+        return $keys;
     }
 
     /**
-     * 该用户该场景是否还能发通知 —— **同一时代只发一次**，与自然月无关。
+     * 该用户该场景是否还能发通知 —— **同一状态周期只发一次**，与自然月无关。
      *
-     * 返回 true = 该时代第一封（继续发），false = 已发过（跳过）。
+     * 返回 true = 还没发过（继续发），false = 已发过（跳过）。
      * 所有自动通知的防重口径只有这一处（扫描类 3 个场景 + 流量用尽）。
      *
      * 与原月度去重的差异：不再按 Ym 月历格过期（跨月重发刷屏），
-     * 而是跟着「用户状态时代」走 —— 只有重新购买/续费/重置（restoreReminders
-     * 递增时代号）才会解锁下一封。用户一直不续费就永远只收一封。
+     * 而是跟着「用户状态周期」走 —— 只有重新购买/续费/重置（restoreReminders
+     * 清标记）才会解锁下一封。用户一直不续费就永远只收一封。
      *
      * 去重维度跟着「收件人」走，不跟着被通知的用户：
      * - 发给用户本人 → 按邮箱（同一邮箱的多个账号只收一封，不把人刷屏；
-     *   邮箱统一小写去空白，避免换大小写绕开计数）
+     *   邮箱统一小写去空白，避免换大小写绕开计数。key 不带任何按用户变化的
+     *   后缀，多个账号无论各自续没续费，同邮箱同场景都只有一个坑）
      * - 发给管理员 → 按触发用户（管理员的通知不能被先到的用户占掉坑，否则
      *   N 个用户到期只会收到 1 封，看起来像只有 1 个人有问题）
      *
      * **调用时机必须在「渲染 + 解析出收件地址」之后**：渲染早就落标记的话，
-     * 管理员还没配收件邮箱时这一代都发不出去（补上邮箱也要等恢复提醒才重发）。
+     * 管理员还没配收件邮箱时这一轮都发不出去（补上邮箱也要等恢复提醒才重发）。
      * 落标记而不是查 mail_logs，是因为日志要等队列真正发出才写，
      * 而扫描每 5 分钟一轮，队列没跑完时靠日志判断会把同一封发两遍。
      *
+     * 标记存 **database store**（cache 表，key 主键 + insertOrIgnore）：file store
+     * 一旦被 cache:clear / 误清 storage，全体标记归零、所有命中条件的用户会重收一封；
+     * database store 与队列、会话同库同备份，生命周期和业务数据一致。
      * TTL 取 365 天（覆盖一次套餐周期绰绰有余）：标记过期=回到「未发过」，
      * 极端闲置一年多的用户最多多收一封，可接受。
      */
     public static function claimOnce(string $scene, User $user, string $toType, string $to): bool
     {
-        return Cache::add(self::claimKey($scene, $user, $toType, $to), 1, now()->addDays(365));
+        $who = self::whoOf($toType, $user, $to);
+
+        return self::claimStore()->add(self::claimKeyFor($scene, $who), 1, now()->addDays(365));
     }
 
     /**
-     * 该场景 / 该收件人在当前时代的防重 key（口径只有这一处）。
+     * 该场景 / 该收件人的防重 key（口径只有这一处）。
      *
      * 单独暴露出来是给「发送失败要补发」用：入队时把这个 key 一并交给 SendMailJob，
      * 真发失败就 forget 掉它，下一轮扫描（5 分钟一轮）会自动补发；
@@ -255,18 +262,39 @@ class MailNotifyService
      */
     public static function claimKey(string $scene, User $user, string $toType, string $to): string
     {
-        $who = $toType === 'admin'
-            ? 'admin:' . $user->id
-            : 'email:' . strtolower(trim($to));
-
-        return "mail_notify:{$scene}:{$who}:g" . self::generationOf($user);
+        return self::claimKeyFor($scene, self::whoOf($toType, $user, $to));
     }
 
-    /** 释放防重标记（发送失败时调用，让下一轮扫描补发）。 */
+    private static function whoOf(string $toType, User $user, string $to): string
+    {
+        return $toType === 'admin'
+            ? 'admin:' . $user->id
+            : 'email:' . strtolower(trim($to));
+    }
+
+    private static function claimKeyFor(string $scene, string $who): string
+    {
+        return "mail_notify:{$scene}:{$who}";
+    }
+
+    /**
+     * 防重标记专用 store。
+     *
+     * 显式走 database（config/cache.php 默认 CACHE_STORE=file）：file store 的
+     * 数据只在 storage/framework/cache 里，cache:clear 或误删 storage 即全体标记归零。
+     * database store 的 add() 底层是 insertOrIgnore（key 主键冲突即失败），天然原子。
+     * config('cache.stores.database') 不存在时回落 default，保证自定义配置也能用。
+     */
+    private static function claimStore(): \Illuminate\Contracts\Cache\Repository
+    {
+        return Cache::store(config('cache.stores.database') ? 'database' : config('cache.default'));
+    }
+
+    /** 释放防重标记（发送临时失败时调用，让下一轮扫描补发）。 */
     public static function releaseClaim(?string $key): void
     {
         if ($key !== null && $key !== '') {
-            Cache::forget($key);
+            self::claimStore()->forget($key);
         }
     }
 
