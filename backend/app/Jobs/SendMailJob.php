@@ -12,6 +12,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\Mailer\Exception\UnexpectedResponseException;
 
 /**
  * 发一封邮件并记录结果（自动通知 / 批量发信共用）。
@@ -55,9 +56,18 @@ class SendMailJob implements ShouldQueue
                 'batch_id'   => $this->batchId,
             ]);
         } catch (\Throwable $e) {
+            // SMTP 拒收（4xx/5xx，如 550 用户不存在）是收件人/信箱层面的确定失败，
+            // 重发多少遍都是同一个结果，必须区别于网络抖动这类临时错误。
+            // Symfony 的 UnexpectedResponseException 带着响应码（SmtpTransport::assertResponseCode
+            // 把解析出的 3 位码塞进 code），非 SMTP 异常（DNS/连接/超时）code 一律为 0。
+            $code = (int) $e->getCode();
+            $permanent = $e instanceof UnexpectedResponseException && $code >= 400 && $code <= 599;
+
             Log::error('SendMailJob failed', [
-                'to'     => $this->toEmail,
-                'error'  => $e->getMessage(),
+                'to'        => $this->toEmail,
+                'error'     => $e->getMessage(),
+                'smtp_code' => $code ?: null,
+                'permanent' => $permanent,
             ]);
 
             MailLog::create([
@@ -71,10 +81,14 @@ class SendMailJob implements ShouldQueue
                 'batch_id'   => $this->batchId,
             ]);
 
-            // 自动通知的防重标记在「入队那一刻」就落了，真发失败要把它释放掉，
-            // 否则这一封永久丢失（标记已落、触发条件仍在，却永远不会再发）。
-            // 下一轮扫描（5 分钟）会重新发一封。批量/定时发信没有这类标记，$claimKey 为 null。
-            MailNotifyService::releaseClaim($this->claimKey);
+            // 自动通知的防重标记在「入队那一刻」就落了。临时失败把它释放掉，
+            // 下一轮扫描（5 分钟）重新补发，这一封才不会永久丢失；
+            // 永久失败（SMTP 拒收）则保留标记 —— 收件地址本身收不了信，释放标记
+            // 只会换来「每次扫描都原样重发一遍」的死循环（每 5 分钟一封失败记录）。
+            // 批量/定时发信没有这类标记，$claimKey 为 null。
+            if (!$permanent) {
+                MailNotifyService::releaseClaim($this->claimKey);
+            }
         }
     }
 }
