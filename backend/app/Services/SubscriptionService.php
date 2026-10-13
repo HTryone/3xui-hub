@@ -504,6 +504,18 @@ class SubscriptionService
                     }
                 }
                 $proxy['xhttp-opts'] = $xhttpOpts;
+            } elseif ($params['type'] === 'httpupgrade') {
+                // mihomo：network=httpupgrade + http-upgrade-opts（键名与 3x-ui clash 输出一致）
+                $huOpts = [];
+                if (($params['path'] ?? '') !== '') {
+                    $huOpts['path'] = $params['path'];
+                }
+                if (($params['host'] ?? '') !== '') {
+                    $huOpts['headers'] = ['Host' => $params['host']];
+                }
+                if ($huOpts !== []) {
+                    $proxy['http-upgrade-opts'] = $huOpts;
+                }
             }
         }
     }
@@ -821,6 +833,18 @@ class SubscriptionService
                         }
                     }
                     $proxy['xhttp-opts'] = $xhttpOpts;
+                } elseif ($params['type'] === 'httpupgrade') {
+                    // mihomo：network=httpupgrade + http-upgrade-opts（键名与 3x-ui clash 输出一致）
+                    $huOpts = [];
+                    if (($params['path'] ?? '') !== '') {
+                        $huOpts['path'] = $params['path'];
+                    }
+                    if (($params['host'] ?? '') !== '') {
+                        $huOpts['headers'] = ['Host' => $params['host']];
+                    }
+                    if ($huOpts !== []) {
+                        $proxy['http-upgrade-opts'] = $huOpts;
+                    }
                 }
             }
 

@@ -202,14 +202,14 @@ class XrayInboundController extends Controller
             'tag' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9_-]+$/'],
             'port' => ['required', 'integer', 'between:1,65535'],
             'listen' => ['nullable', 'string', 'max:64'],
-            'network' => ['nullable', 'in:tcp,ws,grpc,xhttp'],
+            'network' => ['nullable', 'in:tcp,ws,grpc,xhttp,httpupgrade'],
             'security' => ['nullable', 'in:none,tls,reality'],
             // reality 参数
             'dest' => ['nullable', 'string', 'max:255'],
             'server_names' => ['nullable', 'array', 'max:8'],
             'server_names.*' => ['string', 'max:255'],
             'short_ids' => ['nullable', 'array', 'max:8'],
-            'short_ids.*' => ['string', 'max:32'],
+            'short_ids.*' => ['string', 'max:16', 'regex:/^[0-9a-fA-F]+$/'],
             'private_key' => ['nullable', 'string', 'max:255'],
             'public_key' => ['nullable', 'string', 'max:255'],
             // reality 高级参数（3x-ui reality.ts 字段集；服务端字段 + 客户端字段）
@@ -231,12 +231,50 @@ class XrayInboundController extends Controller
             'limit_fallback_download.after_bytes' => ['nullable', 'integer', 'min:0'],
             'limit_fallback_download.bytes_per_sec' => ['nullable', 'integer', 'min:0'],
             'limit_fallback_download.burst_bytes_per_sec' => ['nullable', 'integer', 'min:0'],
-            // ws / tls 参数
+            // ws / httpupgrade / tcp 伪装 / tls 参数
             'ws_path' => ['nullable', 'string', 'max:255'],
             'ws_host' => ['nullable', 'string', 'max:255'],
+            'httpupgrade_path' => ['nullable', 'string', 'max:255'],
+            'httpupgrade_host' => ['nullable', 'string', 'max:255'],
+            // tcp header 伪装（type=http 时启用 http 伪装）
+            'tcp_header_type' => ['nullable', 'in:none,http'],
+            'tcp_header_path' => ['nullable', 'string', 'max:255'],
+            'tcp_header_host' => ['nullable', 'string', 'max:255'],
             'xhttp_path' => ['nullable', 'string', 'max:255'],
             'xhttp_host' => ['nullable', 'string', 'max:255'],
             'xhttp_mode' => ['nullable', 'string', 'max:32'],
+            // xhttp 高级字段（xray-core SplitHTTPConfig = 3x-ui xhttp.ts 字段集；
+            // 空值不落库 —— 未配置即内核默认，避免把默认值写进配置成为 DPI 指纹）
+            'xhttp_padding_bytes' => ['nullable', 'string', 'max:64'],
+            'xhttp_padding_obfs_mode' => ['nullable', 'boolean'],
+            'xhttp_padding_key' => ['nullable', 'string', 'max:128'],
+            'xhttp_padding_header' => ['nullable', 'string', 'max:128'],
+            'xhttp_padding_placement' => ['nullable', 'string', 'max:32'],
+            'xhttp_padding_method' => ['nullable', 'string', 'max:32'],
+            'xhttp_session_id_placement' => ['nullable', 'string', 'max:32'],
+            'xhttp_session_id_key' => ['nullable', 'string', 'max:128'],
+            'xhttp_session_id_table' => ['nullable', 'string', 'max:64'],
+            'xhttp_session_id_length' => ['nullable', 'string', 'max:32'],
+            'xhttp_seq_placement' => ['nullable', 'string', 'max:32'],
+            'xhttp_seq_key' => ['nullable', 'string', 'max:128'],
+            'xhttp_uplink_data_placement' => ['nullable', 'string', 'max:32'],
+            'xhttp_uplink_data_key' => ['nullable', 'string', 'max:128'],
+            'xhttp_uplink_chunk_size' => ['nullable', 'integer', 'min:0', 'max:1048576'],
+            'xhttp_sc_max_each_post_bytes' => ['nullable', 'string', 'max:64'],
+            'xhttp_sc_max_buffered_posts' => ['nullable', 'integer', 'min:0', 'max:100000'],
+            'xhttp_sc_min_posts_interval_ms' => ['nullable', 'string', 'max:64'],
+            'xhttp_sc_stream_up_server_secs' => ['nullable', 'string', 'max:64'],
+            'xhttp_server_max_header_bytes' => ['nullable', 'integer', 'min:0', 'max:1048576'],
+            'xhttp_uplink_http_method' => ['nullable', 'string', 'max:16'],
+            'xhttp_no_sse_header' => ['nullable', 'boolean'],
+            'xhttp_no_grpc_header' => ['nullable', 'boolean'],
+            'xhttp_headers' => ['nullable', 'string', 'max:8192'],
+            'xhttp_xmux_max_concurrency' => ['nullable', 'string', 'max:32'],
+            'xhttp_xmux_max_connections' => ['nullable', 'string', 'max:32'],
+            'xhttp_xmux_c_max_reuse_times' => ['nullable', 'string', 'max:32'],
+            'xhttp_xmux_h_max_request_times' => ['nullable', 'string', 'max:32'],
+            'xhttp_xmux_h_max_reusable_secs' => ['nullable', 'string', 'max:32'],
+            'xhttp_xmux_h_keep_alive_period' => ['nullable', 'string', 'max:32'],
             'tls_server_name' => ['nullable', 'string', 'max:255'],
             'tls_certificate' => ['nullable', 'string', 'max:65535'],
             'tls_key' => ['nullable', 'string', 'max:65535'],
@@ -259,6 +297,10 @@ class XrayInboundController extends Controller
         // 组合合法性（前后端同守）
         if ($security === 'reality' && $protocol !== 'vless') {
             throw ValidationException::withMessages(['security' => 'Reality 仅支持 VLESS 协议']);
+        }
+        // Reality 传输面（xray-core 实测：REALITY only supports RAW, XHTTP and gRPC）
+        if ($security === 'reality' && ! in_array($network, ['tcp', 'xhttp', 'grpc'], true)) {
+            throw ValidationException::withMessages(['network' => 'Reality 仅支持 tcp / xhttp / grpc 传输']);
         }
         if ($protocol === 'shadowsocks' && ($security !== 'none' || $network !== 'tcp')) {
             throw ValidationException::withMessages(['protocol' => 'Shadowsocks 仅支持 tcp + 无附加安全层']);
@@ -342,11 +384,25 @@ class XrayInboundController extends Controller
             ], fn ($v) => $v !== '');
             $stream['wsSettings'] = $ws;
         } elseif ($network === 'xhttp') {
-            $stream['xhttpSettings'] = array_filter([
-                'path' => (string) ($data['xhttp_path'] ?? '') !== '' ? (string) $data['xhttp_path'] : '/',
-                'host' => (string) ($data['xhttp_host'] ?? ''),
-                'mode' => (string) ($data['xhttp_mode'] ?? '') !== '' ? (string) $data['xhttp_mode'] : 'auto',
+            $stream['xhttpSettings'] = $this->xhttpSettings($data);
+        } elseif ($network === 'httpupgrade') {
+            $stream['httpupgradeSettings'] = array_filter([
+                'path' => (string) ($data['httpupgrade_path'] ?? '') !== '' ? (string) $data['httpupgrade_path'] : '/',
+                'host' => (string) ($data['httpupgrade_host'] ?? ''),
             ], fn ($v) => $v !== '');
+        }
+
+        // TCP header 伪装（type=http 时构造 request；响应段用内核默认）
+        if ($network === 'tcp' && (string) ($data['tcp_header_type'] ?? 'none') === 'http') {
+            $stream['tcpSettings'] = ['header' => [
+                'type' => 'http',
+                'request' => array_filter([
+                    'version' => '1.1',
+                    'method' => 'GET',
+                    'path' => [(string) ($data['tcp_header_path'] ?? '') !== '' ? (string) $data['tcp_header_path'] : '/'],
+                    'headers' => (string) ($data['tcp_header_host'] ?? '') !== '' ? ['Host' => [(string) $data['tcp_header_host']]] : null,
+                ], fn ($v) => $v !== null),
+            ]];
         }
 
         if ($security === 'tls') {
@@ -359,6 +415,9 @@ class XrayInboundController extends Controller
                     'certificate' => [(string) $data['tls_certificate']],
                     'key' => [(string) $data['tls_key']],
                 ]];
+            } else {
+                // TLS 入站没有证书时 xray 无法启动；且空 tlsSettings 会编码成 [] 让整份配置加载失败
+                throw ValidationException::withMessages(['tls_certificate' => 'TLS 入站必须提供证书与私钥']);
             }
             $stream['tlsSettings'] = $tls;
         }
@@ -522,12 +581,127 @@ class XrayInboundController extends Controller
         return $tag;
     }
 
-    /** 入站展示结构（不吐私钥；public_key 保留供界面/订阅）。 */
+    /** xhttp 高级字段映射（xray-core 键名 => 表单字段）。 */
+    private const XHTTP_STRING_FIELDS = [
+        'xPaddingBytes' => 'xhttp_padding_bytes',
+        'xPaddingKey' => 'xhttp_padding_key',
+        'xPaddingHeader' => 'xhttp_padding_header',
+        'xPaddingPlacement' => 'xhttp_padding_placement',
+        'xPaddingMethod' => 'xhttp_padding_method',
+        'sessionIDPlacement' => 'xhttp_session_id_placement',
+        'sessionIDKey' => 'xhttp_session_id_key',
+        'sessionIDTable' => 'xhttp_session_id_table',
+        'sessionIDLength' => 'xhttp_session_id_length',
+        'seqPlacement' => 'xhttp_seq_placement',
+        'seqKey' => 'xhttp_seq_key',
+        'uplinkDataPlacement' => 'xhttp_uplink_data_placement',
+        'uplinkDataKey' => 'xhttp_uplink_data_key',
+        'scMaxEachPostBytes' => 'xhttp_sc_max_each_post_bytes',
+        'scMinPostsIntervalMs' => 'xhttp_sc_min_posts_interval_ms',
+        'scStreamUpServerSecs' => 'xhttp_sc_stream_up_server_secs',
+        'uplinkHTTPMethod' => 'xhttp_uplink_http_method',
+    ];
+
+    private const XHTTP_BOOL_FIELDS = [
+        'xPaddingObfsMode' => 'xhttp_padding_obfs_mode',
+        'noSSEHeader' => 'xhttp_no_sse_header',
+        'noGRPCHeader' => 'xhttp_no_grpc_header',
+    ];
+
+    private const XHTTP_INT_FIELDS = [
+        'scMaxBufferedPosts' => 'xhttp_sc_max_buffered_posts',
+        'serverMaxHeaderBytes' => 'xhttp_server_max_header_bytes',
+        'uplinkChunkSize' => 'xhttp_uplink_chunk_size',
+    ];
+
+    /**
+     * xhttp 传输设置（xray-core SplitHTTPConfig；字段集与 3x-ui xhttp.ts 对齐）。
+     * 空值/关/零不落库 —— 未配置即内核默认，避免把默认值写进配置成为 DPI 指纹。
+     */
+    private function xhttpSettings(array $data): array
+    {
+        $s = array_filter([
+            'path' => (string) ($data['xhttp_path'] ?? '') !== '' ? (string) $data['xhttp_path'] : '/',
+            'host' => (string) ($data['xhttp_host'] ?? ''),
+            'mode' => (string) ($data['xhttp_mode'] ?? '') !== '' ? (string) $data['xhttp_mode'] : 'auto',
+        ], fn ($v) => $v !== '');
+
+        foreach (self::XHTTP_STRING_FIELDS as $key => $field) {
+            $v = trim((string) ($data[$field] ?? ''));
+            if ($v !== '') {
+                $s[$key] = $v;
+            }
+        }
+        foreach (self::XHTTP_BOOL_FIELDS as $key => $field) {
+            if (! empty($data[$field])) {
+                $s[$key] = true;
+            }
+        }
+        foreach (self::XHTTP_INT_FIELDS as $key => $field) {
+            $v = (int) ($data[$field] ?? 0);
+            if ($v > 0) {
+                $s[$key] = $v;
+            }
+        }
+        $headers = $this->parseHeaderLines((string) ($data['xhttp_headers'] ?? ''));
+        if ($headers !== []) {
+            $s['headers'] = $headers;
+        }
+
+        $xmux = array_filter([
+            'maxConcurrency' => trim((string) ($data['xhttp_xmux_max_concurrency'] ?? '')),
+            'maxConnections' => trim((string) ($data['xhttp_xmux_max_connections'] ?? '')),
+            'cMaxReuseTimes' => trim((string) ($data['xhttp_xmux_c_max_reuse_times'] ?? '')),
+            'hMaxRequestTimes' => trim((string) ($data['xhttp_xmux_h_max_request_times'] ?? '')),
+            'hMaxReusableSecs' => trim((string) ($data['xhttp_xmux_h_max_reusable_secs'] ?? '')),
+            'hKeepAlivePeriod' => trim((string) ($data['xhttp_xmux_h_keep_alive_period'] ?? '')),
+        ], fn ($v) => $v !== '');
+        if ($xmux !== []) {
+            $s['xmux'] = $xmux;
+        }
+
+        return $s;
+    }
+
+    /** "Key: Value" 行文本 → header map（空行/无冒号行忽略）。 */
+    private function parseHeaderLines(string $text): array
+    {
+        $out = [];
+        foreach (preg_split('/\r\n|\r|\n/', $text) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '' || ! str_contains($line, ':')) {
+                continue;
+            }
+            [$k, $v] = explode(':', $line, 2);
+            $k = trim($k);
+            if ($k !== '') {
+                $out[$k] = trim($v);
+            }
+        }
+
+        return $out;
+    }
+
+    /** header map → "Key: Value" 行文本（编辑回显；值数组取首个）。 */
+    private function headerLinesFrom(mixed $headers): string
+    {
+        if (! is_array($headers)) {
+            return '';
+        }
+        $lines = [];
+        foreach ($headers as $k => $v) {
+            $lines[] = $k . ': ' . (is_array($v) ? (string) ($v[0] ?? '') : (string) $v);
+        }
+
+        return implode("\n", $lines);
+    }
+
     private function present(XrayInbound $inbound, Collection $users): array
     {
         $stream = $inbound->stream_settings ?? [];
         $reality = $stream['realitySettings'] ?? [];
         $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
+        $xs = is_array($stream['xhttpSettings'] ?? null) ? $stream['xhttpSettings'] : [];
         $settings = $inbound->settings ?? [];
 
         $clientCount = $inbound->protocol === 'shadowsocks'
@@ -563,6 +737,45 @@ class XrayInboundController extends Controller
             'limit_fallback_download' => $this->presentLimitFallback($reality['limitFallbackDownload'] ?? null),
             'ws_path' => $stream['wsSettings']['path'] ?? null,
             'ws_host' => $stream['wsSettings']['host'] ?? null,
+            'httpupgrade_path' => $stream['httpupgradeSettings']['path'] ?? null,
+            'httpupgrade_host' => $stream['httpupgradeSettings']['host'] ?? null,
+            'tcp_header_type' => $stream['tcpSettings']['header']['type'] ?? 'none',
+            'tcp_header_path' => (string) ($stream['tcpSettings']['header']['request']['path'][0] ?? ''),
+            'tcp_header_host' => (string) ($stream['tcpSettings']['header']['request']['headers']['Host'][0]
+                ?? ($stream['tcpSettings']['header']['response']['headers']['Host'][0] ?? '')),
+            'xhttp_path' => $xs['path'] ?? null,
+            'xhttp_host' => $xs['host'] ?? null,
+            'xhttp_mode' => $xs['mode'] ?? null,
+            'xhttp_padding_bytes' => (string) ($xs['xPaddingBytes'] ?? ''),
+            'xhttp_padding_obfs_mode' => (bool) ($xs['xPaddingObfsMode'] ?? false),
+            'xhttp_padding_key' => (string) ($xs['xPaddingKey'] ?? ''),
+            'xhttp_padding_header' => (string) ($xs['xPaddingHeader'] ?? ''),
+            'xhttp_padding_placement' => (string) ($xs['xPaddingPlacement'] ?? ''),
+            'xhttp_padding_method' => (string) ($xs['xPaddingMethod'] ?? ''),
+            'xhttp_session_id_placement' => (string) ($xs['sessionIDPlacement'] ?? ''),
+            'xhttp_session_id_key' => (string) ($xs['sessionIDKey'] ?? ''),
+            'xhttp_session_id_table' => (string) ($xs['sessionIDTable'] ?? ''),
+            'xhttp_session_id_length' => (string) ($xs['sessionIDLength'] ?? ''),
+            'xhttp_seq_placement' => (string) ($xs['seqPlacement'] ?? ''),
+            'xhttp_seq_key' => (string) ($xs['seqKey'] ?? ''),
+            'xhttp_uplink_data_placement' => (string) ($xs['uplinkDataPlacement'] ?? ''),
+            'xhttp_uplink_data_key' => (string) ($xs['uplinkDataKey'] ?? ''),
+            'xhttp_uplink_chunk_size' => (int) ($xs['uplinkChunkSize'] ?? 0),
+            'xhttp_sc_max_each_post_bytes' => (string) ($xs['scMaxEachPostBytes'] ?? ''),
+            'xhttp_sc_max_buffered_posts' => (int) ($xs['scMaxBufferedPosts'] ?? 0),
+            'xhttp_sc_min_posts_interval_ms' => (string) ($xs['scMinPostsIntervalMs'] ?? ''),
+            'xhttp_sc_stream_up_server_secs' => (string) ($xs['scStreamUpServerSecs'] ?? ''),
+            'xhttp_server_max_header_bytes' => (int) ($xs['serverMaxHeaderBytes'] ?? 0),
+            'xhttp_uplink_http_method' => (string) ($xs['uplinkHTTPMethod'] ?? ''),
+            'xhttp_no_sse_header' => (bool) ($xs['noSSEHeader'] ?? false),
+            'xhttp_no_grpc_header' => (bool) ($xs['noGRPCHeader'] ?? false),
+            'xhttp_headers' => $this->headerLinesFrom($xs['headers'] ?? []),
+            'xhttp_xmux_max_concurrency' => (string) ($xs['xmux']['maxConcurrency'] ?? ''),
+            'xhttp_xmux_max_connections' => (string) ($xs['xmux']['maxConnections'] ?? ''),
+            'xhttp_xmux_c_max_reuse_times' => (string) ($xs['xmux']['cMaxReuseTimes'] ?? ''),
+            'xhttp_xmux_h_max_request_times' => (string) ($xs['xmux']['hMaxRequestTimes'] ?? ''),
+            'xhttp_xmux_h_max_reusable_secs' => (string) ($xs['xmux']['hMaxReusableSecs'] ?? ''),
+            'xhttp_xmux_h_keep_alive_period' => (string) ($xs['xmux']['hKeepAlivePeriod'] ?? ''),
             'tls_server_name' => $stream['tlsSettings']['serverName'] ?? null,
             'has_tls_cert' => ! empty($stream['tlsSettings']['certificates']),
             'ss_method' => $inbound->protocol === 'shadowsocks' ? ($settings['method'] ?? null) : null,

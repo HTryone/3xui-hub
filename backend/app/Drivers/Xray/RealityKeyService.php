@@ -38,6 +38,31 @@ class RealityKeyService
         return bin2hex(random_bytes($bytes));
     }
 
+    /**
+     * 从既有私钥推导公钥（base64url 无填充；解析失败返回空串）。
+     *
+     * 用于对接只存 privateKey、不存 publicKey 的面板数据
+     * （如 3x-ui v3.10 的 reality 入站 realitySettings）。
+     * 推导口径已与 `xray x25519 -i` 实测对拍一致。
+     */
+    public static function publicKeyFromPrivateKey(string $privateKey): string
+    {
+        $privateKey = trim($privateKey);
+        if ($privateKey === '') {
+            return '';
+        }
+
+        $raw = base64_decode(
+            strtr($privateKey, '-_', '+/') . str_repeat('=', (4 - strlen($privateKey) % 4) % 4),
+            true
+        );
+        if ($raw === false || strlen($raw) !== 32) {
+            return '';
+        }
+
+        return self::base64url(\ParagonIE_Sodium_Compat::crypto_scalarmult_base($raw));
+    }
+
     /** base64url 无填充（xray 全系字符串格式）。 */
     public static function base64url(string $bin): string
     {

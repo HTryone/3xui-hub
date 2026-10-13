@@ -186,6 +186,25 @@ class OutboundLinkGenerator
     /** 传输层查询串（ws / xhttp / grpc）——与 OutboundLinkParser::applyTransport 对称。 */
     private static function transportQuery(string $network, array $stream): string
     {
+        if ($network === 'tcp') {
+            // TCP header 伪装（http）→ headerType/path/host；host 口径与 3x-ui 订阅一致（response 优先）
+            $tcp = is_array($stream['tcpSettings'] ?? null) ? $stream['tcpSettings'] : [];
+            $header = is_array($tcp['header'] ?? null) ? $tcp['header'] : [];
+            if (($header['type'] ?? '') === 'http') {
+                $request = is_array($header['request'] ?? null) ? $header['request'] : [];
+                $response = is_array($header['response'] ?? null) ? $header['response'] : [];
+                $query = '&headerType=http&path=' . rawurlencode((string) ($request['path'][0] ?? '/'));
+                $host = (string) ($response['headers']['Host'][0] ?? ($request['headers']['Host'][0] ?? ''));
+                if ($host !== '') {
+                    $query .= '&host=' . rawurlencode($host);
+                }
+
+                return $query;
+            }
+
+            return '';
+        }
+
         if ($network === 'ws') {
             $ws = is_array($stream['wsSettings'] ?? null) ? $stream['wsSettings'] : [];
             $query = '&path=' . rawurlencode((string) ($ws['path'] ?? '/'));
@@ -199,12 +218,15 @@ class OutboundLinkGenerator
 
         if ($network === 'xhttp') {
             $xhttp = is_array($stream['xhttpSettings'] ?? null) ? $stream['xhttpSettings'] : [];
-            $query = '&path=' . rawurlencode((string) ($xhttp['path'] ?? '/'));
-            if (! empty($xhttp['host'])) {
-                $query .= '&host=' . rawurlencode((string) $xhttp['host']);
-            }
-            if (! empty($xhttp['mode'])) {
-                $query .= '&mode=' . rawurlencode((string) $xhttp['mode']);
+
+            return self::xhttpQuery($xhttp);
+        }
+
+        if ($network === 'httpupgrade') {
+            $hu = is_array($stream['httpupgradeSettings'] ?? null) ? $stream['httpupgradeSettings'] : [];
+            $query = '&path=' . rawurlencode((string) ($hu['path'] ?? '/'));
+            if (! empty($hu['host'])) {
+                $query .= '&host=' . rawurlencode((string) $hu['host']);
             }
 
             return $query;
@@ -224,6 +246,67 @@ class OutboundLinkGenerator
         }
 
         return '';
+    }
+
+    /**
+     * xhttp 传输的查询串（与 3x-ui 的双编码对齐）。
+     *
+     * path/host/mode 之外的高级字段（如 xPaddingBytes）编码为：
+     *   - extra=<urlencoded-json>：xray-core 系客户端（v2rayNG / Happ 等）读取的完整 blob
+     *   - x_padding_bytes=<range>：sing-box 系客户端的 flat 参数
+     * 无高级字段时两者都不产出，老配置链接字节不变。
+     * 与 {@see OutboundLinkParser::applyTransport()} 的 xhttp 分支对称。
+     */
+    public static function xhttpQuery(array $xhttp): string
+    {
+        $query = '&path=' . rawurlencode((string) ($xhttp['path'] ?? '/'));
+        if (! empty($xhttp['host'])) {
+            $query .= '&host=' . rawurlencode((string) $xhttp['host']);
+        }
+        if (! empty($xhttp['mode'])) {
+            $query .= '&mode=' . rawurlencode((string) $xhttp['mode']);
+        }
+
+        // extra 白名单（与 3x-ui sub/service.go buildXhttpExtra 对齐）：只带双向字段。
+        // 服务端专属（noSSEHeader/scMaxBufferedPosts/scStreamUpServerSecs/serverMaxHeaderBytes）
+        // 不进链接；等于内核默认的 sc* 值剔除（scMinPostsIntervalMs=30 是已知 DPI 指纹 #5141）。
+        // mode 已在 query 参数中表达，不再重复进 extra——无高级字段时链接与旧版逐字节一致。
+        $ext = [];
+        $padding = trim((string) ($xhttp['xPaddingBytes'] ?? ''));
+        if ($padding !== '') {
+            $ext['xPaddingBytes'] = $padding;
+        }
+        if (! empty($xhttp['xPaddingObfsMode'])) {
+            $ext['xPaddingObfsMode'] = true;
+            foreach (['xPaddingKey', 'xPaddingHeader', 'xPaddingPlacement', 'xPaddingMethod'] as $field) {
+                $v = trim((string) ($xhttp[$field] ?? ''));
+                if ($v !== '') {
+                    $ext[$field] = $v;
+                }
+            }
+        }
+        $coreDefaults = ['scMaxEachPostBytes' => '1000000', 'scMinPostsIntervalMs' => '30'];
+        foreach (['uplinkHTTPMethod', 'sessionIDPlacement', 'sessionIDKey', 'sessionIDTable', 'sessionIDLength', 'seqPlacement', 'seqKey', 'uplinkDataPlacement', 'uplinkDataKey', 'scMaxEachPostBytes', 'scMinPostsIntervalMs'] as $field) {
+            $v = trim((string) ($xhttp[$field] ?? ''));
+            if ($v === '' || $v === ($coreDefaults[$field] ?? null)) {
+                continue;
+            }
+            $ext[$field] = $v;
+        }
+        if (! empty($xhttp['uplinkChunkSize'])) {
+            $ext['uplinkChunkSize'] = (int) $xhttp['uplinkChunkSize'];
+        }
+        if (! empty($xhttp['noGRPCHeader'])) {
+            $ext['noGRPCHeader'] = true;
+        }
+        if ($ext !== []) {
+            $query .= '&extra=' . rawurlencode((string) json_encode($ext, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+        if ($padding !== '') {
+            $query .= '&x_padding_bytes=' . rawurlencode($padding);
+        }
+
+        return $query;
     }
 
     /** 目标主机（IPv6 加方括号，parse_url 才认）。 */

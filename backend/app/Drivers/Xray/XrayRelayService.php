@@ -419,6 +419,30 @@ class XrayRelayService
     }
 
     /**
+     * 取 reality 公钥：顶层 → 客户端段 settings → **私钥推导**；全部失败则抛异常。
+     *
+     * 3x-ui v3.10 的入站数据只存 privateKey、不存 publicKey，直接读顶层会得到
+     * 空串，进而生成 REALITY 缺公钥的坏出站（xray 校验报 `empty "password"`、
+     * 节点整份配置无法应用）。此处以推导兜底，并在确实取不到时显式报错，
+     * 不允许再产出无效配置。
+     */
+    private static function realityPublicKey(array $reality): string
+    {
+        $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
+        $publicKey = (string) ($reality['publicKey'] ?? ($client['publicKey'] ?? ''));
+        if ($publicKey === '') {
+            $publicKey = RealityKeyService::publicKeyFromPrivateKey((string) ($reality['privateKey'] ?? ''));
+        }
+        if ($publicKey === '') {
+            throw ValidationException::withMessages([
+                'outbound_tag' => '目标入站 REALITY 公钥缺失且无法从私钥推导，已阻止生成无效中转配置',
+            ]);
+        }
+
+        return $publicKey;
+    }
+
+    /**
      * 中转出站 streamSettings：传输层取目标入站；reality/tls 用目标入站的**公开**参数
      * （publicKey / serverNames / shortIds），与订阅链接生成同源（不涉私钥）。
      */
@@ -435,7 +459,7 @@ class XrayRelayService
             $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
             $setting = [
                 'serverName' => (string) ($reality['serverNames'][0] ?? XrayConfigService::DEFAULT_SNI),
-                'publicKey' => (string) ($reality['publicKey'] ?? ''),
+                'publicKey' => self::realityPublicKey($reality),
                 'fingerprint' => (string) ($client['fingerprint'] ?? 'chrome') ?: 'chrome',
             ];
             $shortId = (string) ($reality['shortIds'][0] ?? '');
@@ -458,6 +482,24 @@ class XrayRelayService
                 'path' => (string) ($ws['path'] ?? '/'),
                 'headers' => ! empty($ws['host']) ? ['Host' => (string) $ws['host']] : null,
             ], fn ($v) => $v !== null);
+        } elseif ($network === 'xhttp') {
+            $xhttp = $stream['xhttpSettings'] ?? [];
+            $out['xhttpSettings'] = array_filter([
+                'path' => (string) ($xhttp['path'] ?? '/'),
+                'host' => (string) ($xhttp['host'] ?? ''),
+                'mode' => (string) ($xhttp['mode'] ?? 'auto') ?: 'auto',
+            ], fn ($v) => $v !== '');
+        } elseif ($network === 'httpupgrade') {
+            $hu = $stream['httpupgradeSettings'] ?? [];
+            $out['httpupgradeSettings'] = array_filter([
+                'path' => (string) ($hu['path'] ?? '/'),
+                'host' => (string) ($hu['host'] ?? ''),
+            ], fn ($v) => $v !== '');
+        }
+
+        // TCP header 伪装：目标入站带 http 伪装时原样转发（缺了中转会握手失败）
+        if ($network === 'tcp' && ($stream['tcpSettings']['header']['type'] ?? '') === 'http') {
+            $out['tcpSettings'] = $stream['tcpSettings'];
         }
 
         return $out;
@@ -494,8 +536,7 @@ class XrayRelayService
             $client = is_array($reality['settings'] ?? null) ? $reality['settings'] : [];
             $setting = [
                 'serverName' => (string) ($reality['serverNames'][0] ?? XrayConfigService::DEFAULT_SNI),
-                // publicKey 顶层优先（3x-ui），settings 回退（xray 写法）
-                'publicKey' => (string) ($reality['publicKey'] ?? ($client['publicKey'] ?? '')),
+                'publicKey' => self::realityPublicKey($reality),
                 'fingerprint' => (string) ($client['fingerprint'] ?? 'chrome') ?: 'chrome',
             ];
             $shortId = (string) ($reality['shortIds'][0] ?? '');
@@ -526,12 +567,23 @@ class XrayRelayService
                 'host' => (string) ($xhttp['host'] ?? ''),
                 'mode' => (string) ($xhttp['mode'] ?? 'auto') ?: 'auto',
             ], fn ($v) => $v !== '');
+        } elseif ($network === 'httpupgrade') {
+            $hu = $stream['httpupgradeSettings'] ?? [];
+            $out['httpupgradeSettings'] = array_filter([
+                'path' => (string) ($hu['path'] ?? '/'),
+                'host' => (string) ($hu['host'] ?? ''),
+            ], fn ($v) => $v !== '');
         } elseif ($network === 'grpc') {
             $grpc = $stream['grpcSettings'] ?? [];
             $out['grpcSettings'] = array_filter([
                 'serviceName' => (string) ($grpc['serviceName'] ?? ''),
                 'authority' => (string) ($grpc['authority'] ?? ''),
             ], fn ($v) => $v !== '');
+        }
+
+        // TCP header 伪装：目标入站带 http 伪装时原样转发
+        if ($network === 'tcp' && ($stream['tcpSettings']['header']['type'] ?? '') === 'http') {
+            $out['tcpSettings'] = $stream['tcpSettings'];
         }
 
         return $out;

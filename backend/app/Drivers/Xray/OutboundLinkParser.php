@@ -275,17 +275,50 @@ class OutboundLinkParser
      */
     private static function applyTransport(array &$stream, string $network, array $query): void
     {
-        if ($network === 'ws') {
+        if ($network === 'tcp') {
+            // TCP header 伪装（headerType=http）——与生成侧 transportQuery 对称（3x-ui 解析口径：
+            // version 1.1 / method GET 写死，path/host 来自链接参数）
+            if (($query['headerType'] ?? '') === 'http') {
+                $path = (string) ($query['path'] ?? '');
+                $host = trim((string) ($query['host'] ?? ''));
+                $stream['tcpSettings'] = ['header' => [
+                    'type' => 'http',
+                    'request' => array_filter([
+                        'version' => '1.1',
+                        'method' => 'GET',
+                        'path' => [$path !== '' ? $path : '/'],
+                        'headers' => $host !== '' ? ['Host' => [$host]] : null,
+                    ], fn ($v) => $v !== null),
+                ]];
+            }
+        } elseif ($network === 'ws') {
             $ws = ['path' => (string) ($query['path'] ?? '/')];
             if (! empty($query['host'])) {
                 $ws['headers'] = ['Host' => (string) $query['host']];
             }
             $stream['wsSettings'] = $ws;
         } elseif ($network === 'xhttp') {
-            $stream['xhttpSettings'] = array_filter([
+            $xhttp = [
                 'path' => (string) ($query['path'] ?? '/'),
                 'host' => (string) ($query['host'] ?? ''),
                 'mode' => (string) ($query['mode'] ?? ''),
+            ];
+            // 高级字段回读（与 OutboundLinkGenerator::xhttpQuery 对称）：
+            // extra=urlencoded-json（xray-core 系完整 blob）+ x_padding_bytes（sing-box flat）
+            if (! empty($query['extra'])) {
+                $ext = json_decode((string) $query['extra'], true);
+                if (is_array($ext)) {
+                    $xhttp = array_merge($xhttp, $ext);
+                }
+            }
+            if (isset($query['x_padding_bytes']) && (string) $query['x_padding_bytes'] !== '' && ! isset($xhttp['xPaddingBytes'])) {
+                $xhttp['xPaddingBytes'] = (string) $query['x_padding_bytes'];
+            }
+            $stream['xhttpSettings'] = array_filter($xhttp, fn ($v) => $v !== '');
+        } elseif ($network === 'httpupgrade') {
+            $stream['httpupgradeSettings'] = array_filter([
+                'path' => (string) ($query['path'] ?? '/'),
+                'host' => (string) ($query['host'] ?? ''),
             ], fn ($v) => $v !== '');
         } elseif ($network === 'grpc') {
             $stream['grpcSettings'] = array_filter([

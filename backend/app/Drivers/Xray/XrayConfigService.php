@@ -150,6 +150,13 @@ class XrayConfigService
             if (($stream['security'] ?? '') === 'reality') {
                 $stream['realitySettings'] = $this->realitySettingsFor($inbound);
             }
+            // 空数组子对象必须输出为 {}（PHP 空数组会编码成 []，xray 对 tlsSettings 等
+            // 结构体字段报 "cannot unmarshal array into ..." 并拒绝加载整份配置）
+            foreach (['tlsSettings', 'realitySettings', 'wsSettings', 'xhttpSettings', 'httpupgradeSettings', 'grpcSettings', 'tcpSettings', 'sockopt'] as $subKey) {
+                if (array_key_exists($subKey, $stream) && $stream[$subKey] === []) {
+                    $stream[$subKey] = new \stdClass();
+                }
+            }
             if ($stream !== []) {
                 $frag['streamSettings'] = $stream;
             }
@@ -194,9 +201,16 @@ class XrayConfigService
             $settings['privateKey'] = $privateKey;
         }
 
-        // 内核默认值原样输出（3x-ui reality.ts 全字段），显式设置覆盖之
+        // 高级字段：仅写"显式设置且非内核默认"的值。空字符串（minClientVer/
+        // maxClientVer/mldsa65Seed 未设置时的形态）与 maxTimediff=0 曾原样写入配置，
+        // 实测会让内核把空版本窗当非法认证条件、reality 握手静默拒绝（26.3.27 复现，
+        // 换 26.10.10 内核 + 清理空值后恢复）——缺省即不写，与 3x-ui 落库行为对齐。
         foreach (self::REALITY_ADV_DEFAULTS as $key => $default) {
-            $settings[$key] = $public[$key] ?? $default;
+            $value = $public[$key] ?? null;
+            if ($value === null || $value === '' || $value === $default) {
+                continue;
+            }
+            $settings[$key] = $value;
         }
 
         // masterKeyLog / fallback 限速：可选块，仅显式设置时输出
@@ -340,6 +354,13 @@ class XrayConfigService
                 'settings' => $this->outboundSettings($outbound),
             ];
             $stream = $outbound->stream_settings ?? [];
+            // 与入站渲染同守：空数组子对象必须输出 {}（PHP [] 编码成 []，xray 对 tlsSettings
+            // 等结构体字段报 "cannot unmarshal array into ..." 拒绝加载整份配置）
+            foreach (['tlsSettings', 'realitySettings', 'wsSettings', 'xhttpSettings', 'httpupgradeSettings', 'grpcSettings', 'tcpSettings', 'sockopt'] as $subKey) {
+                if (array_key_exists($subKey, $stream) && $stream[$subKey] === []) {
+                    $stream[$subKey] = new \stdClass();
+                }
+            }
             if ($stream !== []) {
                 $frag['streamSettings'] = $stream;
             }
@@ -651,6 +672,26 @@ class XrayConfigService
             $query .= '&path=' . rawurlencode((string) ($ws['path'] ?? '/'));
             if (! empty($ws['host'])) {
                 $query .= '&host=' . rawurlencode((string) $ws['host']);
+            }
+        } elseif ($network === 'httpupgrade') {
+            $hu = $stream['httpupgradeSettings'] ?? [];
+            $query .= '&path=' . rawurlencode((string) ($hu['path'] ?? '/'));
+            if (! empty($hu['host'])) {
+                $query .= '&host=' . rawurlencode((string) $hu['host']);
+            }
+        } elseif ($network === 'xhttp') {
+            // 与出站链接生成器同源：xhttp 参数（含高级字段 extra / x_padding_bytes）
+            $xhttp = is_array($stream['xhttpSettings'] ?? null) ? $stream['xhttpSettings'] : [];
+            $query .= OutboundLinkGenerator::xhttpQuery($xhttp);
+        }
+
+        if ($network === 'tcp' && ($stream['tcpSettings']['header']['type'] ?? '') === 'http') {
+            // TCP header 伪装（与 3x-ui 订阅口径一致：request.path + Host，response 优先）
+            $header = $stream['tcpSettings']['header'];
+            $query .= '&headerType=http&path=' . rawurlencode((string) ($header['request']['path'][0] ?? '/'));
+            $headerHost = (string) ($header['response']['headers']['Host'][0] ?? ($header['request']['headers']['Host'][0] ?? ''));
+            if ($headerHost !== '') {
+                $query .= '&host=' . rawurlencode($headerHost);
             }
         }
 
