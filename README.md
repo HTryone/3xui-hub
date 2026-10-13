@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.29.1**
+**版本：1.30.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,15 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.30.0 (2026-10-14)
+
+- 新增 **HTTPUpgrade**、**TCP HTTP 伪装**传输：入站/出站表单、订阅链接、Clash / Sing-box 订阅、跨机中转全链路支持
+- **xhttp 高级字段**（xPadding / sessionID / xmux 等）开放配置，全链路透传
+- 修复：xhttp 订阅链接断链（缺 path / host / mode）、TCP 伪装入站的链接地址被伪装域名污染、跨机中转的 xhttp 参数丢失
+- 修复：Reality 中转出站对接 3x-ui 时自动推导公钥 —— 此前生成缺公钥的坏配置会让节点**所有配置变更卡住**（保留旧配置不再下发）
+- 组合校验前后端同守：Reality 仅限 VLESS × tcp / xhttp / gRPC；TLS 入站强制证书；shortId 强制十六进制 —— 错误组合会被内核拒绝加载整份配置，现在保存时直接拦截
+- Reality 入站传输面放开 xhttp / gRPC（此前表单误把非 tcp 传输整体禁用）
 
 ### v1.29.1 (2026-10-13)
 
@@ -352,7 +361,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.29.1**
+**Version: 1.30.0**
 
 ## Screenshots
 
@@ -422,7 +431,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.29.1-blue
+[version-shield]: https://img.shields.io/badge/version-1.30.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
