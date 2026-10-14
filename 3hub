@@ -6,6 +6,8 @@
 VERSION="1.0.0"
 INSTALL_DIR="/www/wwwroot/3xui-hub"
 BACKEND_DIR="${INSTALL_DIR}/backend"
+# 数据库备份目录：与 backend/config/backup.php 的默认值保持一致（env BACKUP_DIR 可覆盖）
+BACKUP_DIR="/var/backups/3xui-hub"
 QUEUE_SERVICE="3xui-hub-queue.service"
 # 节点任务专用队列（node-ops）的 worker：模板单元 + 实例编号，命令只写一份。
 # 实例数运行期自适应（见 node_queue_instances_for_mem / resolve_node_queue_instances）：
@@ -434,6 +436,67 @@ fix_storage_ownership() {
     return 0
 }
 
+# 保障备份目录存在且属主正确（幂等）。
+# 为什么需要在更新/安装路径保障：调度器每天 03:30 以网站运行用户跑 backup:run，
+# 目录不存在或属主是 root 时每次备份都会失败 —— 而且是在凌晨静默失败，没人会发现。
+ensure_backup_dir() {
+    local NGINX_USER BAD_SCAN_RC=0
+
+    # 与 run_artisan / fix_storage_ownership 同一套用户判定
+    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    if [ -d "$BACKUP_DIR" ]; then
+        # 已存在：只在属主不对时修（扫不出结果按「脏」处理，与 fix_storage_ownership 同口径）
+        BAD=$(find "$BACKUP_DIR" ! -user "$NGINX_USER" -print -quit 2>/dev/null) || BAD_SCAN_RC=$?
+        if [ "$BAD_SCAN_RC" -eq 0 ] && [ -z "$BAD" ]; then
+            return 0
+        fi
+    else
+        mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    if [ ! -d "$BACKUP_DIR" ]; then
+        echo -e "备份目录: ${YELLOW}创建失败${NC}（请手工执行: mkdir -p ${BACKUP_DIR}）"
+        return 0
+    fi
+
+    # 非 root 改不了属主；mkdir 出来的目录通常已经是当前用户，无需再 chown
+    if [ "$(id -u)" -ne 0 ]; then
+        chown "$NGINX_USER":"$NGINX_USER" "$BACKUP_DIR" 2>/dev/null || true
+        return 0
+    fi
+
+    if chown "$NGINX_USER":"$NGINX_USER" "$BACKUP_DIR" 2>/dev/null; then
+        echo -e "备份目录: ${GREEN}已就绪${NC}（${BACKUP_DIR} → ${NGINX_USER}）"
+    else
+        echo -e "备份目录: ${YELLOW}属主未修正${NC}，请手工执行: chown ${NGINX_USER}:${NGINX_USER} ${BACKUP_DIR}"
+    fi
+    return 0
+}
+
+# 遗留超大 laravel.log 归档（幂等）。日志改为按天轮转后，新日志写 laravel-YYYY-MM-DD.log，
+# 旧的 laravel.log 不再增长；但升级上来的机器它可能已经是几十 MB，白占空间。
+# 超过 5MB 就整体改名 laravel-legacy-<时间戳>.log：保留（不丢历史）但不再增长，
+# 轮转后的新日志由 Laravel daily 驱动接管，14 天自动清理。
+rotate_legacy_laravel_log() {
+    local LOG_FILE SIZE THRESHOLD=5242880   # 5MB
+
+    LOG_FILE="$BACKEND_DIR/storage/logs/laravel.log"
+    [ -f "$LOG_FILE" ] || return 0
+
+    SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    [ "$SIZE" -gt "$THRESHOLD" ] 2>/dev/null || return 0
+
+    local ARCHIVE="$BACKEND_DIR/storage/logs/laravel-legacy-$(date +%Y%m%d%H%M%S).log"
+    if mv "$LOG_FILE" "$ARCHIVE" 2>/dev/null; then
+        echo -e "遗留日志: ${GREEN}已归档${NC}（laravel.log $(du -h "$ARCHIVE" 2>/dev/null | awk '{print $1}') → ${ARCHIVE##*/}）"
+    else
+        echo -e "遗留日志: ${YELLOW}归档失败${NC}，请手工检查 ${LOG_FILE} 的权限"
+    fi
+    return 0
+}
+
 # 命令列表（编号对应）
 CMDS=(
     "status"
@@ -459,7 +522,7 @@ CMD_LABELS=(
     "修改管理员密码"
     "手动同步流量"
     "查看自动同步状态"
-    "导出数据库备份"
+    "数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）"
     "查看最近错误日志"
     "重启 PHP-FPM、Nginx 和队列 Worker"
     "配置域名和 SSL 证书"
@@ -643,6 +706,92 @@ cmd_cli_opcache() {
     return 0
 }
 
+# 升级前快照：记下当前 commit（供失败回滚），并尽力做一次数据库备份。
+# 快照路径由 cmd_update 第一段算好，经环境变量 HUB_UPDATE_SNAPSHOT 传给 exec 后的 phase2。
+# 恒返回 0：快照只是「保险」，拿不到不应把升级本身挡下来。
+_update_snapshot() {
+    local SNAP="${1:-}" PREV SHORT
+
+    [ -n "$SNAP" ] || return 0
+
+    mkdir -p "$(dirname "$SNAP")" 2>/dev/null || true
+
+    PREV=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null)
+    if [ -z "$PREV" ]; then
+        echo -e "${YELLOW}无法读取当前版本，本次升级不生成回滚点${NC}"
+        return 0
+    fi
+    printf '%s\n' "$PREV" > "$SNAP" 2>/dev/null || true
+
+    # 数据库备份：失败仅告警，不阻断升级。回滚只回代码，这份备份是额外保险，
+    # 让人工在必要时有数据库回滚点可用。
+    # 注意 cwd：本函数在 cmd_update 里被调用时 cwd 是 $INSTALL_DIR（根目录没有
+    # artisan 文件），run_artisan 内部不 cd —— 必须先进 backend 再跑，否则必然
+    # 报「Could not open input file: artisan」，备份永远失败。
+    if ! (cd "$BACKEND_DIR" 2>/dev/null && run_artisan backup:run); then
+        echo -e "${YELLOW}数据库备份失败，回滚时将没有数据库回滚点${NC}"
+    fi
+
+    SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null)
+    echo "更新前快照已保存：${SNAP}（当前版本 ${SHORT}）"
+    return 0
+}
+
+# 升级失败回滚：代码退回快照 commit，并重启服务、把 CLI 一起退回去。
+# 只回代码，不回滚数据库 —— 迁移绝大多数是加表加列，旧代码读写不受影响；
+# 最近一次数据库备份在 ${BACKUP_DIR}/，需要时人工取用。
+# 快照缺失（「旧版本第一次升级」走的是没有 exec 的旧脚本，环境里不带快照变量）时，
+# 用 reflog 的上一条记录兜底；再取不到才放弃并返回 1。
+_update_rollback() {
+    local SNAP="${1:-}" PREV SHORT u
+
+    [ -n "$SNAP" ] && [ -f "$SNAP" ] && PREV=$(head -n 1 "$SNAP" 2>/dev/null)
+
+    if [ -z "$PREV" ]; then
+        PREV=$(git -C "$INSTALL_DIR" rev-parse --verify 'HEAD@{1}' 2>/dev/null)
+    fi
+
+    if [ -z "$PREV" ]; then
+        echo -e "${RED}无回滚点（快照缺失）${NC}，请人工处理"
+        return 1
+    fi
+
+    echo -e "${CYAN}正在回滚到升级前版本...${NC}"
+    if ! git -C "$INSTALL_DIR" reset --hard "$PREV" 2>&1; then
+        # reset 失败时后面所有动作都无意义（代码没退回去），绝不能被下去
+        # 打印「已回滚」——那会让人以为收工了。
+        echo -e "${RED}回滚失败（git reset 未成功），代码仍停在当前版本，请人工处理${NC}"
+        return 1
+    fi
+
+    # 回装与旧代码匹配的依赖（失败告警不中断：回滚中途再断会更难收拾）
+    cd "$BACKEND_DIR" 2>/dev/null || true
+    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1 \
+        || echo -e "${YELLOW}依赖回装失败，请手工执行: cd ${BACKEND_DIR} && composer install --no-dev --optimize-autoloader${NC}"
+
+    run_artisan config:clear 2>&1
+    run_artisan route:clear 2>&1
+    run_artisan view:clear 2>&1
+
+    systemctl restart "$QUEUE_SERVICE" 2>/dev/null || true
+    for u in $(node_queue_units); do
+        systemctl restart "$u" 2>/dev/null || true
+    done
+
+    systemctl reload php8.4-fpm 2>/dev/null || pkill -USR2 php-fpm 2>/dev/null || true
+
+    # CLI 退回旧版本，与刚 reset 下来的源码保持一致（否则命令行仍是新版逻辑）
+    cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub 2>/dev/null || true
+    chmod +x /usr/local/bin/3hub 2>/dev/null || true
+
+    # 回滚里的 composer 以 root 跑过，收回 storage/bootstrap/cache 属主
+    fix_storage_ownership
+
+    SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null)
+    echo -e "${GREEN}已回滚到 ${SHORT}。${NC}数据库未自动回滚（迁移通常是加表加列，旧代码兼容）；最近数据库备份在 ${BACKUP_DIR}/"
+    return 0
+}
+
 # 更新系统（两段式：第一段只换代码，随后 exec 重新执行刚落盘的新脚本）
 #
 # 为什么分两段：bash 启动时把脚本读进内存，git reset 换掉盘上代码后本进程仍跑旧函数，
@@ -656,6 +805,13 @@ cmd_update() {
 
     # 第一段：只换代码（清理本地 merge 提交）
     git fetch origin 2>/dev/null
+
+    # 落 reset 之前先记快照：reset 之后本地就没有旧 commit 的可见引用了。
+    # 失败也只当保险没买上，照样往下升级（_update_snapshot 恒返回 0）。
+    local SNAP="${BACKUP_DIR}/prev-commit-$(date +%Y%m%d%H%M%S).txt"
+    _update_snapshot "$SNAP"
+
+    # reset 失败时下面什么都没换，代码仍是旧的，直接退出即可 —— 不需要也不该回滚
     if ! git reset --hard origin/main 2>&1; then
         echo -e "${RED}代码更新失败（git reset 未成功），请检查网络后重试${NC}"
         return 1
@@ -663,7 +819,8 @@ cmd_update() {
 
     # 第二段：exec 重新执行刚落盘的新脚本（本进程被替换，exit 码即新脚本退出码）。
     # 此后包括本次新加的自愈在内，全部是新代码，天然当次生效、无需再「记得绕」。
-    exec bash "$INSTALL_DIR/3hub" __update-phase2
+    # 快照路径经环境变量传给 phase2：exec 继承环境，这是两段之间唯一的传参通道。
+    HUB_UPDATE_SNAPSHOT="$SNAP" exec bash "$INSTALL_DIR/3hub" __update-phase2
 }
 
 # 更新后半段（内部命令；由 cmd_update 第一段 exec 进入，执行时一定是刚落盘的代码）
@@ -671,17 +828,39 @@ cmd_update_phase2() {
     check_install
     cd "$INSTALL_DIR"
 
+    # 升级前快照路径（由 cmd_update 第一段经环境变量传入）。
+    # 为空属预期：老版本的第一次升级走的是没有 exec 的旧脚本，环境里不会带这个变量，
+    # 那时 _update_rollback 会退回 reflog 兜底。
+    local SNAP="${HUB_UPDATE_SNAPSHOT:-}"
+
     # 更新后端依赖
     cd "$BACKEND_DIR"
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1
+    if ! COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1; then
+        echo -e "${RED}依赖更新失败${NC}"
+        _update_rollback "$SNAP"
+        return 1
+    fi
 
     # 迁移数据库
-    run_artisan migrate --force 2>&1
+    if ! run_artisan migrate --force 2>&1; then
+        echo -e "${RED}数据库迁移失败${NC}"
+        _update_rollback "$SNAP"
+        return 1
+    fi
 
     # 保障调度器 cron（幂等）：root crontab 常被 acme.sh / 面板等工具整体重写，
     # 更新路径必须每次自愈，否则 schedule:run 一丢就是「定时任务全停 + 心跳空白」
     echo -e "${CYAN}检查定时任务...${NC}"
     ensure_artisan_cron || echo -e "${YELLOW}定时任务未就绪，见上方提示${NC}"
+
+    # 备份目录自愈（幂等）：调度器每天 03:30 以网站运行用户跑 backup:run，
+    # 目录缺失或属主为 root 会导致凌晨静默失败，所以更新路径每次保障。
+    ensure_backup_dir
+
+    # 遗留大日志自愈（幂等）：老版本 upgrade 上来时 storage/logs/laravel.log 可能已经
+    # 涨到几十 MB。改版后新日志按天写 laravel-YYYY-MM-DD.log，这个旧文件不会再有新内容，
+    # 但它永远占着空间；超过阈值就整体改名归档（保留、不再增长），便于人工排查后删除。
+    rotate_legacy_laravel_log
 
     # CLI opcache：清理 v1.25.1 的残留 ini（回退为默认关）；必须在 worker 重启前完成，
     # 否则 worker 起来时读到的还是旧配置。两段式 exec 后这里已是新代码，直接调。
@@ -708,6 +887,7 @@ cmd_update_phase2() {
     systemctl restart "$QUEUE_SERVICE"
     if ! systemctl is-active --quiet "$QUEUE_SERVICE"; then
         echo -e "${RED}后台任务 Worker 启动失败，请运行: systemctl status $QUEUE_SERVICE${NC}"
+        _update_rollback "$SNAP"
         return 1
     fi
 
@@ -719,6 +899,7 @@ cmd_update_phase2() {
         systemctl restart "$u"
         if ! systemctl is-active --quiet "$u"; then
             echo -e "${RED}节点任务 Worker ($u) 启动失败，请运行: systemctl status $u${NC}"
+            _update_rollback "$SNAP"
             return 1
         fi
     done
@@ -907,21 +1088,18 @@ cmd_sync_status() {
 }
 
 # 导出备份
+#
+# 逻辑全部收在 artisan backup:run（config/backup.php 控制目录/保留份数/dump 路径）：
+#   - 落盘 /var/backups/3xui-hub（不再是重启即丢的 /tmp）；
+#   - 成功后只保留最新 7 份，不会反复执行无限堆积；
+#   - dump 失败删除半截文件并以非 0 退出（这里直接透传 artisan 的返回码）。
+# 同一个命令也被调度器每天 03:30 调用，手动与自动走完全相同的实现。
 cmd_backup() {
     check_install
     cd "$BACKEND_DIR"
 
-    BACKUP_DIR="/tmp/3xui-hub-backup"
-    mkdir -p "$BACKUP_DIR"
-    BACKUP_FILE="$BACKUP_DIR/backup-$(date +%Y%m%d%H%M%S).sql.gz"
-
-    # mysqldump
-    if command -v mysqldump &>/dev/null; then
-        mysqldump -u root --single-transaction controlhub 2>/dev/null | gzip > "$BACKUP_FILE"
-        echo -e "${GREEN}备份完成: ${BACKUP_FILE}${NC}"
-        echo -e "大小: $(du -h "$BACKUP_FILE" | awk '{print $1}')"
-    else
-        echo -e "${RED}mysqldump 不可用，无法备份${NC}"
+    if ! run_artisan backup:run; then
+        echo -e "${RED}备份失败${NC}（常见原因：mysqldump 不可用、数据库连接失败、磁盘空间不足）"
         return 1
     fi
 }
@@ -929,12 +1107,18 @@ cmd_backup() {
 # 查看日志
 cmd_log() {
     check_install
-    LOG_FILE="$BACKEND_DIR/storage/logs/laravel.log"
 
-    if [ ! -f "$LOG_FILE" ]; then
+    # 日志已按天轮转（laravel-YYYY-MM-DD.log），不再固定读 laravel.log：
+    # 取 storage/logs 下 mtime 最新的 laravel*.log（含升级时归档的 laravel-legacy-*.log）。
+    # 老版本升级上来的机器若只有 laravel.log，它同样是候选，行为向后兼容。
+    LOG_FILE=$(ls -1t "$BACKEND_DIR"/storage/logs/laravel*.log 2>/dev/null | head -1)
+
+    if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
         echo -e "${YELLOW}暂无日志${NC}"
         return
     fi
+
+    echo -e "日志文件: ${LOG_FILE##*/}"
 
     echo -e "${CYAN}=== 最近错误日志 ===${NC}"
     grep -i "ERROR\|EXCEPTION\|CRITICAL" "$LOG_FILE" 2>/dev/null | tail -20

@@ -198,6 +198,8 @@ class NodeApiController extends Controller
             'active_users' => ['nullable', 'integer', 'min:0'],
             'up_speed' => ['nullable', 'numeric', 'min:0'],
             'down_speed' => ['nullable', 'numeric', 'min:0'],
+            'net_total_up' => ['nullable', 'integer', 'min:0'],
+            'net_total_down' => ['nullable', 'integer', 'min:0'],
         ]);
 
         $cfg = $node->driver_config ?? [];
@@ -213,6 +215,9 @@ class NodeApiController extends Controller
             'active_users' => isset($data['active_users']) ? (int) $data['active_users'] : null,
             'up_speed' => isset($data['up_speed']) ? (float) $data['up_speed'] : null,
             'down_speed' => isset($data['down_speed']) ? (float) $data['down_speed'] : null,
+            // 机器网卡累计收发：agent 读不到 /proc/net/dev（非 Linux）时不上报 → null，不当 0
+            'net_total_up' => isset($data['net_total_up']) ? (int) $data['net_total_up'] : null,
+            'net_total_down' => isset($data['net_total_down']) ? (int) $data['net_total_down'] : null,
             'at' => now()->toIso8601String(),
         ];
 

@@ -19,6 +19,7 @@ class HealthCheckService
     public function __construct(
         private NodeDriverFactory $driverFactory,
         private ThreeXUiClientFactory $clientFactory,
+        private MonitorService $monitor,
     ) {
     }
 
@@ -33,6 +34,10 @@ class HealthCheckService
             $health = $driver->healthCheck();
         } catch (\Throwable $e) {
             $this->apply($node, 'offline', 0);
+            // 探测失败：3x-ui 这一轮没有 netTraffic 可采（record 内部按 null 跳过）；
+            // xray 的 agent 累计值本来就在本地 driver_config 里，不依赖这次探测，仍可采样。
+            $this->monitor->record($node, null);
+
             return ['ok' => false, 'status' => 'offline', 'latency' => 0, 'error' => $e->getMessage()];
         }
 
@@ -44,6 +49,10 @@ class HealthCheckService
             $this->metric($health, 'cpu'),
             $this->metric($health, 'mem'),
         );
+
+        // 机器流量采样：把这一轮 /server/status 已经拿到的 netTraffic 留下来。
+        // record() 内部全兜（不抛、失败只 log），绝不会影响上面的状态/延迟写库。
+        $this->monitor->record($node, $health);
 
         return [
             'ok' => $ok,
@@ -133,6 +142,7 @@ class HealthCheckService
             } catch (\Throwable $e) {
                 // 连 client 都建不出来：该节点直接落 offline，不影响本批其它节点
                 $this->apply($node, 'offline', 0);
+                $this->monitor->record($node, null);
                 $results[$node->id] = [
                     'ok' => false,
                     'status' => 'offline',
@@ -170,6 +180,7 @@ class HealthCheckService
         if ($outcome === null || ($outcome['state'] ?? null) !== PromiseInterface::FULFILLED) {
             $reason = $outcome['reason'] ?? 'health check failed';
             $this->apply($node, 'offline', 0);
+            $this->monitor->record($node, null);
 
             return [
                 'ok' => false,
@@ -184,6 +195,7 @@ class HealthCheckService
         $latency = (int) ($health['latencyMs'] ?? 0);
 
         $this->apply($node, $ok ? 'online' : 'offline', $latency, $this->metric($health, 'cpu'), $this->metric($health, 'mem'));
+        $this->monitor->record($node, $health);
 
         $result = ['ok' => $ok, 'status' => $ok ? 'online' : 'offline', 'latency' => $latency];
 

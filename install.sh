@@ -15,6 +15,8 @@ NC='\033[0m'
 
 # 配置
 INSTALL_DIR="/www/wwwroot/3xui-hub"
+# 数据库备份目录：与 backend/config/backup.php 默认值、3hub 的 BACKUP_DIR 一致
+BACKUP_DIR="/var/backups/3xui-hub"
 LOG_FILE="/tmp/3xui-hub-install.log"
 REPO_URL="https://github.com/YouzSpace/3xui-hub.git"
 VERSION="1.0.0"
@@ -1202,6 +1204,32 @@ install_3hub() {
     success "3hub 命令安装完成"
 }
 
+# 备份目录（幂等）：调度器每天 03:30 以网站运行用户跑 backup:run，
+# 目录不存在或属主为 root 会在凌晨静默失败，所以安装收尾就保障一次。
+ensure_backup_dir() {
+    local NGINX_USER
+
+    # 与 fix_storage_ownership / run_artisan 同一套用户判定
+    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
+    NGINX_USER=${NGINX_USER:-www-data}
+
+    if [ ! -d "$BACKUP_DIR" ]; then
+        mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    if [ ! -d "$BACKUP_DIR" ]; then
+        warn "备份目录创建失败（请手工执行: mkdir -p ${BACKUP_DIR}）"
+        return 0
+    fi
+
+    if chown "$NGINX_USER":"$NGINX_USER" "$BACKUP_DIR" 2>/dev/null; then
+        info "备份目录就绪（${BACKUP_DIR} → ${NGINX_USER}）"
+    else
+        warn "备份目录属主未修正（如非 root 可忽略；root 下请手工 chown ${NGINX_USER}:${NGINX_USER} ${BACKUP_DIR}）"
+    fi
+    return 0
+}
+
 # 解析 nginx conf 的 server_name → 逐个 INSERT IGNORE 进 domains 表（第一个设主域）
 # 与本脚本其它 DB 访问一致：mysql -u root controlhub
 # conf 来源按环境检测：宝塔 vhost 目录 / 标准 conf.d，不再写死单一文件路径
@@ -1396,6 +1424,9 @@ main() {
 
     # 安装多域名助手（3hub-domain + sudoers）
     install_domain_support
+
+    # 备份目录（数据库每日 03:30 定时备份的落盘位置）
+    ensure_backup_dir
 
     # 属主自愈：必须排在所有以 root 身份跑过 artisan / composer 的步骤之后
     #（composer install 的 package:discover、key:generate / migrate / db:seed 都会往

@@ -25,6 +25,7 @@ use App\Http\Controllers\Admin\XrayOutboundController as AdminXrayOutboundContro
 use App\Http\Controllers\Admin\XrayRoutingController as AdminXrayRoutingController;
 use App\Http\Controllers\Admin\NodeWarpController as AdminNodeWarpController;
 use App\Http\Controllers\Admin\OutboundSubscriptionController as AdminOutboundSubscriptionController;
+use App\Http\Controllers\Admin\MonitorController as AdminMonitorController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -148,6 +149,11 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
 
     // 仪表盘统计（成交额）
     Route::get('/stats/revenue', [AdminStatsController::class, 'revenue']);
+
+    // 机器流量监控（只读）：窗口内合计 / TOP 排行 / 趋势曲线。
+    // 数据源是健康检查顺手落下的 L0 采样（monitor_samples），本组不做任何写入。
+    Route::get('/monitor/summary', [AdminMonitorController::class, 'summary']);
+    Route::get('/monitor/series', [AdminMonitorController::class, 'series']);
 
     // 流量同步
     Route::post('/sync-traffic', [AdminSyncTrafficController::class, 'sync']);

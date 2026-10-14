@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.30.0**
+**版本：1.31.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -106,7 +106,7 @@ docker-compose up -d --build # 更新并重启
 3hub admin-pass    # 修改管理员密码
 3hub sync          # 手动同步流量
 3hub sync-status   # 查看自动同步状态
-3hub backup        # 导出数据库备份
+3hub backup        # 数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）
 3hub log           # 查看错误日志
 3hub restart       # 重启服务
 ```
@@ -169,6 +169,14 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.31.0 (2026-10-14)
+
+- 新增后台**「监控」页**：机器流量合计卡、TOP 排行、速率曲线（最近 24 小时 / 7 天 / 30 天 / 本月）、CPU·内存均值与峰值、明细表 + CSV 导出 —— 采样随每 5 分钟健康检查顺路完成、零额外请求；原始采样保留 90 天、每天 04:30 自动折算永久留存
+- xray 节点**机器网卡流量采集**（agent 升级至 1.0.4）：上报累计收发总量、实时上下行改按网卡口径（此前依赖内核 stats、实测长期为 0）；旧 agent 不受影响、面板自动推送升级
+- **应用日志按天轮转**（保留 14 天）：升级时自动归档历史大日志，`3hub log` 直接查看最新日志
+- **数据库备份改造**：`3hub backup` 与每日 03:30 自动备份统一写入 `/var/backups/3xui-hub`，保留最新 7 份、失败不留半截文件
+- **`3hub update` 升级失败自动回滚**：升级前自动记录代码快照 + 数据库备份，依赖安装 / 数据库迁移 / Worker 启动失败时自动退回升级前版本，不再停在中间态
 
 ### v1.30.0 (2026-10-14)
 
@@ -361,7 +369,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.30.0**
+**Version: 1.31.0**
 
 ## Screenshots
 
@@ -431,7 +439,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.30.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.31.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

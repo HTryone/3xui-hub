@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/YouzSpace/3xui-hub/main/install.sh 
 3hub admin-pass    # 修改管理员密码
 3hub sync          # 手动同步流量
 3hub sync-status   # 查看自动同步状态
-3hub backup        # 导出数据库备份
+3hub backup        # 数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）
 3hub log           # 查看最近错误日志
 3hub restart       # 重启 PHP-FPM 和 Nginx
 3hub help          # 显示帮助

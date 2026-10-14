@@ -23,6 +23,16 @@ Schedule::command('traffic:monthly-reset')->dailyAt('00:00')->name('monthly-rese
 // 每天刷新到期的邀请码（旧码立即失效，只认最新码）
 Schedule::command('invite:refresh')->dailyAt('00:10')->name('invite-code-refresh')->withoutOverlapping();
 
+// 数据库每日备份：03:30 导出到 config('backup.dir')（默认 /var/backups/3xui-hub），
+// 保留最新 config('backup.keep') 份（默认 7）。选 03:30 是避开 00:00-00:10 的
+// 月流量重置 / 邀请码刷新与整点前后的业务高峰；dump 走 --single-transaction 不锁表。
+Schedule::command('backup:run')->dailyAt('03:30')->name('db-backup')->withoutOverlapping();
+
+// 机器流量降采样：把超过保留期（config('monitor.retain_days')，默认 90 天）的 L0 采样
+// 折算进 monitor_daily 的当天增量后删除原始样本 —— 采样表不随时间无界增长。
+// 排在 04:30（备份 03:30 之后一个整点），避免和每日备份抢 IO；命令本身幂等，重跑无副作用。
+Schedule::command('monitor:rollup')->dailyAt('04:30')->name('monitor-rollup')->withoutOverlapping();
+
 // 作废超时（1 小时）未支付的订单，防止 pending 单无限堆积：
 // 带码死单会被反复复用导致用户永远付不了款；无码死单会被反复重发网关刷 ERROR 日志。
 // TTL 显式传参，不依赖命令默认值 —— 默认值一旦被改动，这里的口径会跟着变，容易踩坑。

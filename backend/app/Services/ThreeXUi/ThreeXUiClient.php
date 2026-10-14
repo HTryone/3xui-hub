@@ -595,6 +595,8 @@ class ThreeXUiClient
         }
 
         $obj = $json['obj'] ?? [];
+        // netTraffic 结构异常（不是对象）时整段当没有，绝不因为一个附加字段把 ok=true 的探测搞崩
+        $netTraffic = is_array($obj['netTraffic'] ?? null) ? $obj['netTraffic'] : [];
 
         return [
             'ok' => true,
@@ -602,7 +604,29 @@ class ThreeXUiClient
             'cpu' => $obj['cpu'] ?? null,
             'mem' => self::memPercent($obj['mem'] ?? null),
             'xrayState' => $obj['xray']['state'] ?? null,
+            // 机器网卡累计收发（面板侧 netTraffic）—— 监控采样要它，但缺字段时必须是 null 不是 0，
+            // 否则「面板没上报」会被采样服务当成「累计归零」，差分时凭空造出一段流量。
+            'netSent' => self::netValue($netTraffic['sent'] ?? null),
+            'netRecv' => self::netValue($netTraffic['recv'] ?? null),
         ];
+    }
+
+    /**
+     * 归一化 /server/status 的 netTraffic.sent|recv 为「累计字节数」。
+     *
+     * 面板不同版本 / 不同驱动可能给数字、数字字符串，或干脆不给（旧面板没有 netTraffic）
+     * —— 只认**非负数值**，其余一律 null（上层 MonitorService 拿到 null 就不写采样行）。
+     * 负数不是合法的累计字节（计数器不可能为负），当无效值丢弃。
+     */
+    private static function netValue(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $int = (int) $value;
+
+        return $int < 0 ? null : $int;
     }
 
     /**
@@ -683,6 +707,7 @@ class ThreeXUiClient
                 }
 
                 $obj = $json['obj'] ?? [];
+                $netTraffic = is_array($obj['netTraffic'] ?? null) ? $obj['netTraffic'] : [];
 
                 return [
                     'ok' => true,
@@ -690,6 +715,9 @@ class ThreeXUiClient
                     'cpu' => $obj['cpu'] ?? null,
                     'mem' => self::memPercent($obj['mem'] ?? null),
                     'xrayState' => $obj['xray']['state'] ?? null,
+                    // 与同步 healthCheck() 同构：透传机器累计收发（缺字段为 null）
+                    'netSent' => self::netValue($netTraffic['sent'] ?? null),
+                    'netRecv' => self::netValue($netTraffic['recv'] ?? null),
                 ];
             })
             // otherwise 兜住两类失败：promise 自身 reject（网络/5xx），以及 then 回调里抛出的异常。
@@ -1047,6 +1075,9 @@ class ThreeXUiClient
             'cpu' => null,
             'mem' => null,
             'xrayState' => null,
+            // 探测失败时与成功分支同构：键在、值为 null（不写 0，采样层据此跳过）
+            'netSent' => null,
+            'netRecv' => null,
             'error' => $error,
         ];
     }

@@ -56,6 +56,9 @@ class NodeWsServer
     /** 超限告警的节流间隔（秒）：agent 每 5s 推一轮，不节流会把日志刷爆。 */
     private const OVERFLOW_LOG_INTERVAL = 60;
 
+    /** node-ws.log 轮转阈值（字节）：Workerman 只追加写、无内建轮转，超限即改名归档。 */
+    private const LOG_ROTATE_BYTES = 20 * 1024 * 1024;
+
     private Worker $worker;
 
     public function __construct(string $listen)
@@ -67,6 +70,8 @@ class NodeWsServer
 
     public function run(): void
     {
+        $this->rotateLogIfOversized();
+
         Worker::$logFile = storage_path('logs/node-ws.log');
         Worker::$pidFile = storage_path('logs/controlhub-node-ws.pid');
 
@@ -83,6 +88,23 @@ class NodeWsServer
         $this->worker->onClose = [$this, 'onClose'];
 
         Worker::runAll();
+    }
+
+    /**
+     * node-ws.log 超阈值即轮转：改名为 node-ws.log.1（覆盖上一份归档）后由
+     * Workerman 重新创建空日志。只保留一份归档，与 Laravel 侧 14 天 daily 不同 ——
+     * 这是进程级日志（Workerman 自身输出），量小且排查只看最近一段。
+     */
+    private function rotateLogIfOversized(): void
+    {
+        $logFile = storage_path('logs/node-ws.log');
+
+        if (! is_file($logFile) || filesize($logFile) <= self::LOG_ROTATE_BYTES) {
+            return;
+        }
+
+        // rename 同目录内原子：即使 .1 已存在也会被整体替换，不会残留半截
+        @rename($logFile, $logFile.'.1');
     }
 
     // ── Workerman 回调 ───────────────────────────────────────
@@ -311,6 +333,9 @@ class NodeWsServer
                 'active_users' => isset($metrics['active_users']) ? (int) $metrics['active_users'] : null,
                 'up_speed' => isset($metrics['up_speed']) ? (float) $metrics['up_speed'] : null,
                 'down_speed' => isset($metrics['down_speed']) ? (float) $metrics['down_speed'] : null,
+                // 机器网卡累计收发：agent 读不到 /proc/net/dev（非 Linux）时不上报 → null，不当 0
+                'net_total_up' => isset($metrics['net_total_up']) ? (int) $metrics['net_total_up'] : null,
+                'net_total_down' => isset($metrics['net_total_down']) ? (int) $metrics['net_total_down'] : null,
                 'at' => now()->toIso8601String(),
             ];
         }
