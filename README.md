@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.31.0**
+**版本：1.32.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,12 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.32.0 (2026-10-14)
+
+- **后台「监控」页并入仪表盘**：新增「最近 24 小时流量」全机汇总曲线（上下行速率实线左轴 + 累计上传/下载虚线右轴，悬浮显示四值）、「流量消耗 Top 5」（含峰值速率与时刻）、「平均 CPU / 内存占用排行」（含峰值与时刻），两栏布局；原独立「监控」页撤掉、旧链接自动跳回仪表盘
+- 曲线汇总在**后端按同一时间桶归并**：多节点采样时刻的秒级差不再产生「交错锯齿」假峰谷（24h 按 5 分钟桶、7d/30d/本月按小时/天桶）
+- 修复：低流量速率显示「N undefined/s」（格式化函数单位索引未钳下界）
 
 ### v1.31.0 (2026-10-14)
 
@@ -369,7 +375,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.31.0**
+**Version: 1.32.0**
 
 ## Screenshots
 
@@ -439,7 +445,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.31.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.32.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

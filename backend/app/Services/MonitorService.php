@@ -27,6 +27,9 @@ class MonitorService
     /** 采样节流窗口（秒）：距最近一条样本不足此时长就跳过，不写重复行。 */
     private const THROTTLE_SECONDS = 240;
 
+    /** 24h（raw）视图的汇总归桶粒度（秒）——与健康检查的 5 分钟采样周期一致。 */
+    private const RAW_BUCKET_SECONDS = 300;
+
     /**
      * 记录一次机器流量采样（挂健康检查，异常绝不影响健康检查主流程）。
      *
@@ -201,11 +204,19 @@ class MonitorService
     }
 
     /**
-     * 窗口内每台启用节点的合计与 cpu/mem 极值。
+     * 窗口内每台启用节点的合计、cpu/mem 极值与峰值时刻。
      *
      * 口径：合计 up/down = 窗口内每条样本的增量之和（窗口首条的「前一条」允许取
      * 窗口外最近一条；取不到按 0）。cpu_avg/cpu_max/mem_avg/mem_max 为该节点的
      * 采样值聚合，无样本时为 null。
+     *
+     * 峰值信息（供仪表盘排行卡的「峰值 … at …」一行）：
+     *   - peak_rate / peak_rate_at：窗口内**单个区间**（一条样本相对前一条的增量）
+     *     的最大双向速率 B/s = max(up增量 + down增量) / RAW_BUCKET_SECONDS，
+     *     以及该区间的采样时刻。不是窗口平均速率 —— 平均值会把突发抹平。
+     *   - cpu_max_at / mem_max_at：cpu/mem 峰值那一行的采样时刻（并列取最早一条，
+     *     保证同样数据每次返回同一个时刻）。
+     * 没有样本时这四个字段同样是 null（不是 0、也不是空串）。
      *
      * @return array{totals: array{up:int,down:int,total:int}, window: array{key:string,start:string,end:string}, nodes: list<array>}
      */
@@ -219,7 +230,8 @@ class MonitorService
         foreach ($nodes as $node) {
             [$up, $down] = $this->windowDeltas((int) $node->id, $start, $end);
 
-            // 该窗口内没有任何样本 → 流量与 cpu/mem 全 null（没有数据就是 null，不是 0）
+            // 该窗口内没有任何样本 → 流量、cpu/mem 与峰值时刻全 null
+            //（没有数据就是 null，不是 0、也不是空字符串）
             if ($up === null && $down === null) {
                 $rows[] = [
                     'id' => $node->id,
@@ -231,6 +243,10 @@ class MonitorService
                     'cpu_max' => null,
                     'mem_avg' => null,
                     'mem_max' => null,
+                    'peak_rate' => null,
+                    'peak_rate_at' => null,
+                    'cpu_max_at' => null,
+                    'mem_max_at' => null,
                 ];
                 continue;
             }
@@ -239,6 +255,8 @@ class MonitorService
                 ->whereBetween('sampled_at', [$start, $end])
                 ->selectRaw('AVG(cpu) as cpu_avg, MAX(cpu) as cpu_max, AVG(mem) as mem_avg, MAX(mem) as mem_max')
                 ->first();
+
+            [$peakRate, $peakRateAt] = $this->peakRate((int) $node->id, $start, $end);
 
             $rows[] = [
                 'id' => $node->id,
@@ -250,6 +268,10 @@ class MonitorService
                 'cpu_max' => $stats?->cpu_max === null ? null : round((float) $stats->cpu_max, 2),
                 'mem_avg' => $stats?->mem_avg === null ? null : round((float) $stats->mem_avg, 2),
                 'mem_max' => $stats?->mem_max === null ? null : round((float) $stats->mem_max, 2),
+                'peak_rate' => $peakRate,
+                'peak_rate_at' => $peakRateAt,
+                'cpu_max_at' => $this->peakAt((int) $node->id, $start, $end, 'cpu'),
+                'mem_max_at' => $this->peakAt((int) $node->id, $start, $end, 'mem'),
             ];
         }
 
@@ -277,10 +299,15 @@ class MonitorService
     }
 
     /**
-     * 窗口内每台节点的增量序列。
+     * 窗口内每台节点的增量序列，末尾附带一条**全机汇总**序列。
      * 粒度：24h→原始 5 分钟点；7d→按小时 sum；30d/month→按天 sum。
      *
-     * @return list<array{node_id:int,name:string,points:list<array{t:int,up:int,down:int}>}>
+     * 汇总元素用 `node_id => null` + `aggregate => true` 标记（`name` 为「合计」），
+     * 与节点元素区分。**不改成 `{nodes, aggregate}` 对象**：现有消费方是按列表索引的
+     * （`collect($data)->firstWhere('node_id', …)`），换容器形状等于改已有接口结构；
+     * 末尾追加一个可识别元素对老消费方完全无感，节点元素的结构一字未动。
+     *
+     * @return list<array{node_id:?int,name:string,aggregate?:bool,points:list<array{t:int,up:int,down:int}>}>
      */
     public function series(?string $window): array
     {
@@ -293,13 +320,49 @@ class MonitorService
         };
 
         $out = [];
+        $totals = []; // 桶起点 => ['t' => int, 'up' => int, 'down' => int]，全机汇总
+
         foreach (Node::where('enabled', true)->orderBy('id')->get() as $node) {
+            $points = $this->points((int) $node->id, $start, $end, $bucket);
+
             $out[] = [
                 'node_id' => $node->id,
                 'name' => $node->name,
-                'points' => $this->points((int) $node->id, $start, $end, $bucket),
+                'points' => $points,
             ];
+
+            // 汇总必须在**后端**做：各节点采样时刻有秒级差（A 在 :00 采、B 在 :37 采），
+            // 前端拿各节点的点列按时间轴叠加，会把落在同一桶里的两次采样错位成假峰谷。
+            // 这里直接复用 points() 的差分口径（deltas）与 bucketStart() 的桶归属，
+            // 同桶相加即可 —— 归属与日界口径只有一处定义。
+            // 没有采样的节点不贡献任何桶（缺数据 ≠ 0），所以不会凭空多出 0 值桶。
+            //
+            // raw（24h）模式的 t 是采样时刻本身（含秒级差），各节点同一轮的采样时刻
+            // 差几秒到几十秒，直接按 t 归并会让合计退化成「交错点」序列（A、B 的点
+            // 交替出现，画出来是剧烈锯齿 —— 正是要消除的假峰谷）。所以 raw 模式先把
+            // t 再归到 5 分钟桶（与采样周期一致）再相加；hour/day 的 t 本就是桶起点。
+            foreach ($points as $point) {
+                $t = $bucket === 'raw'
+                    ? intdiv($point['t'], self::RAW_BUCKET_SECONDS) * self::RAW_BUCKET_SECONDS
+                    : $point['t'];
+
+                if (! isset($totals[$t])) {
+                    $totals[$t] = ['t' => $t, 'up' => 0, 'down' => 0];
+                }
+
+                $totals[$t]['up'] += $point['up'];
+                $totals[$t]['down'] += $point['down'];
+            }
         }
+
+        ksort($totals);
+
+        $out[] = [
+            'node_id' => null,
+            'name' => '合计',
+            'aggregate' => true,
+            'points' => array_values($totals),
+        ];
 
         return $out;
     }
@@ -327,6 +390,76 @@ class MonitorService
         }
 
         return [$up, $down];
+    }
+
+    /**
+     * 窗口内**单个区间**的最大双向速率（B/s）及其发生时刻。
+     *
+     * 逐条样本差分（口径与 points/rollup 完全一致，复用 self::deltas），取
+     * (up增量 + down增量) 最大的一条，除以 RAW_BUCKET_SECONDS（采样周期）得速率。
+     * 是「某个 5 分钟区间的峰值」，不是「窗口平均速率」—— 后者会把突发抹平，
+     * 而排行卡要展示的正是突发（参考图里的「峰值 X MB/s」）。
+     * 并列时取**最早**一条，保证同一份数据每次返回同一个时刻。
+     * 速率保留 2 位小数（与 summary 里 cpu_avg 等数值字段一致）。
+     * 窗口内没有样本 → [null, null]（不是 0）。
+     *
+     * @return array{0: ?float, 1: ?string} [峰值速率 B/s, 该区间采样时刻 ISO8601]
+     */
+    private function peakRate(int $nodeId, CarbonImmutable $start, CarbonImmutable $end): array
+    {
+        // 与 points() 同一口径：「窗口首条的前一条」取窗口外最近一条，取不到按 0 起算。
+        $prev = MonitorSample::where('node_id', $nodeId)
+            ->where('sampled_at', '<', $start)
+            ->orderByDesc('sampled_at')
+            ->first();
+
+        $rows = MonitorSample::where('node_id', $nodeId)
+            ->whereBetween('sampled_at', [$start, $end])
+            ->orderBy('sampled_at')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return [null, null];
+        }
+
+        $peakBytes = 0;
+        $peakAt = null;
+
+        foreach ($rows as $row) {
+            [$dSent, $dRecv] = self::deltas(
+                ['sent' => $row->sent, 'recv' => $row->recv],
+                $prev === null ? null : ['sent' => $prev->sent, 'recv' => $prev->recv],
+            );
+            $prev = $row;
+
+            $bytes = $dSent + $dRecv;
+
+            // 严格大于才替换 → 并列取最早一条。首条无条件入选（peakAt 仍为 null），
+            // 所以「窗口内全为零流量」也会得到一个真实的峰值时刻（不是 null）。
+            if ($peakAt === null || $bytes > $peakBytes) {
+                $peakBytes = $bytes;
+                $peakAt = CarbonImmutable::parse($row->sampled_at);
+            }
+        }
+
+        return [round($peakBytes / self::RAW_BUCKET_SECONDS, 2), $peakAt->toIso8601String()];
+    }
+
+    /**
+     * 窗口内某列（cpu / mem）最大值所在行的采样时刻（ISO8601）。
+     * 并列取**最早**一条（`orderByDesc(列)->orderBy(采样时刻)`），无有效值 → null。
+     * 与 summary 里 selectRaw('MAX(cpu) …') 取的是同一行，只是这里额外要时刻。
+     */
+    private function peakAt(int $nodeId, CarbonImmutable $start, CarbonImmutable $end, string $column): ?string
+    {
+        $row = MonitorSample::where('node_id', $nodeId)
+            ->whereBetween('sampled_at', [$start, $end])
+            ->whereNotNull($column)
+            ->orderByDesc($column)
+            ->orderBy('sampled_at')
+            ->first();
+
+        return $row?->sampled_at?->toIso8601String();
     }
 
     /**
