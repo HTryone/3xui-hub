@@ -768,6 +768,20 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
+    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        access_log off;
+    }
+
+    # SPA 入口：绝不能缓存。它决定去加载哪批 chunk，一旦被浏览器启发式缓存，
+    # 升级后就会拿旧 index 去找旧 chunk（若旧文件恰好还在则静默跑新旧混杂的前端）。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate";
+        expires -1;
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -815,6 +829,19 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
+    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        access_log off;
+    }
+
+    # SPA 入口：绝不能缓存（理由同 HTTPS 段）。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate";
+        expires -1;
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -826,8 +853,32 @@ server {
 NGINX
     fi
 
-    # 复制前端文件到 public
-    cp -r "$INSTALL_DIR/frontend/dist/"* "$INSTALL_DIR/backend/public/" 2>/dev/null || true
+    # 同步前端产物到 public：先清旧版本残留，再复制。
+    # 不能只 `cp -r`（只覆盖不删除）——Vite 文件名带内容哈希，历次构建的旧 chunk 会一直
+    # 堆在 public 里；浏览器一旦拿到旧 index.html（指向旧 chunk），而旧 chunk 恰好还在，
+    # 就会静默跑一套新旧混杂的前端：页面能开、不报错，但功能区块空白，极难排查。
+    # 只清 assets/ 与顶层哈希资源，跳过 Laravel 必需文件与用户上传目录。
+    if [ -d "$INSTALL_DIR/frontend/dist" ]; then
+        DIST="$INSTALL_DIR/frontend/dist"
+        PUB="$INSTALL_DIR/backend/public"
+
+        if [ -d "$PUB/assets" ] && [ -d "$DIST/assets" ]; then
+            for f in $(ls -1 "$PUB/assets" 2>/dev/null); do
+                [ -e "$DIST/assets/$f" ] || rm -rf "$PUB/assets/$f"
+            done
+        fi
+
+        for f in $(ls -1 "$PUB" 2>/dev/null); do
+            case "$f" in
+                index.php|.htaccess|robots.txt|favicon.ico|storage|uploads|.well-known) continue ;;
+            esac
+            if [ -f "$PUB/$f" ] && [ ! -e "$DIST/$f" ]; then
+                rm -f "$PUB/$f"
+            fi
+        done
+
+        cp -r "$DIST/"* "$PUB/" 2>/dev/null || true
+    fi
 
     # 删除默认站点（避免冲突）
     rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
