@@ -42,12 +42,20 @@ class PhpFpmTuner
             }
         }
 
-        $cpus = 0;
-        if (is_readable('/proc/cpuinfo')) {
-            $cpus = substr_count((string) @file_get_contents('/proc/cpuinfo'), "\nprocessor");
-        }
-        if ($cpus <= 0) {
-            $cpus = (int) trim((string) @shell_exec('nproc 2>/dev/null'));
+        // 核数：优先 nproc（与 install.sh 的 tune_php_fpm 同一口径，最准），
+        // 拿不到再退回 /proc/cpuinfo。
+        //
+        // 注意不能再用 substr_count($cpuinfo, "\nprocessor")：它只数「前一字符是换行」的
+        // processor 行，**首个 processor 若位于文件开头（前面没有换行）就会漏计一个** ——
+        // 2 核机器会被读成 1 核，byCpu 由 8 变 4，进而把 max_children 少设一半
+        // （本次实测：nproc=2，旧写法返回 cpus=1，recommend() 因此给出 4 而非 8）。
+        // 这里改用锚定行首的正则，逐个匹配所有 processor 行，不受首行位置影响。
+        $cpus = (int) trim((string) @shell_exec('nproc 2>/dev/null'));
+        if ($cpus <= 0 && is_readable('/proc/cpuinfo')) {
+            $cpuinfo = (string) @file_get_contents('/proc/cpuinfo');
+            if ($cpuinfo !== '' && preg_match_all('/^processor\s*:/mi', $cpuinfo, $cpuMatches)) {
+                $cpus = count($cpuMatches[0]);
+            }
         }
 
         return ['mem_mb' => max(0, $memMb), 'cpus' => max(0, $cpus)];
