@@ -46,10 +46,6 @@ class PaymentService
             throw new \InvalidArgumentException('该套餐已下架');
         }
 
-        if ($user->plan_id == $planId && $user->expired_at && $user->expired_at->isFuture()) {
-            throw new \InvalidArgumentException('您已购买该套餐');
-        }
-
         if ($paymentConfigId) {
             $payment = PaymentConfig::where('id', $paymentConfigId)->where('enabled', true)->first();
         } else {
