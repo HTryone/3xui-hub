@@ -383,6 +383,76 @@ PY
     fi
 }
 
+# nginx 前端缓存规则自愈（幂等）
+#
+# 为什么需要：Vite 产物文件名带内容哈希，index.html 决定去加载哪批 chunk。
+# 若 index.html 没有 Cache-Control，浏览器会按启发式规则自行长期缓存它 —— 升级后
+# 浏览器仍拿旧 index 去找旧 chunk，而旧 chunk 在服务器上未必已被清理，于是静默加载
+# 一套新旧混杂的前端：页面能开、不报错，但个别功能区块空白，极难排查。
+# 给 index.html 加 no-cache、给 /assets/ 加长缓存即可根治。
+#
+# 保护：改前备份、nginx -t 校验失败自动回滚，绝不破坏用户的 SSL / 自定义配置。
+ensure_nginx_cache_rules() {
+    local CONF
+    CONF="$(nginx_conf_path)"
+    [ -f "$CONF" ] || return 0
+    # 已有规则则跳过（幂等）
+    grep -q 'location = /index.html' "$CONF" 2>/dev/null && return 0
+
+    cp -f "$CONF" "${CONF}.bak-cache"
+    python3 - "$CONF" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    s = f.read()
+
+if 'location = /index.html' in s:
+    sys.exit(0)  # 已有，无需处理
+
+blocks = '''    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        access_log off;
+    }
+
+    # SPA 入口：绝不能缓存（否则升级后可能拿旧 index 加载旧 chunk）。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate";
+        expires -1;
+    }
+
+'''
+
+# 插在 SPA fallback 之前；找不到就退回 api 锚点前
+for anchor in ('location / {', 'location ~ ^/(api|admin-api)'):
+    idx = s.find(anchor)
+    if idx >= 0:
+        break
+if idx < 0:
+    sys.exit(2)
+
+line_start = s.rfind('\n', 0, idx) + 1
+with open(path, "w", encoding="utf-8") as f:
+    f.write(s[:line_start] + blocks + s[line_start:])
+PY
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 || true
+            echo "Nginx 缓存: 已补 index.html no-cache + /assets/ 长缓存"
+            rm -f "${CONF}.bak-cache"
+        else
+            mv -f "${CONF}.bak-cache" "$CONF"
+            echo "Nginx 缓存: 补丁未通过 nginx -t，已回滚"
+        fi
+    else
+        rm -f "${CONF}.bak-cache"
+        [ "$rc" -eq 2 ] && echo "Nginx 缓存: 未找到插入锚点，跳过"
+    fi
+    return 0
+}
+
 # 修复 storage / bootstrap/cache 属主（幂等自愈）
 #
 # 为什么更新末尾要单独修一遍：任何以 root 身份跑过 artisan / composer 的动作，都会在这两个
@@ -706,6 +776,63 @@ cmd_cli_opcache() {
     return 0
 }
 
+# 把前端产物同步到 backend/public：先按 dist 清单清理旧版本残留，再复制新文件。
+#
+# 为什么不能直接 `cp -r`：cp 只覆盖不删除。Vite 产物文件名带内容哈希，每次构建
+# 都会产生一批新文件名、旧文件名就此成为垃圾。只覆盖的话历次版本的 chunk 会一直
+# 堆在 public 里 —— 浏览器一旦拿到旧的 index.html（它指向旧 chunk），而那些旧
+# chunk 恰好还在，就会静默加载到一套新旧混杂的前端：页面能开、不报错，但功能区块
+# 空白，极难排查。清掉旧文件能让这种情况立刻暴露成 404，而不是静默错误。
+#
+# 清理范围严格限定：只删 public 里「有对应 dist 产物」的目录（即 assets/ 与
+# favicon.ico 这类静态资源），并跳过 Laravel 必需文件与用户上传目录。
+# dist 是被 git 跟踪的（116 个文件），所以 git pull 后它必然等于本次发布的内容，
+# 可以放心当权威清单。
+_sync_frontend_dist() {
+    local DIST="$INSTALL_DIR/frontend/dist"
+    local PUB="$BACKEND_DIR/public"
+    local removed=0 f rel
+
+    if [ ! -d "$DIST" ]; then
+        echo -e "${YELLOW}未找到 $DIST，跳过前端产物同步${NC}"
+        return 0
+    fi
+
+    # 1) 清理：public/assets 里有、dist/assets 里没有的 = 旧版本残留
+    if [ -d "$PUB/assets" ] && [ -d "$DIST/assets" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ ! -e "$DIST/assets/$f" ]; then
+                rm -rf "$PUB/assets/$f" && removed=$((removed + 1))
+            fi
+        done < <(ls -1 "$PUB/assets" 2>/dev/null)
+    fi
+
+    # 2) top-level 的哈希资源（如 favicon-<hash>.ico / *.css 等）：
+    #    只处理「dist 顶层存在同名同类、但哈希不同」的情况，绝不能删 index.php 等。
+    if [ -d "$DIST" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+                # Laravel / 用户资产，永不清理
+                index.php|.htaccess|robots.txt|favicon.ico|storage|uploads|.well-known) continue ;;
+            esac
+            # 是文件才算；且只在「dist 顶层没有这个文件」时删
+            if [ -f "$PUB/$f" ] && [ ! -e "$DIST/$f" ]; then
+                rm -f "$PUB/$f" && removed=$((removed + 1))
+            fi
+        done < <(ls -1 "$PUB" 2>/dev/null)
+    fi
+
+    # 3) 复制新产物（保留原语义：失败不阻断升级）
+    cp -r "$DIST/"* "$PUB/" 2>/dev/null || true
+
+    if [ "$removed" -gt 0 ]; then
+        echo -e "${CYAN}前端产物同步：清理旧版本残留 ${removed} 项${NC}"
+    fi
+    return 0
+}
+
 # 升级前快照：记下当前 commit（供失败回滚），并尽力做一次数据库备份。
 # 快照路径由 cmd_update 第一段算好，经环境变量 HUB_UPDATE_SNAPSHOT 传给 exec 后的 phase2。
 # 恒返回 0：快照只是「保险」，拿不到不应把升级本身挡下来。
@@ -904,8 +1031,11 @@ cmd_update_phase2() {
         fi
     done
 
-    # 复制前端文件
-    cp -r "$INSTALL_DIR/frontend/dist/"* "$BACKEND_DIR/public/" 2>/dev/null || true
+    # 复制前端产物（先清旧版本残留再复制，避免历次 chunk 堆积）
+    _sync_frontend_dist
+
+    # 前端缓存规则自愈：老版本 conf 缺 index.html no-cache，升级时幂等补上
+    ensure_nginx_cache_rules
 
     # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的地方。
     # 两段式 exec 后这里已是新代码（旧版「必须子进程绕」的坑已结构性消灭），直接调。
@@ -978,6 +1108,9 @@ nginx_node_ws_applied() {
 
 # 补 nginx 反代（给老版本升级上来的机器用；幂等，可反复执行）
 cmd_fix_nginx() {
+    # 顺带补前端缓存规则（幂等）：老 conf 缺 index.html no-cache 时在这里一并修好
+    ensure_nginx_cache_rules
+
     echo -e "${CYAN}检查 nginx 节点资产 location...${NC}"
     if nginx_node_ws_applied; then
         echo -e "Nginx 反代: ${GREEN}已就位${NC}（无需处理）"
@@ -1243,6 +1376,20 @@ server {
         try_files $uri $uri/ /index.php?$query_string;
     }
 
+    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        access_log off;
+    }
+
+    # SPA 入口：绝不能缓存。它决定去加载哪批 chunk，一旦被浏览器启发式缓存，
+    # 升级后就会拿旧 index 去找旧 chunk（旧文件若恰好还在则静默跑新旧混杂的前端）。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate";
+        expires -1;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -1273,6 +1420,19 @@ server {
 
     location ~ ^/(api|admin-api) {
         try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # 带内容哈希的构建产物：可放心长缓存（理由同 HTTPS 段）。
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000, immutable";
+        access_log off;
+    }
+
+    # SPA 入口：绝不能缓存（理由同 HTTPS 段）。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate";
+        expires -1;
     }
 
     location / {
