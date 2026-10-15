@@ -9,8 +9,8 @@ namespace App\Services;
  * /etc/php/8.4/fpm/pool.d/www.conf 就是 5），面板一有并发（拉订阅 + 后台操作 + 队列回调）
  * 请求就排队，这是用户量上来后第一个卡的环节。Docker 版显式写了 50，裸机没人设。
  *
- * 本类给「已装机器」用（`php artisan fpm:tune`），新装机器由 install.sh 的 tune_php_fpm
- * 在安装时设好 —— 两处公式必须一致（见 config/panel.php 的 panel.fpm 注释）。
+ * 公式的唯一实现（见 config/panel.php 的 panel.fpm 注释）：新装机器（install.sh 流程）
+ * 与已装机器（`3hub update`）都直接调用本命令，shell 侧不再重复实现（issue #28）。
  *
  * 安全底线（改错会让面板自己都打不开）：
  *   1. 改前备份到 <conf>.bak.<时间戳>
@@ -42,7 +42,7 @@ class PhpFpmTuner
             }
         }
 
-        // 核数：优先 nproc（与 install.sh 的 tune_php_fpm 同一口径，最准），
+        // 核数：优先 nproc（最准；新装与升级都经本命令，核数口径只有这一处），
         // 拿不到再退回 /proc/cpuinfo。
         //
         // 注意不能再用 substr_count($cpuinfo, "\nprocessor")：它只数「前一字符是换行」的

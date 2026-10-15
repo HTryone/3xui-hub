@@ -70,7 +70,8 @@ return [
      | 4 个，若硬抬到 min_children(10) 会占 ~450MB 把 MySQL 挤到 OOM；两端都读不到时才回落到
      | min_children。
      |
-     | ⚠️ install.sh 里有一份等价的 shell 实现（安装早期 artisan 还不可用），改公式时两边一起改。
+     | 公式的唯一实现在 PhpFpmTuner：新装机器（install.sh）与已装机器（3hub update）都在
+     | 代码与依赖就绪后直接调用 php artisan fpm:tune，shell 侧不再重复实现（issue #28）。
      */
     'fpm' => [
         'process_memory_mb' => (int) env('PANEL_FPM_PROCESS_MEMORY_MB', 50),
