@@ -428,7 +428,6 @@ server {
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -438,7 +437,6 @@ server {
     # 表现为页面能开、不报错、但功能区块空白）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
     location / {

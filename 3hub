@@ -391,17 +391,29 @@ PY
 # 一套新旧混杂的前端：页面能开、不报错，但个别功能区块空白，极难排查。
 # 给 index.html 加 no-cache、给 /assets/ 加长缓存即可根治。
 #
+# 覆盖范围：主 conf（3xui-hub.conf）+ 多域名 conf（3xui-hub-domains.conf，表驱动整份
+# 重建、存量文件同样要自愈）。锚点用「SPA fallback 完整块」（location / 紧跟
+# try_files …/index.html），逐个 server 段补齐 —— 不会误插进只做 301 跳转的 80 段。
 # 保护：改前备份、nginx -t 校验失败自动回滚，绝不破坏用户的 SSL / 自定义配置。
 ensure_nginx_cache_rules() {
-    local CONF
-    CONF="$(nginx_conf_path)"
+    local main_conf
+    main_conf="$(nginx_conf_path)"
+    _cache_rules_patch_file "$main_conf"
+    _cache_rules_patch_file "$(dirname "$main_conf")/3xui-hub-domains.conf"
+    return 0
+}
+
+# 对单个 conf 补缓存规则（幂等；文件不存在 / 已含规则则跳过）
+_cache_rules_patch_file() {
+    local CONF="$1"
     [ -f "$CONF" ] || return 0
-    # 已有规则则跳过（幂等）
     grep -q 'location = /index.html' "$CONF" 2>/dev/null && return 0
 
     cp -f "$CONF" "${CONF}.bak-cache"
     python3 - "$CONF" <<'PY'
+import re
 import sys
+
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
     s = f.read()
@@ -411,7 +423,6 @@ if 'location = /index.html' in s:
 
 blocks = '''    # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -419,36 +430,42 @@ blocks = '''    # 带内容哈希的构建产物：内容变了文件名必变�
     # SPA 入口：绝不能缓存（否则升级后可能拿旧 index 加载旧 chunk）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
 '''
 
-# 插在 SPA fallback 之前；找不到就退回 api 锚点前
-for anchor in ('location / {', 'location ~ ^/(api|admin-api)'):
-    idx = s.find(anchor)
-    if idx >= 0:
-        break
-if idx < 0:
-    sys.exit(2)
+# 锚点 = SPA fallback 的完整 location 块（含 try_files …/index.html）：
+# 80 段「location / { return 301 ... }」这类跳转块不会被命中；
+# 命中多个（多域名 conf 每个域名一个 443 段）则逐个补齐。
+pattern = re.compile(r'([ \t]*)location / \{[ \t]*\n[ \t]*try_files \$uri \$uri/ /index\.html;')
+s, count = pattern.subn(lambda m: blocks + m.group(0), s)
 
-line_start = s.rfind('\n', 0, idx) + 1
+if count == 0:
+    # 兜底：自定义 conf 结构 → 退回「第一个 location / {」前的旧锚点（保持旧行为）。
+    idx = s.find('location / {')
+    if idx < 0:
+        idx = s.find('location ~ ^/(api|admin-api)')
+    if idx < 0:
+        sys.exit(2)
+    line_start = s.rfind('\n', 0, idx) + 1
+    s = s[:line_start] + blocks + s[line_start:]
+
 with open(path, "w", encoding="utf-8") as f:
-    f.write(s[:line_start] + blocks + s[line_start:])
+    f.write(s)
 PY
     local rc=$?
     if [ "$rc" -eq 0 ]; then
         if nginx -t >/dev/null 2>&1; then
             systemctl reload nginx >/dev/null 2>&1 || true
-            echo "Nginx 缓存: 已补 index.html no-cache + /assets/ 长缓存"
+            echo "Nginx 缓存: $(basename "${CONF}") 已补 index.html no-cache + /assets/ 长缓存"
             rm -f "${CONF}.bak-cache"
         else
             mv -f "${CONF}.bak-cache" "$CONF"
-            echo "Nginx 缓存: 补丁未通过 nginx -t，已回滚"
+            echo "Nginx 缓存: $(basename "${CONF}") 补丁未通过 nginx -t，已回滚"
         fi
     else
         rm -f "${CONF}.bak-cache"
-        [ "$rc" -eq 2 ] && echo "Nginx 缓存: 未找到插入锚点，跳过"
+        [ "$rc" -eq 2 ] && echo "Nginx 缓存: $(basename "${CONF}") 未找到插入锚点，跳过"
     fi
     return 0
 }
@@ -1378,7 +1395,6 @@ server {
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -1387,7 +1403,6 @@ server {
     # 升级后就会拿旧 index 去找旧 chunk（旧文件若恰好还在则静默跑新旧混杂的前端）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
     location / {
@@ -1424,7 +1439,6 @@ server {
 
     # 带内容哈希的构建产物：可放心长缓存（理由同 HTTPS 段）。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -1432,7 +1446,6 @@ server {
     # SPA 入口：绝不能缓存（理由同 HTTPS 段）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
     location / {

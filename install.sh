@@ -664,7 +664,6 @@ server {
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -673,7 +672,6 @@ server {
     # 升级后就会拿旧 index 去找旧 chunk（若旧文件恰好还在则静默跑新旧混杂的前端）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
     location / {
@@ -725,7 +723,6 @@ server {
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
     location /assets/ {
-        expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
         access_log off;
     }
@@ -733,7 +730,6 @@ server {
     # SPA 入口：绝不能缓存（理由同 HTTPS 段）。
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
-        expires -1;
     }
 
     location / {
