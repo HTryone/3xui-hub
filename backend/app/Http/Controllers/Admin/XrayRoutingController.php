@@ -65,6 +65,13 @@ class XrayRoutingController extends Controller
             'domain_strategies' => self::DOMAIN_STRATEGIES,
             'domain_matchers' => self::DOMAIN_MATCHERS,
             'config_version' => $node->xrayConfigVersion(),
+            // 实际下发到节点的 routing.rules（含渲染层自动注入的护栏，如 socks/http
+            // 出站的 udp→direct）。护栏不入库，规则列表里看不到；这里透出真实
+            // 渲染结果供前端「下发预览」展示，避免「页面没变化 = 没生效」误判。
+            'render_preview' => [
+                'rules' => $this->config->renderRouting($node)['rules'],
+                'generated_at' => now()->toIso8601String(),
+            ],
         ]);
     }
 
