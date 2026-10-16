@@ -429,6 +429,17 @@ class XrayConfigService
         // balancer tag 集合：规则目标命中 balancer 时渲染成 balancerTag（而非 outboundTag）
         $balancerTags = XrayBalancer::enabledFor($node)->pluck('tag')->flip();
 
+        // UDP 兼容护栏：xray 内核的 socks / http 出站未实现 UDP（SOCKS5 UDP ASSOCIATE），
+        // 被路由进这些出站的 UDP 流量会静默黑洞（实测表现：DNS 全部超时，客户端
+        // 「测延迟正常但没网」）。凡自定义规则会把 UDP（network 为空或 =udp）送进
+        // TCP-only 出站时，在该规则前注入一条「同匹配条件 + network:udp → direct」
+        // 的护栏，UDP 回落直连、TCP 仍按原规则走。balancer 目标不注入（成员出站
+        // 是否支持 UDP 未知，不越权改写）。
+        $tcpOnlyOutboundTags = XrayOutbound::enabledFor($node)
+            ->whereIn('protocol', ['socks', 'http'])
+            ->pluck('tag')
+            ->flip();
+
         foreach (XrayRoutingRule::enabledFor($node) as $rule) {
             $frag = ['type' => 'field'];
             if (! empty($rule->domains)) {
@@ -456,6 +467,22 @@ class XrayConfigService
             // 同一规则既可能指向出站，也可能指向 balancer（tag 全局唯一，哪个在册用哪个）
             $key = $balancerTags->has($rule->outbound_tag) ? 'balancerTag' : 'outboundTag';
             $frag[$key] = $rule->outbound_tag;
+
+            // UDP 兼容护栏（见上方注释）：TCP-only 出站且该规则会吃掉 UDP 流量时，
+            // 先出一条同条件的 udp → direct，插在本规则之前，保证 UDP 不黑洞。
+            if ($key === 'outboundTag'
+                && isset($tcpOnlyOutboundTags[$rule->outbound_tag])
+                && ($rule->network === null || $rule->network === 'udp')) {
+                $udpFrag = $frag;
+                $udpFrag['network'] = 'udp';
+                $rules[] = $udpFrag;
+
+                // 原规则限定为 tcp（若原本不限网络），避免 udp 分支重复命中本规则
+                if ($rule->network === null) {
+                    $frag['network'] = 'tcp';
+                }
+            }
+
             $rules[] = $frag;
         }
 
