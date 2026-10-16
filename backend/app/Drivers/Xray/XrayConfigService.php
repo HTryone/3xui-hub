@@ -475,6 +475,7 @@ class XrayConfigService
                 && ($rule->network === null || $rule->network === 'udp')) {
                 $udpFrag = $frag;
                 $udpFrag['network'] = 'udp';
+                $udpFrag['outboundTag'] = 'direct'; // UDP 回落直连，不进 TCP-only 出站
                 $rules[] = $udpFrag;
 
                 // 原规则限定为 tcp（若原本不限网络），避免 udp 分支重复命中本规则
