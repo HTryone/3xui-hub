@@ -268,7 +268,40 @@ class XrayDriver implements PanelDriverInterface
             return ['ok' => false, 'latencyMs' => 0, 'error' => "心跳超时（{$age}s 未上报）"];
         }
 
-        return ['ok' => true, 'latencyMs' => 0];
+        return ['ok' => true, 'latencyMs' => $this->tcpLatencyMs()];
+    }
+
+    /**
+     * 面板 → 节点第一个启用入站端口的 TCP 握手延迟（毫秒；测不到返回 0）。
+     *
+     * xray 节点没有可请求的面板 API，健康检查原本只判心跳新鲜度、latency 恒 0，
+     * 前端只能显示「—」。这里取「连入站端口」的握手耗时 —— 与 3x-ui 节点的
+     * 「面板 API 耗时」同义（都是面板到这个节点的网络往返）。无 host / 无启用
+     * 入站 / 连不上时返回 0（显示「—」），不影响 online 判定（心跳才是主判据）。
+     */
+    protected function tcpLatencyMs(): int
+    {
+        $host = trim((string) $this->node->host);
+        $port = (int) ($this->node->xrayInbounds->where('enabled', true)->sortBy('port')->first()?->port ?? 0);
+        if ($host === '' || $port <= 0) {
+            return 0;
+        }
+
+        return $this->probeTcpLatency($host, $port);
+    }
+
+    /** 独立成方法便于测试覆盖：测 host:port 的 TCP 连接耗时（毫秒），失败返回 0。 */
+    protected function probeTcpLatency(string $host, int $port): int
+    {
+        $start = microtime(true);
+        $sock = @stream_socket_client("tcp://{$host}:{$port}", $errno, $errstr, 2, STREAM_CLIENT_CONNECT);
+        if ($sock === false) {
+            return 0;
+        }
+        $ms = (int) round((microtime(true) - $start) * 1000);
+        fclose($sock);
+
+        return max($ms, 1);
     }
 
     // ── 指令入队（多入站：每协议匹配的启用入站一条指令） ──────────
