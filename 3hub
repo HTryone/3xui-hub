@@ -470,6 +470,74 @@ PY
     return 0
 }
 
+# nginx gzip 自愈（幂等）
+#
+# 为什么需要：系统 nginx.conf 的 gzip_types 常被注释掉（nginx 默认只压 text/html），
+# 表现为「index.html 被压缩、JS/CSS 原样传输」。JS/CSS/JSON 是面板最大的静态资源，
+# 实测 gzip 后可省 60~75% 体积，弱网/跨境链路改善明显。
+# gzip 指令在 http/server/location 上下文均合法，这里放 server 段内 —— 不受系统配置影响。
+# 保护：改前备份、nginx -t 校验失败自动回滚，绝不破坏用户的 SSL / 自定义配置。
+ensure_nginx_gzip() {
+    local main_conf
+    main_conf="$(nginx_conf_path)"
+    _gzip_patch_file "$main_conf"
+    _gzip_patch_file "$(dirname "$main_conf")/3xui-hub-domains.conf"
+    return 0
+}
+
+# 对单个 conf 补 gzip 指令（幂等；文件不存在 / 已含 gzip_types 则跳过）
+_gzip_patch_file() {
+    local CONF="$1"
+    [ -f "$CONF" ] || return 0
+    grep -q 'gzip_types' "$CONF" 2>/dev/null && return 0
+
+    cp -f "$CONF" "${CONF}.bak-gzip"
+    python3 - "$CONF" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    s = f.read()
+
+if 'gzip_types' in s:
+    sys.exit(0)  # 已有，无需处理
+
+block = '''    # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
+    # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
+'''
+
+# 锚点 = 每个业务 server 段的「index index.html index.php;」行（80 跳转段没有该行）；
+# 命中多个（多域名 conf 每个域名一个 443 段）则逐个补齐。
+needle = '    index index.html index.php;\n'
+if needle not in s:
+    sys.exit(2)
+s = s.replace(needle, needle + '\n' + block)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(s)
+PY
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 || true
+            echo "Nginx gzip: $(basename "${CONF}") 已补文本资源压缩（JS/CSS/JSON）"
+            rm -f "${CONF}.bak-gzip"
+        else
+            mv -f "${CONF}.bak-gzip" "$CONF"
+            echo "Nginx gzip: $(basename "${CONF}") 补丁未通过 nginx -t，已回滚"
+        fi
+    else
+        rm -f "${CONF}.bak-gzip"
+        [ "$rc" -eq 2 ] && echo "Nginx gzip: $(basename "${CONF}") 未找到插入锚点，跳过"
+    fi
+    return 0
+}
+
 # 修复 storage / bootstrap/cache 属主（幂等自愈）
 #
 # 为什么更新末尾要单独修一遍：任何以 root 身份跑过 artisan / composer 的动作，都会在这两个
@@ -1054,6 +1122,9 @@ cmd_update_phase2() {
     # 前端缓存规则自愈：老版本 conf 缺 index.html no-cache，升级时幂等补上
     ensure_nginx_cache_rules
 
+    # gzip 自愈：老版本 conf 的 JS/CSS 未压缩（系统 gzip_types 被注释），升级时幂等补上
+    ensure_nginx_gzip
+
     # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的地方。
     # 两段式 exec 后这里已是新代码（旧版「必须子进程绕」的坑已结构性消灭），直接调。
     echo -e "${CYAN}检查 php-fpm 并发...${NC}"
@@ -1127,6 +1198,9 @@ nginx_node_ws_applied() {
 cmd_fix_nginx() {
     # 顺带补前端缓存规则（幂等）：老 conf 缺 index.html no-cache 时在这里一并修好
     ensure_nginx_cache_rules
+
+    # 顺带补 gzip（幂等）：老 conf 的 JS/CSS 未压缩时一并修好
+    ensure_nginx_gzip
 
     echo -e "${CYAN}检查 nginx 节点资产 location...${NC}"
     if nginx_node_ws_applied; then

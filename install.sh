@@ -628,6 +628,14 @@ server {
     root ${INSTALL_DIR}/backend/public;
     index index.html index.php;
 
+    # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
+    # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
+
     ssl_certificate /etc/nginx/ssl/${DOMAIN}.pem;
     ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -690,6 +698,14 @@ server {
     server_name ${DOMAIN};
     root ${INSTALL_DIR}/backend/public;
     index index.html index.php;
+
+    # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
+    # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/xml text/xml application/xml+rss text/javascript image/svg+xml font/ttf font/otf font/woff2;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
 
     location ~ [^/]\\.php(/|$) {
         fastcgi_pass unix:${FPM_SOCK};
