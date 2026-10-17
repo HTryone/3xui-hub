@@ -105,11 +105,19 @@ class TrafficSyncService
             ->first();
 
         if ($last === null) {
+            if ($nowTotal === 0) {
+                return; // 首次同步且为 0：不落空快照
+            }
             $delta = $nowTotal; // 首次同步：记为基准，不回溯全部历史
         } else {
             $lastTotal = (int) $last->upload + (int) $last->download;
             // 3x-ui 侧重置或 client 重建 → now < last，重新计起
             $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
+
+            // 数值没变：快照无需重写（快照仅作下次算差值的基准）
+            if ($delta === 0) {
+                return;
+            }
         }
 
         if ($delta > 0) {
@@ -206,11 +214,22 @@ class TrafficSyncService
 
             $last = $latestSnapshots->get($userId);
             if ($last === null) {
+                // 首次同步且计数为 0：没有可记的流量，等真产生流量再落快照，
+                // 避免给每个闲号插一行空快照（大用户量下等于每轮白插 N 行）。
+                if ($nowTotal === 0) {
+                    continue;
+                }
                 $delta = $nowTotal; // 首次同步
             } else {
                 $lastTotal = (int) $last->upload + (int) $last->download;
                 // 3x-ui 侧重置或 client 重建 → now < last，重新计起
                 $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
+
+                // 累计值没变 → 跳过写快照。快照只是下次算差值的基准，
+                // 数值没变时重写是纯写放大（10 万用户里绝大多数每轮都没流量）。
+                if ($delta === 0) {
+                    continue;
+                }
             }
 
             if ($delta > 0) {
