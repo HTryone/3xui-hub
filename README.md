@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.33.3**
+**版本：1.33.4**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,12 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.33.4 (2026-10-17)
+
+- **修复 v1.33.3 引入的严重回归（务必升级）**：配置指纹把节点 `updated_at` 也算进去了，而 agent 心跳每 5 秒会更新它 —— 结果节点每 30 秒都误判「配置已更新」并重启 xray，所有连接断开。指纹现在只覆盖真正影响渲染的节点设置（路由基础设置），心跳与运行时数据不再触发重推
+- **修复 Shadowsocks 用户的订阅**：此前订阅里完全没有 ss 节点链接，现在输出标准 SIP002 链接（`ss://…@host:port#name`，密码取入站级凭据）
+- **修复 vmess 订阅链接的 sni**：未填 TLS serverName 时 sni 为空，现回退为节点地址（与 vless/trojan 一致）
 
 ### v1.33.3 (2026-10-17)
 
@@ -399,7 +405,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.33.3**
+**Version: 1.33.4**
 
 ## Screenshots
 
@@ -469,7 +475,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.33.3-blue
+[version-shield]: https://img.shields.io/badge/version-1.33.4-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

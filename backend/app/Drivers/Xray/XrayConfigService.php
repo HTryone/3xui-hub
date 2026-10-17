@@ -156,7 +156,11 @@ class XrayConfigService
         )->first();
         $parts[] = 'plans:' . (int) $plans->c . ':' . $plans->s;
 
-        $parts[] = 'node:' . ($node->updated_at?->toIso8601String() ?? '-');
+        // 节点自身设置：只取真正影响渲染的部分（路由基础设置）。
+        // 绝不能含 updated_at / driver_config 全量摘要：agent 心跳（alive）每 5 秒写入
+        // xray_version、agent 运行时数据并 touch updated_at —— 那会让指纹永不相等，
+        // 节点每轮拉取都拿到 200，误判「配置已更新」并重启内核（v1.33.3 回归）。
+        $parts[] = 'nodecfg:' . sha1((string) json_encode($node->xrayRoutingSettings()));
 
         return sha1(implode('|', $parts));
     }
@@ -745,7 +749,9 @@ class XrayConfigService
                 'vless' => $this->vlessUri($node, $inbound, $user, $host),
                 'vmess' => $this->vmessUri($node, $inbound, $user, $host),
                 'trojan' => $this->trojanUri($node, $inbound, $user, $host),
-                default => null, // shadowsocks 单凭据模式不跟用户走
+                // shadowsocks 是入站级单凭据（密码在入站而非用户），链接对同协议用户通用
+                'shadowsocks' => $this->ssUri($node, $inbound, $host),
+                default => null,
             };
             if ($uri !== null) {
                 $uris[] = $uri;
@@ -862,7 +868,7 @@ class XrayConfigService
             'host' => (string) ($ws['host'] ?? ''),
             'path' => (string) ($ws['path'] ?? ''),
             'tls' => $security === 'tls' ? 'tls' : '',
-            'sni' => $security === 'tls' ? (string) ($tls['serverName'] ?? '') : '',
+            'sni' => $security === 'tls' ? (string) ($tls['serverName'] ?? $host) : '',
         ];
 
         return 'vmess://' . base64_encode(
@@ -892,6 +898,22 @@ class XrayConfigService
             $host,
             $inbound->port,
             $query,
+            rawurlencode($this->inboundLabel($node, $inbound))
+        );
+    }
+
+    /** Shadowsocks 链接（SIP002）：密码在入站侧，同协议用户共用同一链接。 */
+    private function ssUri(Node $node, XrayInbound $inbound, string $host): string
+    {
+        $settings = $inbound->settings ?? [];
+        $method = (string) ($settings['method'] ?? 'aes-256-gcm');
+        $password = (string) ($settings['password'] ?? '');
+
+        return sprintf(
+            'ss://%s@%s:%d#%s',
+            base64_encode($method . ':' . $password),
+            $host,
+            $inbound->port,
             rawurlencode($this->inboundLabel($node, $inbound))
         );
     }
