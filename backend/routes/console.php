@@ -72,3 +72,8 @@ Schedule::command('xray:warp-rotate')->everyFiveMinutes()->name('xray-warp-rotat
 // 调度条件：存在启用订阅才跑；内容变化则 bump 节点 config_version → 节点秒级拉新。
 Schedule::command('xray:refresh-outbound-subs')->everyFiveMinutes()->name('xray-refresh-outbound-subs')->withoutOverlapping()
     ->when(fn () => \App\Models\XrayOutboundSubscription::query()->where('enabled', true)->exists());
+
+// Geo 数据更新（issue #40）：每周一凌晨从上游白名单检查 geoip.dat / geosite.dat，
+// 有更新则下载并分发到所有 enabled xray 节点（节点侧 sha 相同则跳过，不打扰存量）。
+// 放在 04:45：错开 04:30 的 monitor:rollup；周一低频，geo 数据本身也不是每日变更。
+Schedule::command('geodata:update', ['--dispatch' => true])->weeklyOn(1, '04:45')->name('geodata-update')->withoutOverlapping();

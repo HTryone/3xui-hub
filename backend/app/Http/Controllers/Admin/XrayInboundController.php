@@ -204,9 +204,15 @@ class XrayInboundController extends Controller
             'listen' => ['nullable', 'string', 'max:64'],
             'network' => ['nullable', 'in:tcp,ws,grpc,xhttp,httpupgrade'],
             'security' => ['nullable', 'in:none,tls,reality'],
+            // 嗅探（issue #39）：不提交时行为不变；提交时结构受控
+            'sniffing' => ['nullable', 'array'],
+            'sniffing.enabled' => ['nullable', 'boolean'],
+            'sniffing.destOverride' => ['nullable', 'array', 'max:4'],
+            'sniffing.destOverride.*' => ['string', 'in:http,tls,quic,fakedns'],
+            'sniffing.routeOnly' => ['nullable', 'boolean'],
             // reality 参数
             'dest' => ['nullable', 'string', 'max:255'],
-            'server_names' => ['nullable', 'array', 'max:8'],
+            'server_names' => ['nullable', 'array', 'max:64'],
             'server_names.*' => ['string', 'max:255'],
             'short_ids' => ['nullable', 'array', 'max:8'],
             'short_ids.*' => ['string', 'max:16', 'regex:/^[0-9a-fA-F]+$/'],
@@ -428,7 +434,7 @@ class XrayInboundController extends Controller
         $inbound->listen = (string) ($data['listen'] ?? '') !== '' ? (string) $data['listen'] : '0.0.0.0';
         $inbound->settings = $settings;
         $inbound->stream_settings = $stream;
-        $inbound->sniffing = ['enabled' => true, 'destOverride' => ['http', 'tls', 'quic']];
+        $inbound->sniffing = $this->sniffingSettings($data);
         if (array_key_exists('enabled', $data)) {
             $inbound->enabled = (bool) $data['enabled'];
         }
@@ -449,6 +455,47 @@ class XrayInboundController extends Controller
     }
 
     /**
+     * 嗅探配置（issue #39）：未提交 sniffing 时保持现状默认（存量行为不变）；
+     * 默认值不落库（routeOnly=false 省略），与仓库既有「reality 高级字段显式提交才落库」风格一致。
+     */
+    private function sniffingSettings(array $data): array
+    {
+        $s = $data['sniffing'] ?? null;
+        if (! is_array($s)) {
+            return ['enabled' => true, 'destOverride' => ['http', 'tls', 'quic']];
+        }
+
+        $config = [
+            'enabled' => (bool) ($s['enabled'] ?? true),
+            'destOverride' => array_values(array_filter((array) ($s['destOverride'] ?? ['http', 'tls', 'quic']), 'is_string')),
+        ];
+        if (! empty($s['routeOnly'])) {
+            $config['routeOnly'] = true;
+        }
+
+        return $config;
+    }
+
+    /**
+     * REALITY serverNames 可用性过滤（对齐上游 3x-ui filterUsableSANs 口径）：
+     * serverNames 是「客户端 SNI 精确匹配白名单」，通配符（*.example.com）与空串不能当
+     * SNI 用，直接剔除；过滤后为空则回退默认 SNI。
+     */
+    private function usableServerNames(array $values): array
+    {
+        $out = [];
+        foreach ($values as $v) {
+            $v = trim((string) $v);
+            if ($v === '' || str_contains($v, '*')) {
+                continue;
+            }
+            $out[] = $v;
+        }
+
+        return array_values(array_unique($out)) ?: [XrayConfigService::DEFAULT_SNI];
+    }
+
+    /**
      * 组装 realitySettings：核心四字段 + 3x-ui 高级字段。
      *
      * 高级字段仅在管理员**显式提交**时写入（默认值不落库），老入站 round-trip 不变；
@@ -459,7 +506,7 @@ class XrayInboundController extends Controller
     {
         $settings = [
             'dest' => (string) ($data['dest'] ?? '') !== '' ? (string) $data['dest'] : XrayConfigService::DEFAULT_DEST,
-            'serverNames' => $this->stringList($data['server_names'] ?? [], XrayConfigService::DEFAULT_SNI),
+            'serverNames' => $this->usableServerNames($this->stringList($data['server_names'] ?? [], null)),
             'shortIds' => $this->stringList($data['short_ids'] ?? [], null) ?: [RealityKeyService::shortId()],
             'publicKey' => $publicKey,
         ];
@@ -716,6 +763,8 @@ class XrayInboundController extends Controller
             'listen' => $inbound->listen,
             'network' => $stream['network'] ?? 'tcp',
             'security' => $stream['security'] ?? 'none',
+            // 嗅探配置回填（issue #39；存量入站未设过则返回现状默认，编辑表单可直接改）
+            'sniffing' => $inbound->sniffing ?: ['enabled' => true, 'destOverride' => ['http', 'tls', 'quic']],
             'dest' => $reality['dest'] ?? null,
             'server_names' => array_values((array) ($reality['serverNames'] ?? [])),
             'short_ids' => array_values((array) ($reality['shortIds'] ?? [])),

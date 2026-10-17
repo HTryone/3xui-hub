@@ -87,10 +87,12 @@ class XrayRoutingController extends Controller
         $rule->save();
 
         $node->bumpXrayConfigVersion();
+        $fresh = $rule->fresh();
 
         return $this->success([
-            'rule' => $this->present($rule->fresh()),
+            'rule' => $this->present($fresh),
             'config_version' => $node->xrayConfigVersion(),
+            'warning' => $this->udpGuardWarning($node, $fresh),
         ]);
     }
 
@@ -105,10 +107,12 @@ class XrayRoutingController extends Controller
         $rule->save();
 
         $node->bumpXrayConfigVersion();
+        $fresh = $rule->fresh();
 
         return $this->success([
-            'rule' => $this->present($rule->fresh()),
+            'rule' => $this->present($fresh),
             'config_version' => $node->xrayConfigVersion(),
+            'warning' => $this->udpGuardWarning($node, $fresh),
         ]);
     }
 
@@ -301,6 +305,29 @@ class XrayRoutingController extends Controller
         }
     }
 
+    /**
+     * 规则保存后的 UDP 兼容性提示（issue #37）：目标为 socks/http 出站且会命中 UDP
+     * （network 空或 =udp）时，渲染层会自动注入 udp→direct 护栏 —— 在保存时明示，
+     * 不让「UDP 不走该出站」成为静默行为。不阻止保存（护栏已兜底）。
+     */
+    private function udpGuardWarning(Node $node, XrayRoutingRule $rule): ?string
+    {
+        if (! $rule->enabled) {
+            return null;
+        }
+        if ($rule->network !== null && $rule->network !== '' && $rule->network !== 'udp') {
+            return null;
+        }
+        $tcpOnly = XrayOutbound::enabledFor($node)
+            ->whereIn('protocol', ['socks', 'http'])
+            ->pluck('tag');
+        if (! $tcpOnly->contains($rule->outbound_tag)) {
+            return null;
+        }
+
+        return "「{$rule->outbound_tag}」是 socks/http 出站（xray 不支持 UDP）：该规则命中的 UDP 流量将自动回落直连，不会走此出站。";
+    }
+
     /** 可选目标出站：内置 + 自定义 + warp + 订阅。 */
     private function outboundTags(Node $node): array
     {
@@ -319,6 +346,8 @@ class XrayRoutingController extends Controller
                 'tag' => $outbound->tag,
                 // warp 出站固定显示 WARP（remark 可能为空的 wireguard 会认不出）
                 'label' => $outbound->tag === 'warp' ? 'WARP' : ($outbound->remark ?: $outbound->protocol),
+                // 出站协议：规则列表据此标注 socks/http（TCP-only）与 UDP 护栏命中（issue #37）
+                'protocol' => $outbound->protocol,
                 // 中转出站标记：列表/下拉要显示「节点名」而非裸 tag（rl-* 看不出是谁的服务器）
                 'relay' => $outbound->relay_target_node_id !== null,
             ];

@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\BackupController as AdminBackupController;
 use App\Http\Controllers\Admin\DiscountCodeController as AdminDiscountCodeController;
 use App\Http\Controllers\Admin\DomainController as AdminDomainController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
+use App\Http\Controllers\Admin\GeodataController as AdminGeodataController;
 use App\Http\Controllers\Admin\HomeController as AdminHomeController;
 use App\Http\Controllers\Admin\NodeController as AdminNodeController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
@@ -39,6 +40,8 @@ Route::get('/node-agent.sh', [\App\Http\Controllers\Api\NodeAssetController::cla
 Route::get('/node-bin/manifest.json', [\App\Http\Controllers\Api\NodeAssetController::class, 'manifest']);
 // agent 二进制路由必须排在 {version}/{arch}.zip 之前（虽然 {arch}.zip 后缀模式不会吞它，双保险）
 Route::get('/node-bin/agent/{arch}', [\App\Http\Controllers\Api\NodeAssetController::class, 'agentBinary']);
+Route::get('/node-bin/geo/{file}', [\App\Http\Controllers\Api\NodeAssetController::class, 'geo'])
+    ->where('file', '[a-zA-Z0-9._-]+\.dat');
 Route::get('/node-bin/{version}/{arch}.zip', [\App\Http\Controllers\Api\NodeAssetController::class, 'binary']);
 
 /*
@@ -219,6 +222,11 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
 
     // 系统状态（操作日志 + 定时任务 + worker）
     Route::get('/system/status', [AdminSystemStatusController::class, 'status']);
+
+    // Geo 数据（geoip.dat / geosite.dat 更新与分发，issue #40）
+    Route::get('/geodata', [AdminGeodataController::class, 'index']);
+    Route::post('/geodata/update', [AdminGeodataController::class, 'update']);
+    Route::post('/geodata/dispatch', [AdminGeodataController::class, 'dispatch']);
 
     // 教程管理
     Route::get('/tutorials', [AdminTutorialController::class, 'index']);

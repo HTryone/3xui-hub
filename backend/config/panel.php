@@ -58,6 +58,9 @@ return [
      */
     'agent_manifest_path' => (string) env('PANEL_AGENT_MANIFEST_PATH', ''),
 
+    /* geo 数据（geoip.dat / geosite.dat）存储目录；留空默认 storage/app/xray/geo（测试注入用）。 */
+    'geodata_dir' => (string) env('PANEL_GEODATA_DIR', ''),
+
     /*
      | php-fpm 并发（pm.max_children）调优参数。
      |

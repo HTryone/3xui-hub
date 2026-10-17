@@ -99,11 +99,17 @@ class UserController extends Controller
             'enabled' => isset($data['enabled']) ? (bool) $data['enabled'] : $user->enabled,
         ])->save();
 
-        // 切换套餐时：重新计算流量/到期 + 同步 3x-ui client
+        // 切换套餐时：重新计算流量/到期（同步，列表立即生效），节点侧 client 同步走后台
+        // （与 create 路径一致：3x-ui 面板调用是「节点数 × 入站数」串行 HTTPS，
+        // 不能在请求里死等，issue #33）；派发失败与同步失败同语义：只记日志，DB 已更新。
         if ($newPlanId !== $oldPlanId) {
             $user->load('plan');
             $this->service->applyPlan($user);
-            $this->service->provisionClient($user);
+            try {
+                $this->service->dispatchProvisionClient($user);
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
         // 手动改 enabled 时：同步到 3x-ui 节点

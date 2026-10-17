@@ -135,6 +135,29 @@ class NodeAssetController extends Controller
         return $this->serveScript('node-agent.sh');
     }
 
+    /**
+     * Geo 数据文件（geoip.dat / geosite.dat，issue #40；白名单文件名）。
+     *
+     * 公开端点与其余 node-bin 一致（agent 用 hub_url 拼相对路径拉取，无 session）。
+     * 面板侧下发前复验（文件存在 + 头部大小下限），损坏/未下载不给发。
+     */
+    public function geo(string $file): BinaryFileResponse|JsonResponse
+    {
+        if (! array_key_exists($file, \App\Services\GeodataService::FILES)) {
+            return response()->json(['code' => 404, 'msg' => "unknown geo file: {$file}"], 404);
+        }
+
+        $path = app(\App\Services\GeodataService::class)->filePath($file);
+        if (! is_file($path)) {
+            return response()->json(['code' => 404, 'msg' => 'geo file not downloaded yet'], 404);
+        }
+
+        return response()->download($path, $file, [
+            'Content-Type' => 'application/octet-stream',
+            'X-SHA256' => (string) hash_file('sha256', $path),
+        ]);
+    }
+
     private function serveScript(string $name)
     {
         $path = storage_path('app/' . self::ASSET_ROOT . '/' . $name);

@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.32.0**
+**版本：1.33.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,16 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.33.0 (2026-10-17)
+
+- **Geo 数据（geoip.dat / geosite.dat）自动更新与分发**：面板每周一自动从上游检查更新并分发到所有节点，节点侧 sha256 校验、有变化才重载内核；新增「Geo 数据」管理页（文件状态 / 各节点同步状态 / 检查更新 / 手动分发），agent 升级至 1.0.5
+- **入站嗅探（sniffing）配置开放**：启用 / 协议（HTTP/TLS/QUIC/FakeDNS）/ 仅路由（routeOnly）可在入站表单配置，默认值与现状一致（不配置无感知）
+- **socks/http 出站 UDP 兼容护栏**：规则把 UDP（如 DNS）送进不支持 UDP 的 socks/http 出站时，自动回落直连 —— 修复客户端「延迟正常但打不开网页」的黑洞问题；规则列表加「UDP→直连」标注、路由页加「实际下发规则预览」、保存时主动提示
+- **Reality 目标扫描修复**：扫描填入改为「所选目标证书的 serverNames 全集」（单选），杜绝跨证书混填导致 REALITY 握手失败；serverNames 上限 8 → 64 并过滤通配符
+- **用户管理「保存」立即返回**：换套餐的节点同步改后台异步执行，保存按钮带 loading 防重复提交（此前节点多 / 掉线时要等十几秒）
+- **弱网优化**：管理接口超时 15s → 30s，幂等 GET 请求网络抖动自动重试一次
+- **Nginx 文本资源 gzip**：JS/CSS/JSON 开启压缩传输（弱网下体积约省 60~75%），新装与升级自动生效
 
 ### v1.32.0 (2026-10-14)
 
@@ -375,7 +385,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.32.0**
+**Version: 1.33.0**
 
 ## Screenshots
 
@@ -445,7 +455,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.32.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.33.0-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

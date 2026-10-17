@@ -38,6 +38,13 @@ class NodeApiCommand extends Model
      */
     public const ACTION_REALITY_SCAN = 'reality_scan';
 
+    /**
+     * geo 数据分发（geoip.dat / geosite.dat，issue #40）：
+     * payload = {"files":[{"name","size","sha256","url"}...]}，agent 从面板下载 →
+     * sha256 校验 → 原子替换 NODE_DIR 下的 .dat → 有文件变化才 reload xray。
+     */
+    public const ACTION_GEODATA_SYNC = 'geodata_sync';
+
     public const STATUS_PENDING = 'pending';
 
     public const STATUS_ACKNOWLEDGED = 'acknowledged';
