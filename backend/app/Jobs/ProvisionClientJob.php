@@ -44,7 +44,13 @@ class ProvisionClientJob implements ShouldQueue, ShouldBeUnique
     public function __construct(
         public int $userId,
         public int $nodeId,
-    ) {}
+    ) {
+        // 队列归属：建号（ProvisionClientJob）与「把用户同步到节点」（NodeInitUserJob）是同一类
+        // 节点运维动作，共用 panel.node_ops_queue（默认 default，运营侧显式开启才分离）。
+        // 不指定队列就落 default，注册高峰一波几百个建号 Job 会跟 HealthCheckJob / BanCheckJob
+        // 抢同一批 worker；健康检查排不上 → 节点 status 变旧 → 用户订阅直接不可用。
+        $this->onQueue(config('panel.node_ops_queue') ?: 'default');
+    }
 
     /** 唯一锁粒度：用户 × 节点。 */
     public function uniqueId(): string
