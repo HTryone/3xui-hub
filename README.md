@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.33.2**
+**版本：1.33.3**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,12 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.33.3 (2026-10-17)
+
+- **大用户量性能优化**：节点拉配置不再每次全量渲染——先查「配置指纹」（用户/套餐/入站等数据源的内容摘要，10 万用户约 110ms），数据没变直接 304；渲染改为只取必要列，**10 万用户全量渲染从 7.3 秒 / 538MB 降到 2.2 秒 / 184MB**（万级用户量下面板压力显著下降）
+- **中转凭据的新建/删除补 config 版本号**：此前两侧节点可能漏推新配置（同秒多次写入时尤甚）
+- 配套：users 表加 updated_at 索引
 
 ### v1.33.2 (2026-10-17)
 
@@ -393,7 +399,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.33.2**
+**Version: 1.33.3**
 
 ## Screenshots
 
@@ -463,7 +469,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.33.2-blue
+[version-shield]: https://img.shields.io/badge/version-1.33.3-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证

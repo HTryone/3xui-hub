@@ -204,6 +204,10 @@ class XrayRelayService
                     ->where('inbound_id', $targetInboundId)
                     ->where('source_node_id', $sourceNodeId)
                     ->delete();
+
+                // 凭据删除同样影响两侧渲染，显式 bump
+                $target->bumpXrayConfigVersion();
+                Node::find($sourceNodeId)?->bumpXrayConfigVersion();
             }
 
             return;
@@ -292,6 +296,11 @@ class XrayRelayService
             'source_node_id' => $source->id,
             'source_inbound_id' => 0,
         ]);
+
+        // 凭据同时影响两侧渲染：目标节点入站（client 列表）+ 源节点出站（中转出站）。
+        // 必须显式 bump（此前漏掉，只能靠 updated_at 兜底，同秒写入会漏检）。
+        $target->bumpXrayConfigVersion();
+        $source->bumpXrayConfigVersion();
 
         return $clientId;
     }

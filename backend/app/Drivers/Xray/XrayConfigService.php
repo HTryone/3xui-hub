@@ -10,7 +10,9 @@ use App\Models\XrayOutbound;
 use App\Models\XrayOutboundSubscription;
 use App\Models\XrayRelayClient;
 use App\Models\XrayRoutingRule;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * xray 节点全量配置生成（双通道的「全量通道」事实源）。
@@ -59,7 +61,9 @@ class XrayConfigService
      */
     public function render(Node $node): array
     {
-        $users = $this->eligibleUsers();
+        // 轻量用户行（原生查询，stdClass 数组）：10 万用户从「全模型 538MB」
+        // 降到「必要列 ~20MB」。字段由 clientsFor 的兼容访问器读取。
+        $users = $this->eligibleUserRows();
 
         $inbounds = [];
         foreach (XrayInbound::enabledFor($node) as $inbound) {
@@ -96,6 +100,74 @@ class XrayConfigService
         return '"' . sha1($this->renderJson($node)) . '"';
     }
 
+    /**
+     * 配置指纹（轻量，不渲染）——agent 拉取前的 304 快速判定。
+     *
+     * 现网按「渲染结果 sha1」判 304，等于每次请求都要全量渲染（10 万用户
+     * 7.3s / 538MB）。指纹只查各渲染数据源的 MAX(updated_at)+COUNT(*)，
+     * 几毫秒内判断「数据有没有可能变」：相同 → 渲染结果必然相同 → 直接 304。
+     *
+     * 覆盖 render() 的全部数据源（新增渲染数据源必须同步维护，漏了会
+     * 「改了配置不生效」）：
+     *   - inbounds / outbounds / outbound_subscriptions / balancers / routing_rules（按节点）
+     *   - relay_clients（源节点 + 目标节点两侧）
+     *   - users / plans（全局，所有节点共享）
+     *   - 节点自身（driver_config 里的路由设置等；config_version 兜结构变更）
+     *
+     * 流量对账走 increment（不 touch updated_at，渲染内容也不含用量）→ 不触发重渲染。
+     */
+    public function fingerprint(Node $node): string
+    {
+        $parts = [(string) $node->xrayConfigVersion()];
+
+        foreach ([
+            ['xray_inbounds', 'node_id'],
+            ['xray_outbounds', 'node_id'],
+            ['xray_outbound_subscriptions', 'node_id'],
+            ['xray_balancers', 'node_id'],
+            ['xray_routing_rules', 'node_id'],
+        ] as [$table, $col]) {
+            $parts[] = $this->stamp($table, $col, $node->id);
+        }
+
+        // 中转凭据：本节点作为源或目标时都会影响渲染
+        $relay = DB::table('xray_relay_clients')
+            ->where('node_id', $node->id)
+            ->orWhere('source_node_id', $node->id)
+            ->selectRaw('MAX(updated_at) AS m, COUNT(*) AS c')
+            ->first();
+        $parts[] = 'relay:' . ($relay->m ?? '-') . ':' . (int) ($relay->c ?? 0);
+
+        // users / plans：用「内容摘要」而非 MAX(updated_at) —— updated_at 是秒精度，
+        // 同一秒内的多次写入（如批量禁用）不会改变 MAX，会漏检「改了配置不生效」。
+        // 只拼影响渲染的字段：10 万行全扫约几十 ms，远低于渲染成本（7.3s）。
+        $users = DB::table('users')->selectRaw(
+            "COUNT(*) AS c, COALESCE(SUM(CRC32(CONCAT_WS('|', id, uuid, protocol, enabled,
+                COALESCE(plan_id, '-'), COALESCE(traffic_limit, '-'),
+                COALESCE(DATE_FORMAT(expired_at, '%Y-%m-%d %H:%i:%s'), '-'),
+                COALESCE(traffic_disabled_at, '-')))), 0) AS s"
+        )->first();
+        $parts[] = 'users:' . (int) $users->c . ':' . $users->s;
+
+        $plans = DB::table('plans')->selectRaw(
+            "COUNT(*) AS c, COALESCE(SUM(CRC32(CONCAT_WS('|', id, type,
+                COALESCE(months, '-'), COALESCE(monthly_traffic, '-'),
+                COALESCE(period_traffic, '-'), COALESCE(total_traffic, '-')))), 0) AS s"
+        )->first();
+        $parts[] = 'plans:' . (int) $plans->c . ':' . $plans->s;
+
+        $parts[] = 'node:' . ($node->updated_at?->toIso8601String() ?? '-');
+
+        return sha1(implode('|', $parts));
+    }
+
+    private function stamp(string $table, string $col, int $id): string
+    {
+        $row = DB::table($table)->where($col, $id)->selectRaw('MAX(updated_at) AS m, COUNT(*) AS c')->first();
+
+        return $table . ':' . ($row->m ?? '-') . ':' . (int) ($row->c ?? 0);
+    }
+
     /** 策略段：用户级统计（levels.0）+ 入/出站级统计（system，出站流量数据源）。 */
     public function policyConfig(): array
     {
@@ -123,7 +195,7 @@ class XrayConfigService
      * @param  Collection  $users  全量候选用户（按协议自动过滤注入 clients）
      * @param  bool  $withStreamSettings  adu 指令载荷不需要 streamSettings（入站已存在）
      */
-    public function renderInbound(XrayInbound $inbound, Collection $users, bool $withStreamSettings = true): array
+    public function renderInbound(XrayInbound $inbound, iterable $users, bool $withStreamSettings = true): array
     {
         $settings = $inbound->settings ?? [];
 
@@ -236,7 +308,7 @@ class XrayConfigService
      *
      * @return array<int, array>|null
      */
-    public function clientsFor(XrayInbound $inbound, Collection $users): ?array
+    public function clientsFor(XrayInbound $inbound, iterable $users): ?array
     {
         if ($inbound->protocol === 'shadowsocks') {
             return null;
@@ -261,13 +333,13 @@ class XrayConfigService
         return $clients;
     }
 
-    private function vlessClient(XrayInbound $inbound, User $user): array
+    private function vlessClient(XrayInbound $inbound, $user): array
     {
         $client = [
             'id' => (string) $user->uuid,
-            'email' => $user->clientEmail(),
+            'email' => $this->clientEmailOf($user),
             'totalGB' => (int) ($user->traffic_limit ?? 0),
-            'expiryTime' => $user->expired_at ? $user->expired_at->toIso8601ZuluString() : 0,
+            'expiryTime' => $this->expiryZulu($user),
         ];
         if ($this->flowApplies($inbound)) {
             $client['flow'] = self::FLOW;
@@ -276,24 +348,24 @@ class XrayConfigService
         return $client;
     }
 
-    private function vmessClient(User $user): array
+    private function vmessClient($user): array
     {
         return [
             'id' => (string) $user->uuid,
-            'email' => $user->clientEmail(),
+            'email' => $this->clientEmailOf($user),
             'totalGB' => (int) ($user->traffic_limit ?? 0),
-            'expiryTime' => $user->expired_at ? $user->expired_at->toIso8601ZuluString() : 0,
+            'expiryTime' => $this->expiryZulu($user),
         ];
     }
 
-    private function trojanClient(User $user): array
+    private function trojanClient($user): array
     {
         // trojan 以密码定位用户：统一用 uuid 作密码（面板侧保证唯一）
         return [
             'password' => (string) $user->uuid,
-            'email' => $user->clientEmail(),
+            'email' => $this->clientEmailOf($user),
             'totalGB' => (int) ($user->traffic_limit ?? 0),
-            'expiryTime' => $user->expired_at ? $user->expired_at->toIso8601ZuluString() : 0,
+            'expiryTime' => $this->expiryZulu($user),
         ];
     }
 
@@ -612,6 +684,42 @@ class XrayConfigService
             ->where('enabled', true)
             ->whereNull('traffic_disabled_at')
             ->get();
+    }
+
+    /**
+     * 渲染用的轻量用户行（stdClass）：只取 config 实际用到的列。
+     *
+     * 与 eligibleUsers() 的口径完全一致，区别只在「不构建模型对象」——
+     * 10 万用户时全模型约 538MB / 7.3s，轻量行约 20MB。
+     * 注意：where 条件必须与 eligibleUsers() 同步维护（present 用模型版）。
+     */
+    public function eligibleUserRows(): Collection
+    {
+        return DB::table('users')
+            ->select('id', 'uuid', 'email', 'protocol', 'traffic_limit', 'expired_at')
+            ->whereNotNull('plan_id')
+            ->where('enabled', true)
+            ->whereNull('traffic_disabled_at')
+            ->get();
+    }
+
+    /** 兼容 User 模型与 stdClass 行：客户端 email 标识。 */
+    private function clientEmailOf($user): string
+    {
+        return $user instanceof User ? $user->clientEmail() : 'ch_user_' . $user->id;
+    }
+
+    /** 兼容 User 模型（Carbon cast）与 stdClass 行（字符串）：expiryTime 的 ISO Zulu 格式。 */
+    private function expiryZulu($user): int|string
+    {
+        $exp = $user->expired_at ?? null;
+        if ($exp === null || $exp === '') {
+            return 0;
+        }
+
+        return $exp instanceof \DateTimeInterface
+            ? $exp->toIso8601ZuluString()
+            : Carbon::parse($exp)->toIso8601ZuluString();
     }
 
     // ── 订阅链接 ─────────────────────────────────────────
