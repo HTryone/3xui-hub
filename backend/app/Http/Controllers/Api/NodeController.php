@@ -24,14 +24,20 @@ class NodeController extends Controller
 
         $nodes = Node::where('enabled', true)
             ->where('status', 'online')
+            ->with('xrayInbounds')
             ->where(function ($q) use ($user) {
                 $q->whereHas('inbounds', function ($qq) use ($user) {
                     $qq->where('protocol', $user->protocol);
                 });
-                // xray 节点不落 3x-ui 入站记录：vless 用户按驱动类型纳入
-                if ($user->protocol === 'vless') {
-                    $q->orWhere('driver_type', 'xray');
-                }
+                // xray 节点不落 3x-ui 入站记录：按本地面板 xray_inbounds（协议 + 启用）判断，
+                // 与 3x-ui 分支同语义。之前写死「vless 用户可见」——trojan 用户看不到
+                // 有 trojan 入站的 xray 节点，vless 用户却能看到没有任何入站的 xray 节点。
+                $q->orWhere(function ($q2) use ($user) {
+                    $q2->where('driver_type', 'xray')
+                        ->whereHas('xrayInbounds', function ($q3) use ($user) {
+                            $q3->where('protocol', $user->protocol)->where('enabled', true);
+                        });
+                });
             })
             ->get();
 
@@ -43,13 +49,17 @@ class NodeController extends Controller
         // site_configs.show_node_multiplier：默认关（没有这行 = 关）
         $showMultiplier = in_array(SiteConfig::getValue('show_node_multiplier', ''), ['1', 'true', 'on'], true);
 
-        $items = $nodes->map(function (Node $n) use ($showMultiplier) {
+        $items = $nodes->map(function (Node $n) use ($showMultiplier, $user) {
             $item = [
                 'id' => $n->id,
                 'name' => $n->name,
                 'host' => $n->host,
                 'port' => $n->isXray()
-                    ? (int) ($n->driver_config['reality']['listen_port'] ?? 443)
+                    // xray 节点没有单一端口：取该用户协议下第一个启用入站的端口；
+                    // 只有老数据（Reality 迁移前）才回退 driver_config.reality.listen_port
+                    ? (int) ($n->xrayInbounds->first(fn ($in) => $in->enabled && $in->protocol === $user->protocol)?->port
+                        ?? $n->driver_config['reality']['listen_port']
+                        ?? 443)
                     : $n->port,
                 'latency' => $n->latency,
                 'status' => $n->status,

@@ -567,7 +567,7 @@ class NodeController extends Controller
             'region' => NodeRegion::code($n->name),
             'metrics' => $this->presentMetrics($n),
             'driver_type' => $n->driver_type ?? '3x-ui',
-            'inbounds' => $n->inbounds->groupBy('protocol')->map(fn ($items) => $items->pluck('inbound_id')->values())->all(),
+            'inbounds' => $this->presentInbounds($n),
             // null = 该节点继承原始倍率；前端要靠这个区分「继承」和「手动设成 1.0」
             'traffic_multiplier' => $n->traffic_multiplier,
             'original_multiplier' => $this->originalMultiplier(),
@@ -607,5 +607,25 @@ class NodeController extends Controller
         }
 
         return $data;
+    }
+
+    /**
+     * 入站摘要（仪表盘「节点」统计、列表页协议列、详情页「已配置/未建入站」共用）。
+     *
+     * 3x-ui 节点的入站是 node_inbounds 关系（inbound_id 来自对面面板）；
+     * xray 节点的入站在本地面板 xray_inbounds 表（id 是本地的）。两边统一成
+     * {协议: [id...]} 同一形状，前端与统计不按驱动分支；只算启用中的入站。
+     */
+    private function presentInbounds(Node $n): array
+    {
+        if ($n->isXray()) {
+            return $n->xrayInbounds
+                ->where('enabled', true)
+                ->groupBy('protocol')
+                ->map(fn ($items) => $items->pluck('id')->values()->all())
+                ->all();
+        }
+
+        return $n->inbounds->groupBy('protocol')->map(fn ($items) => $items->pluck('inbound_id')->values())->all();
     }
 }

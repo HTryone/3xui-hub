@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.33.0**
+**版本：1.33.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -169,6 +169,10 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.33.1 (2026-10-17)
+
+- **修复 xray 节点入站信息在各处不被识别**：节点列表把「已建入站」误显示为「未建入站」（判据错用了 Reality 注册状态）；仪表盘「节点」统计不包含 xray 节点的入站；用户端节点列表只对 vless 用户显示 xray 节点、端口固定读 Reality 端口（非 Reality 入站会显示假 443）
 
 ### v1.33.0 (2026-10-17)
 
@@ -385,7 +389,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.33.0**
+**Version: 1.33.1**
 
 ## Screenshots
 
@@ -455,7 +459,7 @@ docker-compose up -d --build # Update and restart
 MIT License
 
 <!-- LINKS -->
-[version-shield]: https://img.shields.io/badge/version-1.33.0-blue
+[version-shield]: https://img.shields.io/badge/version-1.33.1-blue
 [version-url]: #
 [license-shield]: https://img.shields.io/badge/license-MIT-green
 [license-url]: #许可证
