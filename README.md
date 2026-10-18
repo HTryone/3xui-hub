@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.33.5**
+**版本：1.34.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -59,9 +59,10 @@ docker-compose up -d --build # 更新并重启
 ### 管理员端
 
 - 仪表盘：用户/收入统计、节点状态与实时指标
+- 用户 × 机器流量：近 24 小时 / 7 天 / 30 天排行——用户榜按套餐扣费口径（已乘倍率），机器榜网卡口径并列出「其中用户代理」与倍率做对照；点用户可展开它在各机器上的分布，支持 CSV 导出
 - 用户管理：增删改查、分配套餐、续费、重置流量、重置密码、切换协议
 - 节点管理：3x-ui 面板节点 + xray 裸内核节点（agent 自动部署、自升级、实时指标）
-- xray 节点配置：入站（VLESS / VMess / Trojan / Shadowsocks，TCP / WebSocket / gRPC，Reality / TLS）、出站、路由规则、WARP 出口
+- xray 节点配置：入站（VLESS / VMess / Trojan / Shadowsocks，TCP / WebSocket / gRPC，Reality / TLS，可填中文备注）、出站、路由规则、WARP 出口
 - Reality 目标检测：在节点上跑真实 TLS 握手测速，挑出可用且最快的伪装目标，支持多选填 serverNames
 - 套餐管理：周期/总量套餐、价格设置、节点流量倍率、第三方订阅捆绑
 - 订单与支付：多渠道支付网关、订单查询、支付回调
@@ -109,6 +110,10 @@ docker-compose up -d --build # 更新并重启
 3hub backup        # 数据库备份（导出到 /var/backups/3xui-hub，保留 7 份，每天 03:30 自动备份）
 3hub log           # 查看错误日志
 3hub restart       # 重启服务
+3hub ssl           # 配置域名和 SSL 证书
+3hub domain add    # 多域名管理（add / renew / remove / status）
+3hub fix-nginx     # 补全 nginx 节点资产 location（老版本升级后用）
+3hub uninstall     # 卸载面板（--panel / --app / --all，不带参数进交互菜单）
 ```
 
 ## 技术栈
@@ -169,6 +174,19 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.34.0 (2026-10-18)
+
+- **用户 × 机器流量统计**：新增「用户 × 节点」两级流量表（按小时保留 7 天、按天永久），挂在现有流量同步事务里累加，不新增任何对节点的请求；仪表盘新增表格化排行（打码邮箱 + 用户 ID / 套餐用量 / 占比 / 原始上下行 / 套餐徽章），点用户展开它在各机器上的分布（带倍率与百分比）；机器卡按网卡口径与「其中用户代理」两列并列对照，两榜都支持 CSV 导出。数据从升级当天开始累积（24 小时窗口当天可用，7 天 / 30 天需等满）
+- **xray 入站备注**：入站新增 `remark` 字段，可写中文名（此前只能写 ASCII 的 tag，填中文直接 422）；订阅节点名优先用备注、留空仍用 tag，老数据订阅内容逐字节不变
+- **节点级批量操作并发化**：重置流量 / 开通改套餐 / 用户启停 / 流量同步改为按节点并发（仅 3x-ui + API Key 节点；cookie 模式与 xray 节点保持串行），节点多时单次操作不再逐个等
+- **健康检查失败补测**：首轮探测失败的节点在同一轮内再探一次才判离线，避免网络抖动让节点从订阅里短暂消失（`PANEL_HEALTHCHECK_RETRY`，默认 1 次）
+- **REALITY 多 SNI 按用户分散**：一个入站配了多个 serverNames 时，订阅链接按用户稳定抽取其中一个（同一用户始终不变），不再所有用户都挤在第一个
+- **`3hub uninstall`**：新增卸载入口，转发到 `uninstall.sh`（`--panel` / `--app` / `--all`，不带参数进交互菜单）
+
+### v1.33.6 (2026-10-18)
+
+- **注册高峰不再抢占定时任务**：`ProvisionClientJob` 与节点类任务同队列（`node-ops`），此前它固定在 default 队列，一波注册会把健康检查、封禁扫描排在后面
 
 ### v1.33.5 (2026-10-17)
 
@@ -410,7 +428,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.33.5**
+**Version: 1.34.0**
 
 ## Screenshots
 
