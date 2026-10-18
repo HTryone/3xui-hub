@@ -427,6 +427,71 @@ class ThreeXUiClient
     }
 
     /**
+     * getClient() 的异步版（Bearer 模式）。
+     * resolve 值为规范化后的 client 数组（与同步版一样剥掉 client 包装）；失败 reject。
+     * 「client 不存在」在 3x-ui 上同样是 success=false，这里和同步版一样交给调用方按失败处理。
+     */
+    public function getClientAsync(string $email): PromiseInterface
+    {
+        return $this->getAsyncJson(
+            self::EP_CLIENTS_GET . rawurlencode($email),
+            static fn ($obj) => is_array($obj)
+                ? (is_array($obj['client'] ?? null) ? $obj['client'] : $obj)
+                : null,
+        );
+    }
+
+    /**
+     * updateClient() 的异步版（Bearer 模式）：POST 成功即 resolve true，失败 reject。
+     * 供启停 / 建号这类「每节点一次或几次写请求」的批量操作并发使用。
+     */
+    public function updateClientAsync(string $email, array $client, ?int $inboundId = null): PromiseInterface
+    {
+        $options = ['json' => $client];
+        if ($inboundId !== null) {
+            $options['query'] = ['inboundIds' => (string) $inboundId];
+        }
+
+        return $this->postAsyncJson(
+            self::EP_CLIENTS_UPDATE . rawurlencode($email),
+            $options,
+            static fn () => true,
+        );
+    }
+
+    /** resetClientTraffic() 的异步版（Bearer 模式）：POST 成功即 resolve true。 */
+    public function resetClientTrafficAsync(string $email): PromiseInterface
+    {
+        return $this->postAsyncJson(
+            self::EP_CLIENTS_RESET . rawurlencode($email),
+            [],
+            static fn () => true,
+        );
+    }
+
+    /**
+     * addClient() 的异步版（Bearer 模式）：resolve 新建 client 的 obj（可能为 null）。
+     * 与同步版一致：obj 为空时上层按「创建成功但没回传」处理，不做二次回查（那是同步版的兜底）。
+     */
+    public function addClientAsync(array $client, array $inboundIds): PromiseInterface
+    {
+        return $this->postAsyncJson(
+            self::EP_CLIENTS_ADD,
+            ['json' => ['client' => $client, 'inboundIds' => $inboundIds]],
+            static fn ($obj) => is_array($obj) ? $obj : null,
+        );
+    }
+
+    /** getClientStatsByEmail() 的异步版：一次 listInbounds，映射口径与同步版逐字一致。 */
+    public function clientStatsAsync(): PromiseInterface
+    {
+        return $this->getAsyncJson(
+            self::EP_INBOUNDS_LIST,
+            static fn ($obj) => self::clientStatsFromInbounds(is_array($obj) ? $obj : []),
+        );
+    }
+
+    /**
      * 异步 GET + {success,obj} 解包（Bearer 模式专用）。
      *
      * 判定口径与同步 request() 完全一致：非 JSON / 缺 success 键 / success=false 都算失败；
@@ -487,6 +552,54 @@ class ThreeXUiClient
     }
 
     /**
+     * 异步 POST + {success,obj} 解包（Bearer 模式专用）。
+     *
+     * 与 getAsyncJson 同一套判定口径（非 JSON / 缺 success / success=false 都算失败，
+     * 传输层异常包成 ThreeXUiException），区别只是 GET→POST 且可带 json/query。
+     * cookie 模式要维护登录会话（/login + CSRF）并带 cookie jar，不能无状态并发 → 直接 reject，
+     * 调用方应回退同步方法。
+     */
+    private function postAsyncJson(string $path, array $options, callable $map): PromiseInterface
+    {
+        if (! $this->apiKey) {
+            return Create::rejectionFor(
+                new ThreeXUiException('异步请求仅支持 api_key（Bearer）模式，cookie 模式请用同步方法')
+            );
+        }
+
+        $promise = $this->client->postAsync($this->baseUrl . $path, array_merge([
+            'headers' => [
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer ' . $this->apiKey,
+            ],
+            'verify' => $this->verify,
+            'timeout' => self::panelConfig('api_timeout', 15.0),
+            'connect_timeout' => self::panelConfig('connect_timeout', 5.0),
+        ], $options));
+
+        return $promise->then(function ($response) use ($map) {
+            $body = (string) $response->getBody();
+            $json = json_decode($body, true);
+
+            if (! is_array($json) || ! array_key_exists('success', $json)) {
+                throw new ThreeXUiException('invalid 3x-ui response: ' . substr($body, 0, 200));
+            }
+
+            if (! $json['success']) {
+                throw new ThreeXUiException($json['msg'] ?? '3x-ui request failed');
+            }
+
+            return $map($json['obj'] ?? null);
+        })->otherwise(function (\Throwable $e) {
+            if ($e instanceof TransferException) {
+                throw new ThreeXUiException('3x-ui request failed: ' . $e->getMessage(), 0, $e);
+            }
+
+            throw $e;
+        });
+    }
+
+    /**
      * 一次拉取所有 inbound 的 client 流量统计。
      * 返回 [inboundId => [clientEmail => ['up'=>int, 'down'=>int], ...], ...]
      *
@@ -533,7 +646,16 @@ class ThreeXUiClient
      */
     public function getClientStatsByEmail(): array
     {
-        $inbounds = $this->listInbounds();
+        return self::clientStatsFromInbounds($this->listInbounds());
+    }
+
+    /**
+     * 入站列表 → [email => ['up'=>int,'down'=>int]]（同 email 跨入站只取首次）。
+     *
+     * 同步与异步两条路径共用这一份映射，避免「cron 走这个、并发走那个」把去重口径写歪。
+     */
+    private static function clientStatsFromInbounds(array $inbounds): array
+    {
         $result = [];
 
         foreach ($inbounds as $inbound) {

@@ -77,16 +77,23 @@ class HealthCheckService
      * 唯一变化是 N 次串行等待变成 ceil(N/concurrency) 批并发等待，结果不变、只是更快。
      * 任何单节点异常都在内部消化（该节点记 offline），不向外抛，不牵连同批其它节点。
      *
+     * 【补测一轮】首轮判为失败的节点（并发组与串行组都算）在同一轮内再探一次，仍失败才落 offline。
+     * 目的：偶发抖动（节点刚好在重启内核 / 一瞬间连不上）不再让节点当场变 offline ——
+     * SubscriptionService 按 status=online 硬过滤，一次误判就等于「节点从订阅里凭空消失」。
+     * 补测次数由 panel.healthcheck_retry 控制（默认 1，0 = 关闭补测）。
+     *
      * @param  iterable<Node>  $nodes
      * @return array<int,array> node_id => ['ok','status','latency'(, 'skipped'|'error')]
      */
     public function checkMany(iterable $nodes): array
     {
         $concurrency = $this->concurrency();
+        $retries = $this->retries();
 
         $results = [];
         $concurrent = [];
         $sequential = [];
+        $byId = [];
 
         foreach ($nodes as $node) {
             if ($this->isMaintenance($node)) {
@@ -99,6 +106,8 @@ class HealthCheckService
                 continue;
             }
 
+            $byId[$node->id] = $node;
+
             if ($this->canRunConcurrently($node)) {
                 $concurrent[] = $node;
             } else {
@@ -106,15 +115,34 @@ class HealthCheckService
             }
         }
 
-        foreach (array_chunk($concurrent, $concurrency) as $batch) {
-            $results += $this->runBatch($batch);
-        }
+        for ($attempt = 0; ; $attempt++) {
+            $failedConcurrent = [];
+            $failedSequential = [];
 
-        foreach ($sequential as $node) {
-            $results[$node->id] = $this->check($node);
-        }
+            foreach (array_chunk($concurrent, $concurrency) as $batch) {
+                foreach ($this->runBatch($batch) as $id => $result) {
+                    $results[$id] = $result;
+                    if (! $result['ok'] && isset($byId[$id])) {
+                        $failedConcurrent[] = $byId[$id];
+                    }
+                }
+            }
 
-        return $results;
+            foreach ($sequential as $node) {
+                $results[$node->id] = $result = $this->check($node);
+                if (! $result['ok']) {
+                    $failedSequential[] = $node;
+                }
+            }
+
+            // 只补测失败的；一轮补测后仍失败就认了（真挂的节点不会靠重试复活，别把整轮拖长）
+            if ($attempt >= $retries || ($failedConcurrent === [] && $failedSequential === [])) {
+                return $results;
+            }
+
+            $concurrent = $failedConcurrent;
+            $sequential = $failedSequential;
+        }
     }
 
     /**
@@ -213,6 +241,14 @@ class HealthCheckService
         $concurrency = (int) config('panel.healthcheck_concurrency', 10);
 
         return $concurrency > 0 ? $concurrency : 1;
+    }
+
+    /** 失败补测轮数：config 缺省 1；< 0 按 0 处理（只探一轮，与引入补测前一致）。 */
+    private function retries(): int
+    {
+        $retries = (int) config('panel.healthcheck_retry', 1);
+
+        return $retries > 0 ? $retries : 0;
     }
 
     /** 读属性本身也可能抛（如 api_key 密文损坏），一律当作非 maintenance，交给后续分支兜底。 */

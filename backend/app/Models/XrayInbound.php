@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Crypt;
 #[Fillable([
     'node_id',
     'tag',
+    'remark',
     'protocol',
     'port',
     'listen',

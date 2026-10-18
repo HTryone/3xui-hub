@@ -7,6 +7,10 @@ use App\Jobs\ProvisionClientJob;
 use App\Models\Node;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\ThreeXUi\ThreeXUiClient;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -18,8 +22,10 @@ use Illuminate\Support\Str;
  */
 class UserAdminService
 {
-    public function __construct(private NodeDriverFactory $driverFactory)
-    {
+    public function __construct(
+        private NodeDriverFactory $driverFactory,
+        private ThreeXUiClientFactory $clientFactory,
+    ) {
     }
 
     /**
@@ -138,9 +144,105 @@ class UserAdminService
     {
         $clientData = $this->prepareClientData($user);
 
+        $concurrent = [];
+        $sequential = [];
+
         foreach (Node::where('enabled', true)->get() as $node) {
+            // xray 节点本地入队、没有跨机等待；cookie 模式要维护登录会话不能并发 —— 都走同步路径
+            if (! $node->isXray() && NodeConcurrency::eligible($node)) {
+                $concurrent[] = $node;
+            } else {
+                $sequential[] = $node;
+            }
+        }
+
+        foreach (array_chunk($concurrent, NodeConcurrency::limit()) as $batch) {
+            $promises = [];
+            // 同一批共用一个传输层才是真并发（各用各的 curl_multi 只能逐个 wait）
+            $transport = ThreeXUiClient::newSharedTransport();
+
+            foreach ($batch as $node) {
+                try {
+                    $client = $this->clientFactory->forNode($node);
+                    $client->useSharedTransport($transport);
+                    $promises[$node->id] = $this->provisionClientOnNodeAsync($client, $user, $node, $clientData);
+                } catch (\Throwable $e) {
+                    report($e); // 该节点失败，本批其它节点照常
+                }
+            }
+
+            if ($promises === []) {
+                continue;
+            }
+
+            foreach (Utils::settle($promises)->wait() as $outcome) {
+                if (($outcome['state'] ?? null) !== PromiseInterface::FULFILLED) {
+                    $reason = $outcome['reason'] ?? 'provision failed';
+                    report($reason instanceof \Throwable ? $reason : new \RuntimeException((string) $reason));
+                }
+            }
+        }
+
+        foreach ($sequential as $node) {
             $this->provisionClientOnNode($user, $node, $clientData);
         }
+    }
+
+    /**
+     * provisionClientOnNode 的并发版（仅 3x-ui + Bearer）。
+     *
+     * 与同步版逐条对齐：该节点没有此协议入站 → 什么都不发；client 已存在 → 逐入站 update
+     * （id 优先取 uuid，避开 3x-ui v3.7.0 行号坑）；不存在或取不到 → createClient，并在
+     * 用户还没有 uuid 时回写返回的 uuid。单入站失败只 report，不影响同节点其它入站。
+     *
+     * 唯一差异：并发路径每个节点用**自己**那份 clientData 副本，不会把上一个节点的 id 带过来
+     * （跨节点 id 串味是同步版引用传参的副作用，不是语义，见 provisionClientOnNode 注释）。
+     */
+    private function provisionClientOnNodeAsync(
+        ThreeXUiClient $client,
+        User $user,
+        Node $node,
+        array $clientData,
+    ): PromiseInterface {
+        $email = $clientData['email'];
+        $inboundIds = $node->inboundIdsFor($user->protocol);
+
+        if (empty($inboundIds)) {
+            return Create::promiseFor(null);
+        }
+
+        $create = function () use ($client, $user, $clientData, $inboundIds) {
+            return $client->addClientAsync($clientData, $inboundIds)->then(function ($created) use ($user) {
+                if (is_array($created) && ! empty($created['uuid']) && ! $user->uuid) {
+                    $user->forceFill(['uuid' => $created['uuid']])->save();
+                }
+            });
+        };
+
+        return $client->getClientAsync($email)->then(
+            function ($resp) use ($client, $email, $clientData, $inboundIds, $create) {
+                if (! is_array($resp)) {
+                    return $create();
+                }
+
+                // 3x-ui v3.7.0 返回的 id 是 clients 表自增行号，uuid 才是 Xray 用的 client id
+                $clientData['id'] = $resp['uuid'] ?? ($resp['id'] ?? null);
+
+                $chain = Create::promiseFor(null);
+                foreach ($inboundIds as $inboundId) {
+                    $chain = $chain->then(function () use ($client, $email, $clientData, $inboundId) {
+                        return $client->updateClientAsync($email, $clientData, $inboundId)
+                            ->otherwise(function (\Throwable $e) {
+                                report($e); // 单入站失败不影响同节点其它入站（与同步版一致）
+                            });
+                    });
+                }
+
+                return $chain;
+            },
+            // 取不到 client（不存在 / 网络 / 鉴权失败）：同步版 requestNullable 也是返回 null → 走创建
+            fn () => $create(),
+        );
     }
 
     /**
@@ -352,10 +454,57 @@ class UserAdminService
         app(BanService::class)->toggleClient($user, true);
     }
 
+    /**
+     * 在各 enabled 节点上重置该用户的流量计数。
+     *
+     * 并发（issue #42）：3x-ui + api_key（Bearer）节点整批同进程并发，cookie 模式 / xray 节点
+     * 仍逐个串行 —— 单节点失败只 report()，不影响其它节点、也不阻断调用方后续步骤
+     * （与拆分前逐节点 try/catch 的语义逐条对齐）。
+     */
     public function resetClientOnNodes(User $user): void
     {
         $email = $user->clientEmail();
+
+        $concurrent = [];
+        $sequential = [];
+
         foreach (Node::where('enabled', true)->get() as $node) {
+            if (NodeConcurrency::eligible($node)) {
+                $concurrent[] = $node;
+            } else {
+                $sequential[] = $node;
+            }
+        }
+
+        foreach (array_chunk($concurrent, NodeConcurrency::limit()) as $batch) {
+            $promises = [];
+            // 同一批共用一个传输层才是真并发（各用各的 curl_multi 只能逐个 wait）
+            $transport = ThreeXUiClient::newSharedTransport();
+
+            foreach ($batch as $node) {
+                try {
+                    $client = $this->clientFactory->forNode($node);
+                    $client->useSharedTransport($transport);
+                    $promises[$node->id] = $client->resetClientTrafficAsync($email);
+                } catch (\Throwable $e) {
+                    // 连 client 都建不出来：只影响该节点，本批其它节点照常
+                    report($e);
+                }
+            }
+
+            if ($promises === []) {
+                continue;
+            }
+
+            foreach (Utils::settle($promises)->wait() as $outcome) {
+                if (($outcome['state'] ?? null) !== PromiseInterface::FULFILLED) {
+                    $reason = $outcome['reason'] ?? 'reset traffic failed';
+                    report($reason instanceof \Throwable ? $reason : new \RuntimeException((string) $reason));
+                }
+            }
+        }
+
+        foreach ($sequential as $node) {
             try {
                 $this->driverFactory->make($node)->resetClientTraffic($email);
             } catch (\Throwable $e) {

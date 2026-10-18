@@ -8,6 +8,7 @@ use App\Models\TrafficSnapshot;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * 流量增量计算（M7.4~M7.6 + 套餐适配）。
@@ -104,37 +105,67 @@ class TrafficSyncService
             ->latest('id')
             ->first();
 
-        if ($last === null) {
+        $lastUp = $last === null ? null : (int) $last->upload;
+        $lastDown = $last === null ? null : (int) $last->download;
+        $lastTotal = $lastUp === null ? null : $lastUp + $lastDown;
+
+        // 分方向增量必须先于「零增量跳过」算出：总量一升一降时总量差为 0，
+        // 但那笔流量真实发生过，方向增量不能跟着被跳过。
+        [$upDelta, $downDelta] = self::directionalDeltas($nowUp, $nowDown, $lastUp, $lastDown);
+
+        if ($lastTotal === null) {
             if ($nowTotal === 0) {
                 return; // 首次同步且为 0：不落空快照
             }
             $delta = $nowTotal; // 首次同步：记为基准，不回溯全部历史
         } else {
-            $lastTotal = (int) $last->upload + (int) $last->download;
             // 3x-ui 侧重置或 client 重建 → now < last，重新计起
             $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
 
-            // 数值没变：快照无需重写（快照仅作下次算差值的基准）
             if ($delta === 0) {
+                if ($upDelta === 0 && $downDelta === 0) {
+                    return; // 完全没变：快照无需重写（快照仅作下次算差值的基准）
+                }
+
+                // 总量不变、但方向有变化（一升一降）：只留方向增量，计费增量为 0。
+                // 快照必须推进到本轮值，否则同一份采样重放会把这笔方向增量再记一次。
+                $this->recordUserTraffic($node, [$user->id => [
+                    'up' => $upDelta,
+                    'down' => $downDelta,
+                    'weighted' => 0,
+                ]]);
+                TrafficSnapshot::updateOrCreate(
+                    ['user_id' => $user->id, 'node_id' => $node->id],
+                    ['upload' => $nowUp, 'download' => $nowDown],
+                );
+
                 return;
             }
         }
 
+        $weighted = 0;
         if ($delta > 0) {
             // 倍率只乘在 delta 上，绝不碰快照：快照存的是面板侧原始累计字节数，
             // 下一轮 delta = now - last。倍率一旦乘进快照，改倍率那一刻就会因为
             // 「老倍率算过的 last 比面板原值大」触发 now < last 分支，delta 直接等于
             // 全部累计值，用户流量瞬间暴涨。traffic_used 是 bigint，所以向下取整。
-            $delta = (int) floor($delta * self::multiplierFor($node));
+            $weighted = (int) floor($delta * self::multiplierFor($node));
 
-            if ($delta > 0) {
-                $user->increment('traffic_used', $delta);
+            if ($weighted > 0) {
+                $user->increment('traffic_used', $weighted);
                 // 周期套餐：同时累加当月流量
                 if ($user->isPeriodPlan()) {
-                    $user->increment('monthly_traffic_used', $delta);
+                    $user->increment('monthly_traffic_used', $weighted);
                 }
             }
         }
+
+        // 用户×节点留痕（小时表 + 天表）：与快照 / traffic_used 同一事务
+        $this->recordUserTraffic($node, [$user->id => [
+            'up' => $upDelta,
+            'down' => $downDelta,
+            'weighted' => $weighted,
+        ]]);
 
         // upsert：存在则更新，不存在则插入
         TrafficSnapshot::updateOrCreate(
@@ -165,7 +196,7 @@ class TrafficSyncService
      *
      * @param Node $node 节点
      * @param array $clientStats [clientEmail => ['up'=>int, 'down'=>int], ...]
-     * @return array ['deltaMap' => [userId => deltaBytes], 'snapshotData' => [...]]
+     * @return array ['deltaMap' => [userId => ['up'=>int,'down'=>int,'weighted'=>int]], 'snapshotData' => [...]]
      */
     public function syncNodeBatch(Node $node, array $clientStats): array
     {
@@ -208,12 +239,20 @@ class TrafficSyncService
             if (!isset($users[$userId])) continue; // 无套餐用户跳过
 
             $stat = $clientStats[$email];
-            $nowUp = $stat['up'];
-            $nowDown = $stat['down'];
+            $nowUp = (int) ($stat['up'] ?? 0);
+            $nowDown = (int) ($stat['down'] ?? 0);
             $nowTotal = $nowUp + $nowDown;
 
             $last = $latestSnapshots->get($userId);
-            if ($last === null) {
+            $lastUp = $last === null ? null : (int) $last->upload;
+            $lastDown = $last === null ? null : (int) $last->download;
+            $lastTotal = $lastUp === null ? null : $lastUp + $lastDown;
+
+            // 分方向原始增量（与单用户路径共用同一口径）。必须在下面的 continue 之前算：
+            // 总量一升一降时总量差为 0，方向增量却不为 0，跳过就永远拿不到 up/down。
+            [$upDelta, $downDelta] = self::directionalDeltas($nowUp, $nowDown, $lastUp, $lastDown);
+
+            if ($lastTotal === null) {
                 // 首次同步且计数为 0：没有可记的流量，等真产生流量再落快照，
                 // 避免给每个闲号插一行空快照（大用户量下等于每轮白插 N 行）。
                 if ($nowTotal === 0) {
@@ -221,20 +260,38 @@ class TrafficSyncService
                 }
                 $delta = $nowTotal; // 首次同步
             } else {
-                $lastTotal = (int) $last->upload + (int) $last->download;
                 // 3x-ui 侧重置或 client 重建 → now < last，重新计起
                 $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
 
                 // 累计值没变 → 跳过写快照。快照只是下次算差值的基准，
                 // 数值没变时重写是纯写放大（10 万用户里绝大多数每轮都没流量）。
+                // 但方向增量仍不为 0 的「一升一降」样本要留痕：计费增量为 0，
+                // 快照照样推进（否则重放会把方向增量再记一次）。
                 if ($delta === 0) {
+                    if ($upDelta !== 0 || $downDelta !== 0) {
+                        $deltaMap[$userId] = ['up' => $upDelta, 'down' => $downDelta, 'weighted' => 0];
+                        $snapshotData[] = [
+                            'user_id' => $userId,
+                            'node_id' => $node->id,
+                            'upload' => $nowUp,
+                            'download' => $nowDown,
+                            'updated_at' => $now,
+                        ];
+                    }
+
                     continue;
                 }
             }
 
-            if ($delta > 0) {
-                // 倍率只乘在 delta 上，快照那两行照旧存面板原始字节数（原因同单用户路径）。
-                $deltaMap[$userId] = (int) floor($delta * $multiplier);
+            // 加权增量：倍率只乘在 delta 上，快照仍存原始字节
+            $weighted = $delta > 0 ? (int) floor($delta * $multiplier) : 0;
+
+            if ($upDelta > 0 || $downDelta > 0 || $weighted > 0) {
+                $deltaMap[$userId] = [
+                    'up' => $upDelta,
+                    'down' => $downDelta,
+                    'weighted' => $weighted,
+                ];
             }
 
             $snapshotData[] = [
@@ -247,6 +304,142 @@ class TrafficSyncService
         }
 
         return ['deltaMap' => $deltaMap, 'snapshotData' => $snapshotData];
+    }
+
+    /**
+     * 分方向原始增量（up / down 各自钳 0），单用户与批量两条路径共用（口径唯一）。
+     *
+     * 两种「重新起算」与总量口径一致：
+     *   - 首次同步（$lastUp / $lastDown 为 null）→ 整段现值都算增量；
+     *   - 累计总量倒退（now < last，3x-ui 侧重置或 client 重建）→ 整段现值都算增量。
+     * 其余情况逐方向取差、负差钳 0（同 MonitorService::deltas 的机器口径）。
+     *
+     * 注：逐方向钳 0 后，up+down 与「总量差」在「一升一降」的极端样本上会有出入；
+     * 计费口径以 weighted（由总量差算出）为准，up/down 只用于展示与对账。
+     *
+     * @return array{0:int, 1:int}
+     */
+    public static function directionalDeltas(int $nowUp, int $nowDown, ?int $lastUp, ?int $lastDown): array
+    {
+        if ($lastUp === null || $lastDown === null) {
+            return [$nowUp, $nowDown];
+        }
+
+        if ($nowUp + $nowDown < $lastUp + $lastDown) {
+            return [$nowUp, $nowDown];
+        }
+
+        return [max(0, $nowUp - $lastUp), max(0, $nowDown - $lastDown)];
+    }
+
+    /** 站点业务时区（天表日界口径，与 monitor_daily 一致）。 */
+    private function businessTimezone(): string
+    {
+        return (string) (config('panel.business_timezone') ?: config('app.timezone'));
+    }
+
+    /**
+     * 用户×节点 流量留痕：同时累加小时表（24h 窗口）与天表（7/30d 窗口）。
+     *
+     * 语义是累加（ON DUPLICATE KEY UPDATE 列 = 列 + VALUES(列)），同一小时/同一天被多轮同步各加一段。
+     * 幂等前提：入参增量以 traffic_snapshots 为基准算出，且本方法必须与快照写在同一事务；
+     * 同一份采样重放时快照已更新 → 增量 0 → 加 0 不变；事务回滚则两张表一起回滚。
+     *
+     * @param array<int, array{up:int,down:int,weighted:int}> $deltaMap
+     */
+    public function recordUserTraffic(Node $node, array $deltaMap): void
+    {
+        if (empty($deltaMap)) {
+            return;
+        }
+
+        $now = now();
+        $hourStart = $now->copy()->startOfHour();
+        $date = $now->copy()->setTimezone($this->businessTimezone())->toDateString();
+
+        $rows = [];
+        foreach ($deltaMap as $userId => $entry) {
+            $up = (int) ($entry['up'] ?? 0);
+            $down = (int) ($entry['down'] ?? 0);
+            $weighted = (int) ($entry['weighted'] ?? 0);
+
+            if ($up === 0 && $down === 0 && $weighted === 0) {
+                continue;
+            }
+
+            $rows[$userId] = ['up' => $up, 'down' => $down, 'weighted' => $weighted];
+        }
+
+        if ($rows === []) {
+            return;
+        }
+
+        // 两张表结构一致，用同一份行数据写两次，避免两段逻辑漂移
+        $this->accumulateUserTraffic('user_traffic_hourly', 'hour_start', $hourStart->toDateTimeString(), $node, $rows);
+        $this->accumulateUserTraffic('user_traffic_daily', 'date', $date, $node, $rows);
+    }
+
+    /**
+     * 累加型 upsert（小时表与天表共用）。表名/列名仅内部常量，不接受外部输入。
+     *
+     * @param string $table     user_traffic_hourly | user_traffic_daily
+     * @param string $bucketCol hour_start | date
+     * @param string $bucket    桶值
+     * @param array<int, array{up:int,down:int,weighted:int}> $rows
+     */
+    private function accumulateUserTraffic(string $table, string $bucketCol, string $bucket, Node $node, array $rows): void
+    {
+        foreach (array_chunk($rows, 500, true) as $chunk) {
+            $insertParts = [];
+            $params = [];
+
+            foreach ($chunk as $userId => $entry) {
+                $insertParts[] = '(?, ?, ?, ?, ?, ?, NOW(), NOW())';
+                $params[] = $userId;
+                $params[] = $node->id;
+                $params[] = $bucket;
+                $params[] = $entry['up'];
+                $params[] = $entry['down'];
+                $params[] = $entry['weighted'];
+            }
+
+            $values = implode(', ', $insertParts);
+            $sql = "INSERT INTO {$table}
+                        (user_id, node_id, {$bucketCol}, up_delta, down_delta, weighted_delta, created_at, updated_at)
+                    VALUES {$values}
+                    ON DUPLICATE KEY UPDATE
+                        up_delta = up_delta + VALUES(up_delta),
+                        down_delta = down_delta + VALUES(down_delta),
+                        weighted_delta = weighted_delta + VALUES(weighted_delta),
+                        updated_at = NOW()";
+
+            \DB::statement($sql, $params);
+        }
+    }
+
+    /**
+     * 小时表过期清理：与写入同一条同步路径，每小时至多一次（Cache 防重入）。
+     *
+     * 不做定时任务的理由：表只在同步时长行——不同步就不长、不需要清，清理跟着写入走天然同生命周期。
+     * DELETE 走索引前缀 + LIMIT，毫秒级；放事务外、独立 try/catch：失败只记 warning，绝不连累落账回滚。
+     */
+    public function pruneExpiredHourly(): void
+    {
+        if (! Cache::add('user-traffic:hourly:prune', 1, 3600)) {
+            return; // 这一小时内已经清过（任何节点的任何一轮）
+        }
+
+        $retainDays = max(2, (int) config('user_traffic.hourly_retain_days', 7));
+        $cutoff = now()->subDays($retainDays)->startOfHour();
+
+        try {
+            DB::table('user_traffic_hourly')
+                ->where('hour_start', '<', $cutoff)
+                ->limit(5000)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::warning('user_traffic_hourly 过期清理失败（不影响落账）', ['error' => $e->getMessage()]);
+        }
     }
 
 
@@ -273,10 +466,15 @@ class TrafficSyncService
 
     private function commitNodeStats(Node $node, array $clientStats): array
     {
+        // 小时表过期清理（事务外、每小时至多一次、失败不连累落账）
+        $this->pruneExpiredHourly();
+
         return DB::transaction(function () use ($node, $clientStats) {
             $result = $this->syncNodeBatch($node, $clientStats);
             $this->upsertSnapshots($result['snapshotData']);
             $this->applyDeltas($result['deltaMap']);
+            // 用户流量留痕（小时表 + 天表）：与快照 / traffic_used 同一事务
+            $this->recordUserTraffic($node, $result['deltaMap']);
 
             return ['acquired' => true] + $result;
         });
@@ -324,10 +522,16 @@ class TrafficSyncService
 
     /**
      * 批量更新用户流量使用量。
-     * @param array $deltaMap [userId => deltaBytes]
+     *
+     * @param array<int, array{up:int,down:int,weighted:int}> $deltaMap
      */
     public function applyDeltas(array $deltaMap): void
     {
+        if (empty($deltaMap)) return;
+
+        // 只把加权值累加进 traffic_used（原始 up/down 不进这里）
+        $deltaMap = array_map(fn ($e) => (int) ($e['weighted'] ?? 0), $deltaMap);
+        $deltaMap = array_filter($deltaMap, fn ($weighted) => $weighted > 0);
         if (empty($deltaMap)) return;
 
         // 预加载周期套餐用户ID集合

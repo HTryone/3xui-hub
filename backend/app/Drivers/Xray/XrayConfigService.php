@@ -255,6 +255,32 @@ class XrayConfigService
         return $this->renderInbound($inbound, collect([$user]), false);
     }
 
+    /**
+     * 多 SNI 入站按用户稳定抽取一个 serverName（订阅链接用）。
+     *
+     * serverNames 是数组（上限 64），历史上订阅永远只下发 [0]，等于多配的 SNI 全废。
+     * 取模 user_id 的好处：同一用户恒定（每次拉订阅都同一个 SNI，不会换着来），
+     * 用户之间分散（多 SNI 的意义就是把流量摊到多个目标域名）；
+     * 不新增列、不加迁移，单 SNI 入站的行为与取 [0] 完全一致。
+     *
+     * @param  array<int,mixed>  $serverNames
+     */
+    public function serverNameFor(array $serverNames, int $userId): string
+    {
+        $names = [];
+        foreach ($serverNames as $name) {
+            if (is_string($name) && trim($name) !== '') {
+                $names[] = trim($name);
+            }
+        }
+
+        if ($names === []) {
+            return self::DEFAULT_SNI;
+        }
+
+        return $names[abs(crc32((string) $userId)) % count($names)];
+    }
+
     /** Reality 安全参数（公开参数来自入站 stream_settings；私钥解密注入）。 */
     public function realitySettingsFor(XrayInbound $inbound): array
     {
@@ -761,10 +787,17 @@ class XrayConfigService
         return $uris;
     }
 
-    /** 入站显示名（订阅节点名：节点名-tag 区分同节点多入站）。 */
+    /**
+     * 入站显示名（订阅节点名：节点名-tag 区分同节点多入站）。
+     *
+     * remark 是给人看的中文备注；填了就用它替换 tag 段，没填回落 tag ——
+     * 老数据 remark 为 NULL，订阅输出与历史逐字节一致。tag 本身不改（引用型标识）。
+     */
     private function inboundLabel(Node $node, XrayInbound $inbound): string
     {
-        return $node->name . '-' . $inbound->tag;
+        $remark = trim((string) $inbound->remark);
+
+        return $node->name . '-' . ($remark !== '' ? $remark : $inbound->tag);
     }
 
     private function vlessUri(Node $node, XrayInbound $inbound, User $user, string $host): string
@@ -782,7 +815,7 @@ class XrayConfigService
             $fp = trim((string) ($client['fingerprint'] ?? '')) ?: 'chrome';
             $query .= '&fp=' . rawurlencode($fp);
 
-            $sni = $public['serverNames'][0] ?? self::DEFAULT_SNI;
+            $sni = $this->serverNameFor((array) ($public['serverNames'] ?? []), (int) $user->id);
             $query .= '&sni=' . rawurlencode((string) $sni)
                 . '&pbk=' . rawurlencode((string) ($public['publicKey'] ?? ''));
             $sid = $public['shortIds'][0] ?? '';

@@ -41,6 +41,26 @@ return [
     'healthcheck_concurrency' => (int) env('PANEL_HEALTHCHECK_CONCURRENCY', 10),
 
     /*
+     | 健康检查失败补测轮数（默认 1）。
+     |
+     | 首轮判失败的节点在同一轮健康检查里再探一次，仍失败才落 offline。
+     | 订阅按 status=online 硬过滤，偶发抖动（正好在重启内核）误判一次就等于节点从订阅消失。
+     | 0 = 关闭补测（只探一轮）；不要调大 —— 真挂的节点每多一轮就多等一次超时，
+     | 整轮健康检查会被拖长，反而让别的节点状态变旧。
+     */
+    'healthcheck_retry' => (int) env('PANEL_HEALTHCHECK_RETRY', 1),
+
+    /*
+     | 节点级批量操作的并发上限（重置流量 / 用户启停 / traffic:sync，默认 10）。
+     |
+     | 这些操作本来是「逐节点串行发 HTTPS」：节点一多，一次重置/一次扫描的耗时就是各节点之和。
+     | 只有 3x-ui + api_key（Bearer，无状态）的节点参与并发；cookie 模式要维护登录会话、
+     | xray 节点本地执行无需并发，两者仍逐个串行（与订阅 / 健康检查同一套口径）。
+     | <= 0 视为 1（退化成逐批单个，不并发）。
+     */
+    'node_ops_concurrency' => (int) env('PANEL_NODE_OPS_CONCURRENCY', 10),
+
+    /*
      | 订阅生成的并发数：同时拉取的 3x-ui 节点数上限（同进程 Guzzle 并发，默认 10）。
      |
      | 每个节点固定 2 次请求（listInbounds 拿端口 + 取该用户链接），之前是逐节点串行、

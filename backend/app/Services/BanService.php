@@ -8,6 +8,10 @@ use App\Models\MailLog;
 use App\Models\Node;
 use App\Models\SiteConfig;
 use App\Models\User;
+use App\Services\ThreeXUi\ThreeXUiClient;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
 
 /**
  * 封禁服务（M8 + 套餐适配）。
@@ -18,8 +22,10 @@ use App\Models\User;
  */
 class BanService
 {
-    public function __construct(private NodeDriverFactory $driverFactory)
-    {
+    public function __construct(
+        private NodeDriverFactory $driverFactory,
+        private ThreeXUiClientFactory $clientFactory,
+    ) {
     }
 
     /**
@@ -187,12 +193,7 @@ class BanService
             return false; // 无节点可操作：不写标记，下一轮继续尝试
         }
 
-        $confirmed = 0;
-        foreach ($nodes as $node) {
-            if ($this->applyEnableOnNode($node, $user->protocol, $email, $enable)) {
-                $confirmed++;
-            }
-        }
+        $confirmed = $this->applyEnableOnNodes($nodes, $user->protocol, $email, $enable);
 
         if ($enable) {
             if ($confirmed > 0) {
@@ -257,6 +258,125 @@ class BanService
             scene: 'traffic_exhausted',
             // 交给 Job：真发失败时释放这条标记，下一轮扫描补发
             claimKey: MailNotifyService::claimKey('traffic_exhausted', $user, $rendered['to_type'], $to),
+        );
+    }
+
+    /**
+     * 在全部启用节点上把 client 的 enable 改成 $enable，返回「确认生效」的节点数。
+     *
+     * 并发（issue #42）：3x-ui + api_key（Bearer）节点整批同进程并发。每个用户每轮启停原本是
+     * 「节点数 ×（1 次 getClient + 入站数次 updateClient）」的串行 HTTPS，扫描器按用户循环时
+     * 这是最贵的一段；节点内部仍串行（先取完整 client，再逐入站更新、最后兜底更新），
+     * 只是节点之间并行。cookie 模式 / xray 节点照旧逐个串行，判定口径（哪些节点算确认）不变。
+     *
+     * @param  \Illuminate\Support\Collection<int,Node>  $nodes
+     */
+    private function applyEnableOnNodes($nodes, string $protocol, string $email, bool $enable): int
+    {
+        $concurrent = [];
+        $sequential = [];
+
+        foreach ($nodes as $node) {
+            if (NodeConcurrency::eligible($node)) {
+                $concurrent[] = $node;
+            } else {
+                $sequential[] = $node;
+            }
+        }
+
+        $confirmed = 0;
+
+        foreach (array_chunk($concurrent, NodeConcurrency::limit()) as $batch) {
+            $promises = [];
+            // 同一批共用一个传输层才是真并发（各用各的 curl_multi 只能逐个 wait）
+            $transport = ThreeXUiClient::newSharedTransport();
+
+            foreach ($batch as $node) {
+                try {
+                    $client = $this->clientFactory->forNode($node);
+                    $client->useSharedTransport($transport);
+                    $promises[$node->id] = $this->enableOnNodeAsync($client, $node, $protocol, $email, $enable);
+                } catch (\Throwable $e) {
+                    report($e); // 该节点未确认，本批其它节点照常
+                }
+            }
+
+            if ($promises === []) {
+                continue;
+            }
+
+            foreach (Utils::settle($promises)->wait() as $outcome) {
+                if (($outcome['state'] ?? null) === PromiseInterface::FULFILLED && ($outcome['value'] ?? false) === true) {
+                    $confirmed++;
+                }
+            }
+        }
+
+        foreach ($sequential as $node) {
+            if ($this->applyEnableOnNode($node, $protocol, $email, $enable)) {
+                $confirmed++;
+            }
+        }
+
+        return $confirmed;
+    }
+
+    /**
+     * applyEnableOnNode 的并发版（仅 3x-ui + Bearer）。
+     *
+     * 节点内串行、节点间并行；任何一步失败只把该节点判成「未确认」（resolve false），
+     * 不 reject —— 与同步版返回 false 同义，避免一个坏节点炸掉整批 settle。
+     */
+    private function enableOnNodeAsync(
+        ThreeXUiClient $client,
+        Node $node,
+        string $protocol,
+        string $email,
+        bool $enable,
+    ): PromiseInterface {
+        try {
+            $inboundIds = $node->inboundIdsFor($protocol);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return Create::promiseFor(false);
+        }
+
+        $unconfirmed = function (\Throwable $e) use ($inboundIds) {
+            report($e);
+
+            // 同步版此时 requestNullable 拿到 null：没有该协议入站 = 无需操作（算确认），
+            // 有入站则算未确认。口径完全一致。
+            return $inboundIds === [];
+        };
+
+        return $client->getClientAsync($email)->then(
+            function ($resp) use ($client, $inboundIds, $email, $enable) {
+                if (! is_array($resp)) {
+                    return $inboundIds === []; // 与同步版 null 分支同口径
+                }
+
+                $clientData = $this->normalizeForUpdate($resp);
+                $clientData['enable'] = $enable;
+
+                // 节点内串行：逐个入站 update，再兜底不带 inboundId 更新一次（与同步版顺序一致）
+                $chain = Create::promiseFor(true);
+
+                foreach ($inboundIds as $inboundId) {
+                    $chain = $chain->then(function (bool $ok) use ($client, $email, $clientData, $inboundId) {
+                        return $client->updateClientAsync($email, $clientData, $inboundId)
+                            ->then(static fn () => $ok)
+                            ->otherwise(static fn () => false);
+                    });
+                }
+
+                return $chain->then(function (bool $ok) use ($client, $email, $clientData) {
+                    return $client->updateClientAsync($email, $clientData)
+                        ->then(static fn () => $ok)
+                        ->otherwise(static fn () => false);
+                });
+            },
+            $unconfirmed,
         );
     }
 

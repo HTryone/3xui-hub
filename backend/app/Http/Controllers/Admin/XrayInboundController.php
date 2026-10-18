@@ -200,6 +200,9 @@ class XrayInboundController extends Controller
         return $request->validate([
             'protocol' => ['required', 'in:vless,vmess,trojan,shadowsocks'],
             'tag' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9_-]+$/'],
+            // 备注：tag 是引用型标识（路由/删用户/中转拼接），中文名只能放这里；
+            // 订阅节点名展示用，空则回落 tag
+            'remark' => ['nullable', 'string', 'max:128'],
             'port' => ['required', 'integer', 'between:1,65535'],
             'listen' => ['nullable', 'string', 'max:64'],
             'network' => ['nullable', 'in:tcp,ws,grpc,xhttp,httpupgrade'],
@@ -429,6 +432,7 @@ class XrayInboundController extends Controller
         }
 
         $inbound->tag = $tag;
+        $inbound->remark = trim((string) ($data['remark'] ?? '')) !== '' ? trim((string) $data['remark']) : null;
         $inbound->protocol = $protocol;
         $inbound->port = (int) $data['port'];
         $inbound->listen = (string) ($data['listen'] ?? '') !== '' ? (string) $data['listen'] : '0.0.0.0';
@@ -758,6 +762,7 @@ class XrayInboundController extends Controller
         return [
             'id' => $inbound->id,
             'tag' => $inbound->tag,
+            'remark' => $inbound->remark,
             'protocol' => $inbound->protocol,
             'port' => $inbound->port,
             'listen' => $inbound->listen,

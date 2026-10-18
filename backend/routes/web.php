@@ -27,6 +27,7 @@ use App\Http\Controllers\Admin\XrayRoutingController as AdminXrayRoutingControll
 use App\Http\Controllers\Admin\NodeWarpController as AdminNodeWarpController;
 use App\Http\Controllers\Admin\OutboundSubscriptionController as AdminOutboundSubscriptionController;
 use App\Http\Controllers\Admin\MonitorController as AdminMonitorController;
+use App\Http\Controllers\Admin\UserTrafficController as AdminUserTrafficController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -157,6 +158,12 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 数据源是健康检查顺手落下的 L0 采样（monitor_samples），本组不做任何写入。
     Route::get('/monitor/summary', [AdminMonitorController::class, 'summary']);
     Route::get('/monitor/series', [AdminMonitorController::class, 'series']);
+
+    // 用户×机器 流量（只读）：按用户排行 / 按机器排行 / 单用户按机器明细。
+    // 数据源 user_traffic_hourly / user_traffic_daily（同步事务内累加），本组不做任何写入。
+    Route::get('/traffic/user-ranking', [AdminUserTrafficController::class, 'userRanking']);
+    Route::get('/traffic/node-ranking', [AdminUserTrafficController::class, 'nodeRanking']);
+    Route::get('/traffic/users/{user}/nodes', [AdminUserTrafficController::class, 'userNodes']);
 
     // 流量同步
     Route::post('/sync-traffic', [AdminSyncTrafficController::class, 'sync']);
