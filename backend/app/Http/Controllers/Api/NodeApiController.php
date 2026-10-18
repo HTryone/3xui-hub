@@ -104,10 +104,10 @@ class NodeApiController extends Controller
     {
         $node = $this->node($request);
 
-        // 入站结构化后节点配置完全由面板侧渲染（无入站时输出空 inbounds 的合法配置，
-        // 节点可先跑起来等待面板建入站 —— 不再有「未注册」态）
-        $json = $this->config->renderJson($node);
-        $etag = '"' . sha1($json) . '"';
+        // 轻量指纹判 304：不再每次先全量渲染（10 万用户 7.3s / 538MB）。
+        // 指纹覆盖 render() 的全部数据源（见 XrayConfigService::fingerprint）：
+        // 相同 ⇒ 数据没变 ⇒ 渲染结果必然相同 ⇒ 直接 304；指纹变了才走渲染。
+        $etag = '"' . $this->config->fingerprint($node) . '"';
 
         // If-None-Match 按 RFC 7232 弱比较：CDN（Cloudflare 等）压缩响应时会把强 ETag
         // 改写为弱 ETag（W/"…"），而节点 agent 的 Go http 客户端默认带 Accept-Encoding:
@@ -119,6 +119,9 @@ class NodeApiController extends Controller
         if ($ifNoneMatch !== '' && $normalizeEtag($ifNoneMatch) === $normalizeEtag($etag)) {
             return response('', 304, ['ETag' => $etag]);
         }
+
+        // 指纹变了（或客户端首次拉取）→ 完整渲染
+        $json = $this->config->renderJson($node);
 
         // 手工拼包：config 内 "stats": {} 必须保持空对象（json_encode 数组会变 []，
         // xray 解析 [] 会报错），所以 config 部分直接嵌入原始 JSON 字符串。
