@@ -1,6 +1,6 @@
 # ControlHub
 
-3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
+订阅制服务的运营与计费平台 | Subscription Operations & Billing Platform
 
 **版本：1.35.0**
 
