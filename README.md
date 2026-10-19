@@ -1,6 +1,6 @@
 # ControlHub
 
-订阅制服务的运营与计费平台 | Subscription Operations & Billing Platform
+企业级跨境电商网络服务运营平台 | Enterprise Cross-border Network Service Platform
 
 **版本：1.35.0**
 
