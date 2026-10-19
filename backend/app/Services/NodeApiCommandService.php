@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\Node;
 use App\Models\NodeApiCommand;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -87,6 +89,41 @@ class NodeApiCommandService
             }
         }
 
+        // 顺带清理过期终态回执（懒删除，每小时至多一次，失败只记 warning）
+        $this->pruneExpired();
+
         return $updated;
+    }
+
+    /**
+     * 终态回执过期清理（懒删除：跟着回执落库顺带做，每小时至多一次）。
+     *
+     * 为什么不做定时任务：这张表只在有指令时增长，清理跟着写入走天然同生命周期
+     * —— 没有指令就没有新写入，也就不需要清。DELETE 走 status 索引 + LIMIT，
+     * 毫秒级；独立 try/catch 只记 warning，绝不影响指令投递与回执落库。
+     *
+     * 只删 success / failed 且过期的行：pending / acknowledged 还可能被 agent
+     * 取走或在途，一律不动。config('xray.command_retain_days') 设 0 即关闭。
+     */
+    private function pruneExpired(): void
+    {
+        $retainDays = (int) config('xray.command_retain_days', 30);
+        if ($retainDays <= 0) {
+            return; // 0 = 关闭清理
+        }
+
+        if (! Cache::add('node-api-commands:prune', 1, 3600)) {
+            return; // 这一小时内已经清过
+        }
+
+        try {
+            DB::table('node_api_commands')
+                ->whereIn('status', [NodeApiCommand::STATUS_SUCCESS, NodeApiCommand::STATUS_FAILED])
+                ->where('updated_at', '<', now()->subDays($retainDays))
+                ->limit(5000)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::warning('node_api_commands 过期清理失败（不影响指令投递）', ['error' => $e->getMessage()]);
+        }
     }
 }
