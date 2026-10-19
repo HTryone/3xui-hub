@@ -44,7 +44,7 @@ cd 3xui-hub/docker
 docker-compose up -d
 ```
 
-访问 http://localhost:8080
+访问 `http://localhost:8080`
 
 ```bash
 docker-compose logs -f        # 查看日志
