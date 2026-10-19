@@ -2,7 +2,7 @@
 
 3x-ui 订阅管理中枢 | 3x-ui Subscription Management Hub
 
-**版本：1.34.0**
+**版本：1.35.0**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -174,6 +174,12 @@ docker-compose up -d --build # 更新并重启
 ```
 
 ## 版本记录
+
+### v1.35.0 (2026-10-19)
+
+- **仪表盘流量卡片收敛**：去掉与「流量消耗 Top 5」重复的「机器流量」常驻卡，两处都改成「卡片内 Top 5 + 查看全部」——机器弹窗沿用 Top 5 那套行样式（机器 / 上行 / 下行 / 峰值 / 倍率），用户弹窗按需加载全量并保留「点用户看按机器明细」与 CSV 导出；占比百分比从进度条内移到条外，深色模式下不再看不清
+- **管理端手机适配**：弹窗在窄屏改用真实可视高度（`100dvh`）+ 遮罩可滚 + 底部安全区，修掉「手机上保存按钮被浏览器底栏挡住、点不到也滚不到」；内容区窄屏贴边；入站 / 出站 / 路由 / WARP / 节点 / 支付 6 个表单页在窄屏改单列；各页表格加「左右滑动查看全部列」提示与右侧渐隐
+- **`node_api_commands` 保留期**：指令回执此前只增不减（主要是增删用户产生的 adu/rmu），现在按 `XRAY_COMMAND_RETAIN_DAYS`（默认 30 天）清理终态记录——只删 success/failed 且已过期的行，pending / acknowledged 不动；设为 0 关闭
 
 ### v1.34.0 (2026-10-18)
 
@@ -428,7 +434,7 @@ MIT License
 
 3x-ui Subscription Management Hub — A centralized platform for managing nodes, users, plans, and payments.
 
-**Version: 1.34.0**
+**Version: 1.35.0**
 
 ## Screenshots
 
