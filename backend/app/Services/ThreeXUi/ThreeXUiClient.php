@@ -666,6 +666,9 @@ class ThreeXUiClient
                 $result[$email] = [
                     'up' => (int) ($stat['up'] ?? 0),
                     'down' => (int) ($stat['down'] ?? 0),
+                    // client 在节点上的启用状态：同步流量时顺带做漂移检测（零额外请求）。
+                    // 缺字段按 true（老版本 3x-ui 不返回时不能误判成关闭）。
+                    'enable' => (bool) ($stat['enable'] ?? true),
                 ];
             }
         }

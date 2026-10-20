@@ -57,7 +57,7 @@ class NodeApiController extends Controller
             'hostname' => ['nullable', 'string', 'max:128'],
         ]);
 
-        $cfg = $node->driver_config ?? [];
+        $cfg = [];
         if (! empty($data['xray_version'])) {
             $cfg['xray_version'] = (string) $data['xray_version'];
         }
@@ -73,6 +73,9 @@ class NodeApiController extends Controller
         // agent 刚从重启流程进来，WS 尚未连接（连上后由 WS 服务写 true）
         $cfg['ws'] = ['connected' => false, 'at' => now()->toIso8601String()];
 
+        // 只合并这几个键：整块回写 driver_config 会把并发 bump 的 config_version 覆盖回旧值
+        $node->mergeDriverConfig($cfg);
+
         // 连接地址自动回填：xray 节点的 host 为空时，用 agent 本次请求的来源公网
         // IP 预填 —— 订阅链接依赖 host 生成，空值会让用户订阅静默为空。
         // 仅回填公网地址：内网/回环（面板与节点同机/同内网）无法用于客户端连接，
@@ -85,7 +88,6 @@ class NodeApiController extends Controller
         }
 
         $node->forceFill([
-            'driver_config' => $cfg,
             'status' => 'online',
             'last_check_at' => now(),
         ])->save();
@@ -205,30 +207,31 @@ class NodeApiController extends Controller
             'net_total_down' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $cfg = $node->driver_config ?? [];
+        $cfg = [
+            'agent' => [
+                'cpu' => isset($data['cpu']) ? (float) $data['cpu'] : null,
+                'mem' => isset($data['mem']) ? (float) $data['mem'] : null,
+                'uptime' => isset($data['uptime']) ? (int) $data['uptime'] : null,
+                'conns' => isset($data['conns']) ? (int) $data['conns'] : null,
+                'active_users' => isset($data['active_users']) ? (int) $data['active_users'] : null,
+                'up_speed' => isset($data['up_speed']) ? (float) $data['up_speed'] : null,
+                'down_speed' => isset($data['down_speed']) ? (float) $data['down_speed'] : null,
+                // 机器网卡累计收发：agent 读不到 /proc/net/dev（非 Linux）时不上报 → null，不当 0
+                'net_total_up' => isset($data['net_total_up']) ? (int) $data['net_total_up'] : null,
+                'net_total_down' => isset($data['net_total_down']) ? (int) $data['net_total_down'] : null,
+                'at' => now()->toIso8601String(),
+            ],
+        ];
 
         if (! empty($data['xray_version'])) {
             $cfg['xray_version'] = (string) $data['xray_version'];
         }
-        $cfg['agent'] = [
-            'cpu' => isset($data['cpu']) ? (float) $data['cpu'] : null,
-            'mem' => isset($data['mem']) ? (float) $data['mem'] : null,
-            'uptime' => isset($data['uptime']) ? (int) $data['uptime'] : null,
-            'conns' => isset($data['conns']) ? (int) $data['conns'] : null,
-            'active_users' => isset($data['active_users']) ? (int) $data['active_users'] : null,
-            'up_speed' => isset($data['up_speed']) ? (float) $data['up_speed'] : null,
-            'down_speed' => isset($data['down_speed']) ? (float) $data['down_speed'] : null,
-            // 机器网卡累计收发：agent 读不到 /proc/net/dev（非 Linux）时不上报 → null，不当 0
-            'net_total_up' => isset($data['net_total_up']) ? (int) $data['net_total_up'] : null,
-            'net_total_down' => isset($data['net_total_down']) ? (int) $data['net_total_down'] : null,
-            'at' => now()->toIso8601String(),
-        ];
 
         // 配置滞后：agent 报的版本落后于面板当前版本 → 记录「落后了多久」（自本地 config 变更时刻算起）
         $current = $node->xrayConfigVersion();
         $reported = (int) ($data['config_version'] ?? 0);
         if ($reported < $current) {
-            $changedAt = $cfg['config_changed_at'] ?? null;
+            $changedAt = $node->driver_config['config_changed_at'] ?? null;
             $cfg['lag_seconds'] = $changedAt
                 ? max(0, (int) Carbon::parse($changedAt)->diffInSeconds(now()))
                 : 0;
@@ -236,14 +239,17 @@ class NodeApiController extends Controller
             $cfg['lag_seconds'] = 0;
         }
 
+        // 只合并运行时键：整块回写会把并发 bumpXrayConfigVersion() 的版本号覆盖回旧值，
+        // 指纹随之回退 → agent 拿到内容相同的 200 再重启一次内核。
+        $node->mergeDriverConfig($cfg);
+
         $node->forceFill([
-            'driver_config' => $cfg,
             'status' => 'online',
             'last_check_at' => now(),
         ])->save();
 
         return response()->json(['code' => 0, 'data' => [
-            'config_version' => $current,
+            'config_version' => $node->xrayConfigVersion(),
             'pull_interval' => $this->pullInterval(),
         ]]);
     }

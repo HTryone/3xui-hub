@@ -61,6 +61,7 @@ class SyncNodeTrafficJob implements ShouldQueue
             return;
         }
 
+        $singleStat = null;
         try {
             if ($this->userId !== null) {
                 $user = User::find($this->userId);
@@ -69,11 +70,12 @@ class SyncNodeTrafficJob implements ShouldQueue
                     return;
                 }
                 $email = $user->clientEmail();
-                $result = $sync->syncUserNodeFromSource($user, $node, function () use ($driverFactory, $node, $email) {
+                $result = $sync->syncUserNodeFromSource($user, $node, function () use ($driverFactory, $node, $email, &$singleStat) {
                     $driver = $driverFactory->make($node);
                     // 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）
                     $stats = $driver->getClientStatsByEmail();
-                    return $stats[$email] ?? null;
+                    $singleStat = $stats[$email] ?? null;
+                    return $singleStat;
                 });
                 $deltaMap = [];
             } else {
@@ -128,6 +130,24 @@ class SyncNodeTrafficJob implements ShouldQueue
                 $fresh = $user->fresh();
                 $fresh->load('plan');
                 $banService->checkAfterSync($fresh);
+            }
+        }
+
+        // 漂移修复：节点上 client 已关闭、面板认为正常。只在人工触发的同步任务里执行
+        // （管理员/用户点「同步流量」），定时任务的同一路径不会修 —— 否则会和 3x-ui
+        // 自己的自动禁用后台拉锯。repairDrift 内部还会再核一次面板判据。
+        $driftUserIds = $result['driftUserIds'] ?? [];
+        if ($this->userId !== null && is_array($singleStat) && ($singleStat['enable'] ?? true) === false) {
+            $driftUserIds = [(int) $this->userId];
+        }
+        foreach (array_unique($driftUserIds) as $driftUserId) {
+            $driftUser = User::with('plan')->find($driftUserId);
+            if ($driftUser !== null && $banService->repairDrift($driftUser)) {
+                Log::info('同步流量时修复了 client 漂移', [
+                    'user_id' => $driftUserId,
+                    'node_id' => $node->id,
+                    'task_id' => $this->taskId,
+                ]);
             }
         }
 

@@ -12,6 +12,7 @@ use App\Services\ThreeXUi\ThreeXUiClient;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
+use Illuminate\Support\Facades\Log;
 
 /**
  * 封禁服务（M8 + 套餐适配）。
@@ -211,6 +212,16 @@ class BanService
             // （isRecentlyDisabled 时效到期后重新校验），所以这里并不是天然的单次
             // 触发点——防重靠 notifyTrafficExhausted 里的时代标记。
             $this->notifyTrafficExhausted($user);
+        } else {
+            // 部分（甚至全部）节点未确认：不写 traffic_disabled_at，让 needsDisable
+            // 下一轮仍为 true、扫描器自动补关 —— 保住「不漏关」语义。
+            // 但关闭动作已经在成功的那些节点上生效了，必须留痕：否则线上表现是
+            // 「面板看起来正常、用户已经从部分节点断流」，无从排查（issue #51）。
+            Log::warning('toggleClient 未全部节点确认，下一轮重试', [
+                'user_id' => $user->id,
+                'confirmed' => $confirmed,
+                'total' => $nodes->count(),
+            ]);
         }
 
         return $applied;
@@ -259,6 +270,33 @@ class BanService
             // 交给 Job：真发失败时释放这条标记，下一轮扫描补发
             claimKey: MailNotifyService::claimKey('traffic_exhausted', $user, $rendered['to_type'], $to),
         );
+    }
+
+    /**
+     * 修复「节点上 client 已关闭、面板认为正常」的漂移。
+     *
+     * 只在人工触发（管理员/用户点「同步流量」）时调用，不做定时自动修复 ——
+     * 3x-ui 自己也会按额度/到期关人，后台无脑重开会和它来回拉锯。
+     *
+     * 顺序不能反：先同步 client 定义（totalGB/expiryTime/enable）→ 清节点侧计数 →
+     * 再重新启用。只 enable 不清计数，3x-ui 下一轮 disableInvalidClients 会再关一次
+     * （超量条件仍然成立），表现为「修好了又断」。
+     */
+    public function repairDrift(User $user): bool
+    {
+        // 面板自己也认为该关（超量/到期/已标记关闭）→ 不是漂移，不动
+        if ($this->banReason($user) !== false) {
+            return false;
+        }
+
+        $admin = app(UserAdminService::class);
+        $admin->provisionClient($user);
+        $admin->resetClientOnNodes($user);
+        $this->toggleClient($user, true);
+
+        Log::warning('节点 client 漂移已修复（同步流量时触发）', ['user_id' => $user->id]);
+
+        return true;
     }
 
     /**

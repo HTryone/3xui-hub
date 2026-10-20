@@ -426,6 +426,12 @@ class UserAdminService
         ])->save();
 
         $this->resetClientOnNodes($user);
+
+        // 重置计数不等于重新启用：3x-ui 只是顺手把 client enable 打开，xray 节点
+        // 的 resetClientTraffic 是 no-op，reset 失败（节点超时/该节点无此 client）
+        // 时也不会重开 —— 用户会永久断连（issue #51）。统一再走一次开关，
+        // enable=true 在两类节点上都幂等：xray 走 adu 重加，3x-ui 走 updateClient。
+        app(BanService::class)->toggleClient($user, true);
     }
 
     /**

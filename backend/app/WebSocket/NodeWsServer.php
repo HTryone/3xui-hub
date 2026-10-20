@@ -218,9 +218,8 @@ class NodeWsServer
         try {
             $node = Node::find($nodeId);
             if ($node !== null) {
-                $cfg = $node->driver_config ?? [];
-                $cfg['ws'] = ['connected' => false, 'at' => now()->toIso8601String()];
-                $node->forceFill(['driver_config' => $cfg])->save();
+                // 只合并 ws 键：整块回写会把并发 bump 的 config_version 覆盖回旧值
+                $node->mergeDriverConfig(['ws' => ['connected' => false, 'at' => now()->toIso8601String()]]);
             }
         } catch (\Throwable $e) {
             Log::warning("[node-ws] node#{$nodeId} 断线清理失败：{$e->getMessage()}");
@@ -240,7 +239,7 @@ class NodeWsServer
             return;
         }
 
-        $cfg = $node->driver_config ?? [];
+        $cfg = [];
         if (! empty($data['xray_version'])) {
             $cfg['xray_version'] = (string) $data['xray_version'];
         }
@@ -255,8 +254,10 @@ class NodeWsServer
         }
         $cfg['ws'] = ['connected' => true, 'at' => now()->toIso8601String()];
 
+        // 只合并这几个键：整块回写会把并发 bump 的 config_version 覆盖回旧值
+        $node->mergeDriverConfig($cfg);
+
         $node->forceFill([
-            'driver_config' => $cfg,
             'status' => 'online',
             'last_check_at' => now(),
         ])->save();
@@ -322,7 +323,7 @@ class NodeWsServer
         }
 
         // 3) 监控指标 + 心跳
-        $cfg = $node->driver_config ?? [];
+        $cfg = [];
         $metrics = $data['metrics'] ?? null;
         if (is_array($metrics)) {
             $cfg['agent'] = [
@@ -344,7 +345,7 @@ class NodeWsServer
         $current = $node->xrayConfigVersion();
         $reported = (int) ($data['config_version'] ?? 0);
         if ($reported < $current) {
-            $changedAt = $cfg['config_changed_at'] ?? null;
+            $changedAt = $node->driver_config['config_changed_at'] ?? null;
             $cfg['lag_seconds'] = $changedAt
                 ? max(0, (int) Carbon::parse($changedAt)->diffInSeconds(now()))
                 : 0;
@@ -356,8 +357,10 @@ class NodeWsServer
         }
         $cfg['ws'] = ['connected' => true, 'at' => now()->toIso8601String()];
 
+        // 只合并运行时键：整块回写会把并发 bump 的 config_version 覆盖回旧值
+        $node->mergeDriverConfig($cfg);
+
         $node->forceFill([
-            'driver_config' => $cfg,
             'status' => 'online',
             'last_check_at' => now(),
         ])->save();

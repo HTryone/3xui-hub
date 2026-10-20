@@ -201,13 +201,13 @@ class TrafficSyncService
     public function syncNodeBatch(Node $node, array $clientStats): array
     {
         if (empty($clientStats)) {
-            return ['deltaMap' => [], 'snapshotData' => []];
+            return ['deltaMap' => [], 'snapshotData' => [], 'driftUserIds' => []];
         }
 
         // 1. 从 clientEmail 解析 userId
         $emailToUserId = $this->parseUserIds(array_keys($clientStats));
         if (empty($emailToUserId)) {
-            return ['deltaMap' => [], 'snapshotData' => []];
+            return ['deltaMap' => [], 'snapshotData' => [], 'driftUserIds' => []];
         }
 
         $userIds = array_values($emailToUserId);
@@ -229,6 +229,7 @@ class TrafficSyncService
         // 4. 计算增量
         $deltaMap = [];
         $snapshotData = [];
+        $driftUserIds = []; // 节点上已关闭、面板认为正常的用户（人工点同步流量时修复）
         $now = now();
 
         // 同一节点内所有用户共用一个倍率，循环外取一次（节点级倍率）。
@@ -242,6 +243,18 @@ class TrafficSyncService
             $nowUp = (int) ($stat['up'] ?? 0);
             $nowDown = (int) ($stat['down'] ?? 0);
             $nowTotal = $nowUp + $nowDown;
+
+            // 漂移：节点上 client 已关闭，面板却认为该用户正常（未超量/未到期/未被面板关闭）。
+            // 只记录不在这里修 —— 修复由人工触发（管理员/用户点「同步流量」）时执行，
+            // 避免定时任务在后台和 3x-ui 自己的自动禁用来回拉锯。
+            if (($stat['enable'] ?? true) === false) {
+                $candidate = $users[$userId];
+                if ($candidate->enabled
+                    && $candidate->traffic_disabled_at === null
+                    && app(\App\Services\BanService::class)->banReason($candidate) === false) {
+                    $driftUserIds[] = $userId;
+                }
+            }
 
             $last = $latestSnapshots->get($userId);
             $lastUp = $last === null ? null : (int) $last->upload;
@@ -303,7 +316,7 @@ class TrafficSyncService
             ];
         }
 
-        return ['deltaMap' => $deltaMap, 'snapshotData' => $snapshotData];
+        return ['deltaMap' => $deltaMap, 'snapshotData' => $snapshotData, 'driftUserIds' => $driftUserIds];
     }
 
     /**

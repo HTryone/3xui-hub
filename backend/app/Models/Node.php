@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 
 /**
  * ControlHub 节点（system-design §5.1）。
@@ -166,15 +167,43 @@ class Node extends Model
         return (int) ($this->driver_config['config_version'] ?? 0);
     }
 
+    /**
+     * 递增全量 config 版本号（结构变更时调用）。
+     *
+     * 行锁内重读再递增：driver_config 是整块 JSON 列，若用内存快照 +1 后整块回写，
+     * 与 alive/register 的心跳回写并发时会互相覆盖（丢版本号 → 结构变更不重启内核，
+     * 或版本回退 → 指纹回退、agent 误判成新配置再重启一次）。
+     */
     public function bumpXrayConfigVersion(): int
     {
-        $cfg = $this->driver_config ?? [];
-        $cfg['config_version'] = $this->xrayConfigVersion() + 1;
-        // 变更时刻：alive 上报落后版本时，节点页据此显示「配置滞后 N 秒」
-        $cfg['config_changed_at'] = now()->toIso8601String();
-        $this->driver_config = $cfg;
-        $this->save();
-        return $cfg['config_version'];
+        return DB::transaction(function () {
+            $fresh = static::whereKey($this->getKey())->lockForUpdate()->first();
+            $cfg = $fresh->driver_config ?? [];
+            $cfg['config_version'] = (int) ($cfg['config_version'] ?? 0) + 1;
+            // 变更时刻：alive 上报落后版本时，节点页据此显示「配置滞后 N 秒」
+            $cfg['config_changed_at'] = now()->toIso8601String();
+            $fresh->forceFill(['driver_config' => $cfg])->save();
+            $this->setRawAttributes($fresh->getAttributes(), true);
+
+            return $cfg['config_version'];
+        });
+    }
+
+    /**
+     * 只合并 driver_config 的指定键（行锁内重读最新值再合并）。
+     *
+     * 心跳（alive）与注册（register）都会写 driver_config；用内存快照整块回写会把
+     * 并发 bumpXrayConfigVersion() 刚递增的 config_version 覆盖回旧值。凡「只更新
+     * 部分键」的写入都必须走这里，config_version 只由 bumpXrayConfigVersion 推进。
+     */
+    public function mergeDriverConfig(array $patch): void
+    {
+        DB::transaction(function () use ($patch) {
+            $fresh = static::whereKey($this->getKey())->lockForUpdate()->first();
+            $cfg = $fresh->driver_config ?? [];
+            $fresh->forceFill(['driver_config' => array_replace_recursive($cfg, $patch)])->save();
+            $this->setRawAttributes($fresh->getAttributes(), true);
+        });
     }
 
     /**
