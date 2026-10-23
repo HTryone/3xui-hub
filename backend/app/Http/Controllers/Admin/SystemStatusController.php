@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\OperationLog;
+use App\Services\PhpRuntimeAuditor;
 use App\Traits\ApiResponse;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Carbon;
@@ -32,7 +33,36 @@ class SystemStatusController extends Controller
             'logs'   => $logs,
             'tasks'  => $this->taskStatuses(),
             'worker' => $this->workerStatus(),
+            'php'    => $this->phpStatus(),
         ]);
+    }
+
+    /**
+     * PHP 运行时安全（php2shell：CVE-2026-109618 / CVE-2026-109619）。
+     *
+     * 只读、不执行 shell：后台用它出「运行时未修 → 请升级 / 可一键缓解」的提示。
+     * 判定口径与 `php artisan php:secure` 完全一致（同一份 config + 同一个服务）。
+     *
+     * @return array<string,mixed>
+     */
+    protected function phpStatus(): array
+    {
+        try {
+            $audit = app(PhpRuntimeAuditor::class)->audit();
+        } catch (\Throwable $e) {
+            // 状态页不能因为体检失败而整页 500
+            return ['checked' => false, 'error' => $e->getMessage()];
+        }
+
+        return [
+            'checked'     => true,
+            'version'     => $audit['version'],
+            'sapi'        => $audit['sapi'],
+            'patched'     => $audit['patched'],
+            'fixed_in'    => $audit['fixed_in'],
+            'mitigated'   => $audit['mitigated'],
+            'ini_file'    => $audit['ini_file'],
+        ];
     }
 
     /**

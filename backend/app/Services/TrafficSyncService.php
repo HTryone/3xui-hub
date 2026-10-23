@@ -13,7 +13,8 @@ use Illuminate\Support\Facades\Log;
 /**
  * 流量增量计算（M7.4~M7.6 + 套餐适配）。
  * 增量 = (up+down) - 上次 (upload+download)；
- * 若 3x-ui 侧流量被重置（now < last）→ delta = now（重新计起）。
+ * 若 3x-ui 侧流量被重置（now < last）→ 本轮增量记 0，快照推进为新基准。
+ *   （旧口径是 delta = now，即把整段现值当增量，会瞬间冲过额度导致误封，已废弃。）
  * 幂等：以最新 snapshot 为基准，重跑不重复扣。
  *
  * 周期套餐用户：同时累加 traffic_used 和 monthly_traffic_used。
@@ -119,8 +120,26 @@ class TrafficSyncService
             }
             $delta = $nowTotal; // 首次同步：记为基准，不回溯全部历史
         } else {
-            // 3x-ui 侧重置或 client 重建 → now < last，重新计起
-            $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
+            // 3x-ui 侧重置或 client 重建 → now < last：计数器被清零重算。
+            // 绝不能把 nowTotal 整段当增量 —— 那会让 traffic_used 一次暴涨越过额度，
+            // banReason() 误判超量把用户封掉（2026-10-23 事故的误封来源之一）。
+            // 本轮记 0，快照推进到本轮值作为新基准，下一轮从新计数继续累加。
+            if ($nowTotal < $lastTotal) {
+                Log::warning('流量计数倒退（节点重置/重建），本轮计费增量记 0', [
+                    'user_id' => $user->id,
+                    'node_id' => $node->id,
+                    'last_total' => $lastTotal,
+                    'now_total' => $nowTotal,
+                ]);
+                TrafficSnapshot::updateOrCreate(
+                    ['user_id' => $user->id, 'node_id' => $node->id],
+                    ['upload' => $nowUp, 'download' => $nowDown],
+                );
+
+                return;
+            }
+
+            $delta = $nowTotal - $lastTotal;
 
             if ($delta === 0) {
                 if ($upDelta === 0 && $downDelta === 0) {
@@ -247,6 +266,11 @@ class TrafficSyncService
                     && $candidate->traffic_disabled_at === null
                     && app(\App\Services\BanService::class)->banReason($candidate) === false) {
                     $driftUserIds[] = $userId;
+                    Log::warning('节点与面板状态分叉：节点上没有该 client，面板仍放行', [
+                        'user_id' => $userId,
+                        'email' => $email,
+                        'node_id' => $node->id,
+                    ]);
                 }
 
                 continue;
@@ -266,6 +290,13 @@ class TrafficSyncService
                     && $candidate->traffic_disabled_at === null
                     && app(\App\Services\BanService::class)->banReason($candidate) === false) {
                     $driftUserIds[] = $userId;
+                    // 面板认为该开、节点上是关的：这种分叉过去只在人工点同步时静默修，
+                    // 出问题时无从追溯（2026-10-23 事故藏了一整天）。每轮同步留一条 warning。
+                    Log::warning('节点与面板状态分叉：面板放行、节点 enable=false', [
+                        'user_id' => $userId,
+                        'email' => $email,
+                        'node_id' => $node->id,
+                    ]);
                 }
             }
 
@@ -286,8 +317,27 @@ class TrafficSyncService
                 }
                 $delta = $nowTotal; // 首次同步
             } else {
-                // 3x-ui 侧重置或 client 重建 → now < last，重新计起
-                $delta = $nowTotal < $lastTotal ? $nowTotal : ($nowTotal - $lastTotal);
+                // 计数器倒退：同单用户路径，本轮记 0 并推进快照作为新基准，
+                // 否则下一轮还会看到同一个倒退值。
+                if ($nowTotal < $lastTotal) {
+                    Log::warning('流量计数倒退（批量同步），本轮计费增量记 0', [
+                        'user_id' => $userId,
+                        'node_id' => $node->id,
+                        'last_total' => $lastTotal,
+                        'now_total' => $nowTotal,
+                    ]);
+                    $snapshotData[] = [
+                        'user_id' => $userId,
+                        'node_id' => $node->id,
+                        'upload' => $nowUp,
+                        'download' => $nowDown,
+                        'updated_at' => $now,
+                    ];
+
+                    continue;
+                }
+
+                $delta = $nowTotal - $lastTotal;
 
                 // 累计值没变 → 跳过写快照。快照只是下次算差值的基准，
                 // 数值没变时重写是纯写放大（10 万用户里绝大多数每轮都没流量）。
@@ -337,7 +387,7 @@ class TrafficSyncService
      *
      * 两种「重新起算」与总量口径一致：
      *   - 首次同步（$lastUp / $lastDown 为 null）→ 整段现值都算增量；
-     *   - 累计总量倒退（now < last，3x-ui 侧重置或 client 重建）→ 整段现值都算增量。
+     *   - 累计总量倒退（now < last，3x-ui 侧重置或 client 重建）→ 整段现值不是本轮增量，全记 0。
      * 其余情况逐方向取差、负差钳 0（同 MonitorService::deltas 的机器口径）。
      *
      * 注：逐方向钳 0 后，up+down 与「总量差」在「一升一降」的极端样本上会有出入；
@@ -352,7 +402,8 @@ class TrafficSyncService
         }
 
         if ($nowUp + $nowDown < $lastUp + $lastDown) {
-            return [$nowUp, $nowDown];
+            // 计数器倒退：整段现值不是本轮发生的流量，方向增量同样记 0。
+            return [0, 0];
         }
 
         return [max(0, $nowUp - $lastUp), max(0, $nowDown - $lastDown)];

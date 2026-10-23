@@ -77,3 +77,8 @@ Schedule::command('xray:refresh-outbound-subs')->everyFiveMinutes()->name('xray-
 // 有更新则下载并分发到所有 enabled xray 节点（节点侧 sha 相同则跳过，不打扰存量）。
 // 放在 04:45：错开 04:30 的 monitor:rollup；周一低频，geo 数据本身也不是每日变更。
 Schedule::command('geodata:update', ['--dispatch' => true])->weeklyOn(1, '04:45')->name('geodata-update')->withoutOverlapping();
+
+// 节点侧「已关闭但面板仍放行」的对账恢复（issue #51）。
+// 每 5 分钟扫一遍 3x-ui 节点：面板认为该开、节点上 enable=false 的 client 重新打开。
+// 与「开关是否全部节点确认」配合：toggleClient 全确认才算成功，失败的下轮由本命令重试。
+Schedule::command('users:reconcile-enable')->everyFiveMinutes()->name('users-reconcile-enable')->withoutOverlapping();

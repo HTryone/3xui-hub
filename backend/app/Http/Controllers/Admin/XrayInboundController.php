@@ -97,6 +97,55 @@ class XrayInboundController extends Controller
     }
 
     /**
+     * POST /admin-api/nodes/{node}/xray-inbounds/batch-delete
+     * body: { ids: number[] } —— 一次删多个入站（对齐 3x-ui 入站列表的多选删除）。
+     *
+     * 口径：
+     * - 只认本节点下的 id，不在本节点的 id 归入 failed（reason=not_found）原样返回（不报错、不静默吞）
+     * - 逐个删；单条失败不影响其余（与 3x-ui「逐条处理、按 id 回报」一致）
+     * - 全部处理完只 bump 一次配置版本，节点只重载一次配置
+     */
+    public function batchDestroy(Request $request, Node $node): JsonResponse
+    {
+        $this->ensureXray($node);
+
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1', 'max:100'],
+            'ids.*' => ['integer', 'min:1'],
+        ]);
+
+        $ids = array_values(array_unique(array_map('intval', $data['ids'])));
+        $targets = $node->xrayInbounds()->whereIn('id', $ids)->get()->keyBy('id');
+
+        $deleted = [];
+        $failed = [];
+
+        foreach ($ids as $id) {
+            $inbound = $targets->get($id);
+            if (! $inbound) {
+                $failed[] = ['id' => $id, 'reason' => 'not_found'];
+                continue;
+            }
+            try {
+                $inbound->delete();
+                $deleted[] = $id;
+            } catch (\Throwable $e) {
+                $failed[] = ['id' => $id, 'reason' => $e->getMessage()];
+            }
+        }
+
+        if ($deleted) {
+            $node->bumpXrayConfigVersion();
+        }
+
+        return $this->success([
+            'deleted' => $deleted,
+            'failed' => $failed,
+            'config_version' => $node->xrayConfigVersion(),
+        ]);
+    }
+
+    /**
      * POST /admin-api/nodes/{node}/xray-inbounds/reality-keypair
      * 生成一组 Reality 密钥材料（新建/轮换表单预填；与 xray x25519 格式一致）。
      */

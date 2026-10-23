@@ -183,8 +183,11 @@ class BanService
      * - 关闭（enable=false）：要求【全部启用节点】确认，才写 traffic_disabled_at。
      *   少关掉一个节点，用户就能从那个节点继续跑流量；宁可下一轮重试，
      *   也不能标记成「已关闭」而被扫描器跳过 —— 保住「兜底不漏关」的既有语义。
-     * - 开启（enable=true）：只要有【任一节点】确认就清空标记。清空是更宽松的方向，
-     *   最坏结果只是下一轮多做一次校验，不会漏关。
+     * - 开启（enable=true）：同样要求【全部启用节点】确认才清空标记。
+     *   早期口径是「任一节点确认即清空」，线上实测会漏：xray 节点入队成功、
+     *   3x-ui 节点 update 失败时仍返回成功，面板显示已启用而用户在 3x-ui 上仍被关
+     *   （2026-10-23 事故：124 第一次 toggle 返回 true 但节点 enable 仍为 false）。
+     *   未全部确认时保留标记，由 users:reconcile-enable（每 5 分钟）重试。
      */
     public function toggleClient(User $user, bool $enable): bool
     {
@@ -198,11 +201,20 @@ class BanService
         $confirmed = $this->applyEnableOnNodes($nodes, $user->protocol, $email, $enable);
 
         if ($enable) {
-            if ($confirmed > 0) {
+            // 开启也要求全部节点确认：任一节点没开成功，用户就会在那台上继续断流，
+            // 而面板显示「已启用」。未确认时保留标记，交给对账命令重试。
+            $applied = $confirmed === $nodes->count();
+            if ($applied) {
                 $this->forgetDisabledState($user);
+            } else {
+                Log::warning('toggleClient(true) 未全部节点确认', [
+                    'user_id' => $user->id,
+                    'confirmed' => $confirmed,
+                    'total' => $nodes->count(),
+                ]);
             }
 
-            return $confirmed > 0;
+            return $applied;
         }
 
         $applied = $confirmed === $nodes->count();

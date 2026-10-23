@@ -35,6 +35,7 @@ class DiscountCode extends Model
         'note',
         'status',
         'plan_id',
+        'folder_id',
         'source_order_id',
         'refreshed_at',
         'next_refresh_at',
@@ -49,6 +50,7 @@ class DiscountCode extends Model
             'next_refresh_at' => 'datetime',
             'user_id' => 'integer',
             'plan_id' => 'integer',
+            'folder_id' => 'integer',
             'source_order_id' => 'integer',
             'max_uses' => 'integer',
             'used_count' => 'integer',
@@ -64,6 +66,12 @@ class DiscountCode extends Model
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    /** 所属文件夹（null = 未归档）。分组只影响后台展示，不参与校验/核销。 */
+    public function folder(): BelongsTo
+    {
+        return $this->belongsTo(DiscountCodeFolder::class, 'folder_id');
     }
 
     /**
@@ -104,6 +112,42 @@ class DiscountCode extends Model
         } while (static::where('code', $code)->exists());
 
         return $code;
+    }
+
+    /**
+     * 批量生成 N 个唯一码（一次查库校验冲突，冲突项重生成）。
+     *
+     * 与逐条 generateCode 的区别：不做 N 次「生成一个 + 查一次库」的往返，
+     * 一次性把候选码拿去库比对，批量生成 500 个从 4 秒降到百毫秒级。
+     */
+    public static function generateCodes(string $prefix, int $count): array
+    {
+        $prefix = strtoupper($prefix);
+        $codes = [];
+        $guard = 0;
+
+        while (count($codes) < $count && $guard++ < 20) {
+            $need = $count - count($codes);
+            $batch = [];
+            for ($i = 0; $i < $need; $i++) {
+                $batch[] = $prefix . self::randomBody();
+            }
+            // 同一批内先去重（32^8 空间基本不会撞，但别让理论上限变成 bug）
+            $batch = array_values(array_unique($batch));
+            // 一次查询拿冲突码
+            $taken = array_flip(static::whereIn('code', $batch)->pluck('code')->all());
+            foreach ($batch as $code) {
+                if (isset($taken[$code])) {
+                    continue;
+                }
+                $codes[] = $code;
+                if (count($codes) >= $count) {
+                    break;
+                }
+            }
+        }
+
+        return $codes;
     }
 
     /**

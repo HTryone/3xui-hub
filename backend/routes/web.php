@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Admin\AsyncTaskController as AdminAsyncTaskController;
 use App\Http\Controllers\Admin\BackupController as AdminBackupController;
 use App\Http\Controllers\Admin\DiscountCodeController as AdminDiscountCodeController;
+use App\Http\Controllers\Admin\DiscountCodeFolderController as AdminDiscountCodeFolderController;
 use App\Http\Controllers\Admin\DomainController as AdminDomainController;
 use App\Http\Controllers\Admin\EmailController as AdminEmailController;
 use App\Http\Controllers\Admin\GeodataController as AdminGeodataController;
@@ -101,6 +102,8 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     Route::post('/nodes/{node}/xray-inbounds', [AdminXrayInboundController::class, 'store']);
     // 密钥生成必须排在 {inbound} 参数路由之前（同 third-party 的先例）
     Route::post('/nodes/{node}/xray-inbounds/reality-keypair', [AdminXrayInboundController::class, 'realityKeypair']);
+    // 批量删除（入站列表多选删除；走 POST 因为 DELETE 带 body 在部分网关/代理下会被丢）
+    Route::post('/nodes/{node}/xray-inbounds/batch-delete', [AdminXrayInboundController::class, 'batchDestroy']);
     // Reality 目标探测（节点侧真实 TLS 握手，结果 JSON 回执；留空用内置候选）
     Route::post('/nodes/{node}/xray-inbounds/reality-scan', [AdminXrayInboundController::class, 'realityScan']);
     Route::put('/nodes/{node}/xray-inbounds/{inbound}', [AdminXrayInboundController::class, 'update']);
@@ -244,8 +247,15 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
     // 优惠码 / 邀请机制
     Route::get('/discount-codes', [AdminDiscountCodeController::class, 'index']);
     Route::post('/discount-codes', [AdminDiscountCodeController::class, 'store']);
+    // 批量删除（优惠码页多选删除；走 POST 避免 DELETE 带 body 被网关丢）
+    Route::post('/discount-codes/batch-delete', [AdminDiscountCodeController::class, 'batchDestroy']);
     Route::put('/discount-codes/{code}', [AdminDiscountCodeController::class, 'update']);
     Route::delete('/discount-codes/{code}', [AdminDiscountCodeController::class, 'destroy']);
+
+    // 优惠码文件夹（分组展示用；删除只摘码不删码）
+    Route::post('/discount-code-folders', [AdminDiscountCodeFolderController::class, 'store']);
+    Route::put('/discount-code-folders/{folder}', [AdminDiscountCodeFolderController::class, 'update']);
+    Route::delete('/discount-code-folders/{folder}', [AdminDiscountCodeFolderController::class, 'destroy']);
     Route::get('/invite-settings', [AdminDiscountCodeController::class, 'inviteSettings']);
     Route::put('/invite-settings', [AdminDiscountCodeController::class, 'updateInviteSettings']);
 });

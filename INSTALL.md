@@ -114,6 +114,21 @@ Docker 部署改 `docker/supervisord.conf`：照着加一段 `[program:queue-nod
 面板打满、整体更慢甚至假死。节点多但机器弱，把 `PANEL_NODE_OPS_CONCURRENCY` 降到
 2~3；宁可慢也不要把面板打崩。
 
+### PHP 运行时安全基线（php:secure）
+
+针对 php2shell（CVE-2026-109618 / 109619，两个都在 PHP 内核里，应用层没有代码可改）：
+
+```bash
+cd backend
+php artisan php:secure        # 只检测当前运行时是否含修复，不改任何文件
+php artisan php:secure --fix  # 写入 ini 缓解项并重载 php-fpm
+```
+
+- 判定表在 `config/panel.php` 的 `php_security.patched_branches`；不在表内的分支（8.1 及以下）官方不发补丁，一律判受影响
+- `--fix` 写 `session.upload_progress.enabled=0`、`session.upload_progress.cleanup=On`、`fatal_error_backtraces=0`，写前备份、`php -l` 校验、reload 失败自动回滚
+- 重载的 php-fpm 服务名默认复用面板的探测结果；装在不标准命名的服务上时用 `PANEL_PHP_FPM_SERVICE=php8.4-fpm` 显式指定
+- 缓解项只堵住 advisory 里已确认的利用路径，**不能替代升级**到修复版（8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 起）
+
 ### 小内存机器（< 1GB）默认已按内存收敛
 
 1 核 / 937MB 这类机器装完不用手动做任何事，三处默认值都已朝省内存调整：

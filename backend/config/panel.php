@@ -119,6 +119,40 @@ return [
     ],
 
     /*
+     | PHP 运行时安全基线（php2shell：CVE-2026-109618 / CVE-2026-109619）。
+     |
+     | 两个漏洞都在 PHP 内核（OOM 后请求内存状态损坏 / 跨请求陈旧全局状态 use-after-free），
+     | **应用层没有任何一行代码可以改**：唯一的完整修复是把运行时升到本分支的修复版。
+     | 因此 `php artisan php:secure` 只做两件事：
+     |   1. 按 patched_branches 判定当前运行时是否已含修复（版本串带发行版后缀也认）；
+     |   2. `--fix` 时把 mitigations 写进 php.ini 并重载 php-fpm（备份 / 校验 / 失败回滚）。
+     |
+     | 缓解项只是堵住 advisory 里已确认的利用路径，不能替代升级：
+     |   session.upload_progress.enabled=0 → 断掉 109619 在 FPM 上唯一验证过的 consumer
+     |   fatal_error_backtraces=0          → 8.5 的 backtrace consumer（8.4 及以下设了无副作用）
+     | 必须写在 php.ini（或 pool 的 php_admin_value），`.user.ini` / ini_set() 在请求解析前不生效。
+     */
+    'php_security' => [
+        // 分支 => 第一个含修复的版本；不在表内的分支（8.1/8.0/7.x/5.x）官方不发补丁，一律判受影响
+        'patched_branches' => [
+            '8.5' => '8.5.12',
+            '8.4' => '8.4.27',
+            '8.3' => '8.3.36',
+            '8.2' => '8.2.35',
+        ],
+
+        // ini 缓解项（值为期望字符串；ini_get 的布尔返回 "1"/""，比较前会归一）
+        'mitigations' => [
+            'session.upload_progress.enabled' => '0',
+            'session.upload_progress.cleanup' => 'On',
+            'fatal_error_backtraces'          => '0',
+        ],
+
+        // 重载 php-fpm 用的服务名；留空则复用上面 fpm.targets 探测到的服务名
+        'service' => (string) env('PANEL_PHP_FPM_SERVICE', ''),
+    ],
+
+    /*
      | cookie 模式登录态缓存（秒）。
      |
      | 未配 api_key 的节点每次操作都要先 POST /login + GET /csrf-token；Web 请求与队列

@@ -326,22 +326,23 @@ class UserAdminService
      * - 单节点失败只 report()，由调用方决定是否影响其它节点（同步版继续下一个节点，
      *   Job 版则只有这一个节点的 Job 失败）
      */
-    public function provisionClientOnNode(User $user, Node $node, array &$clientData): void
+    public function provisionClientOnNode(User $user, Node $node, array &$clientData): bool
     {
         $email = $clientData['email'];
 
         if ($node->isXray()) {
             $this->provisionXrayClientOnNode($user, $node, $clientData);
 
-            return;
+            return true;
         }
 
         $inboundIds = $node->inboundIdsFor($user->protocol);
         if (empty($inboundIds)) {
-            return;
+            return true;
         }
 
         $client = $this->driverFactory->make($node);
+        $ok = true;
         try {
             // 先检查 client 是否存在
             $existing = $client->getClient($email);
@@ -355,6 +356,9 @@ class UserAdminService
                     try {
                         $client->updateClient($email, $clientData, $inboundId);
                     } catch (\Throwable $e) {
+                        // 不能只 report：这会静默失败，面板以为已同步而用户在该节点上仍被关。
+                        // 返回 false 让调用方/对账任务重试。
+                        $ok = false;
                         report($e);
                     }
                 }
@@ -366,8 +370,11 @@ class UserAdminService
                 }
             }
         } catch (\Throwable $e) {
+            $ok = false;
             report($e);
         }
+
+        return $ok;
     }
 
     /**
