@@ -77,6 +77,11 @@ class ExpirePendingOrders extends Command
             }
 
             if (! $dryRun) {
+                // 代理订单作废要把预占的库存还回去，否则卖不掉的库存越积越多
+                foreach ($orders as $order) {
+                    app(\App\Services\ProxyStoreService::class)->releaseOrderStock($order);
+                }
+
                 Order::whereIn('id', $orders->pluck('id'))
                     ->where('status', Order::STATUS_PENDING)
                     ->update(['status' => Order::STATUS_EXPIRED, 'updated_at' => now()]);

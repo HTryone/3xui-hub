@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\DiscountController as ApiDiscountController;
 use App\Http\Controllers\Api\NodeApiController;
 use App\Http\Controllers\Api\NodeController as ApiNodeController;
 use App\Http\Controllers\Api\PaymentController as ApiPaymentController;
+use App\Http\Controllers\Api\ApiProxyStoreController;
 use App\Http\Controllers\Api\PlanController as ApiPlanController;
 use App\Http\Controllers\Api\ProtocolController;
 use App\Http\Controllers\Api\SubscriptionController;
@@ -25,7 +26,9 @@ Route::get('/ping', function (): \Illuminate\Http\JsonResponse {
 Route::get('/site-config', function (): \Illuminate\Http\JsonResponse {
     $keys = ['site_title', 'site_subtitle', 'site_description', 'site_keywords', 'site_logo', 'site_favicon', 'register_email_verify', 'announcement', 'feedback_link', 'sub_clash_enabled', 'sub_singbox_enabled', 'sub_show_flag', 'sub_rename_enabled', 'sub_rename_regex', 'sub_rename_replacement',
         // 自定义公开首页：前端读到空值就走默认首页，老面板行为不变
-        'home_custom_html', 'home_custom_css'];
+        'home_custom_html', 'home_custom_css',
+        // 代理商城总开关（默认关闭；用户端据此隐藏「代理」入口）
+        'proxy_store_enabled'];
     $data = \App\Models\SiteConfig::getMany($keys);
     return response()->json(['code' => 0, 'msg' => 'ok', 'data' => $data]);
 });
@@ -100,6 +103,13 @@ Route::middleware('api.auth')->group(function () {
     // 邀请码 / 兑换码
     Route::get('/invite/me', [ApiDiscountController::class, 'myInvite']);
     Route::post('/discount/check', [ApiDiscountController::class, 'check']);
+
+    // 代理商城（与节点套餐完全独立）
+    Route::get('/proxy-store/products', [ApiProxyStoreController::class, 'products']);
+    Route::post('/proxy-store/orders', [ApiProxyStoreController::class, 'createOrder']);
+    Route::get('/proxy-store/entitlements', [ApiProxyStoreController::class, 'entitlements']);
+    Route::get('/proxy-store/entitlements/{id}/proxies', [ApiProxyStoreController::class, 'proxies'])
+        ->whereNumber('id');
 
     Route::get('/_auth_check', function (\Illuminate\Http\Request $request): \Illuminate\Http\JsonResponse {
         return response()->json([

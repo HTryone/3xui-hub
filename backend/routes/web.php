@@ -29,6 +29,10 @@ use App\Http\Controllers\Admin\NodeWarpController as AdminNodeWarpController;
 use App\Http\Controllers\Admin\OutboundSubscriptionController as AdminOutboundSubscriptionController;
 use App\Http\Controllers\Admin\MonitorController as AdminMonitorController;
 use App\Http\Controllers\Admin\UserTrafficController as AdminUserTrafficController;
+use App\Http\Controllers\Admin\UpstreamWebshareController as AdminUpstreamWebshareController;
+use App\Http\Controllers\Admin\ProxyProductController as AdminProxyProductController;
+use App\Http\Controllers\Admin\ProxySocksController as AdminProxySocksController;
+use App\Http\Controllers\Admin\ProxyOpsController as AdminProxyOpsController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -232,11 +236,67 @@ Route::middleware('admin.auth')->prefix('admin-api')->group(function () {
 
     // 系统状态（操作日志 + 定时任务 + worker）
     Route::get('/system/status', [AdminSystemStatusController::class, 'status']);
+    Route::get('/audit-logs', [AdminSystemStatusController::class, 'auditLogs']);
 
     // Geo 数据（geoip.dat / geosite.dat 更新与分发，issue #40）
     Route::get('/geodata', [AdminGeodataController::class, 'index']);
     Route::post('/geodata/update', [AdminGeodataController::class, 'update']);
     Route::post('/geodata/dispatch', [AdminGeodataController::class, 'dispatch']);
+
+    // 上游 · Webshare 代理（站长自己的 Webshare 账号 + 子用户）
+    // 子用户按 id 直接寻址（不属于某个 provider 的嵌套资源），所以单独一组；
+    // providers/{provider}/accounts 这类字面量段都在参数路由之前。
+    Route::get('/upstream/webshare/providers', [AdminUpstreamWebshareController::class, 'index']);
+    Route::post('/upstream/webshare/providers', [AdminUpstreamWebshareController::class, 'storeProvider']);
+    Route::post('/upstream/webshare/accounts/{account}/disable', [AdminUpstreamWebshareController::class, 'disableAccount']);
+    Route::post('/upstream/webshare/accounts/{account}/usage', [AdminUpstreamWebshareController::class, 'pullUsage']);
+    // 读取本地保存的子用户凭据（上游没有读密码接口；同步来的记录会 404）
+    Route::post('/upstream/webshare/accounts/{account}/credential', [AdminUpstreamWebshareController::class, 'credential']);
+    Route::delete('/upstream/webshare/accounts/{account}', [AdminUpstreamWebshareController::class, 'destroyAccount']);
+    Route::get('/upstream/webshare/providers/{provider}/plans', [AdminUpstreamWebshareController::class, 'plans']);
+    Route::post('/upstream/webshare/providers/{provider}/test', [AdminUpstreamWebshareController::class, 'testProvider']);
+    Route::post('/upstream/webshare/providers/{provider}/usage', [AdminUpstreamWebshareController::class, 'pullUsageBatch']);
+    Route::get('/upstream/webshare/providers/{provider}/accounts', [AdminUpstreamWebshareController::class, 'accounts']);
+    // 代理 IP 列表（出口 IP，交付给用户用；不回主账号代理凭据）
+    Route::get('/upstream/webshare/providers/{provider}/proxies', [AdminUpstreamWebshareController::class, 'proxies']);
+    Route::post('/upstream/webshare/providers/{provider}/accounts', [AdminUpstreamWebshareController::class, 'storeAccount']);
+    // 从上游把已有子用户同步到本地（本地库为空 / 后台直接建过号时用）
+    Route::post('/upstream/webshare/providers/{provider}/accounts/sync', [AdminUpstreamWebshareController::class, 'syncAccounts']);
+    Route::put('/upstream/webshare/providers/{provider}', [AdminUpstreamWebshareController::class, 'updateProvider']);
+    Route::delete('/upstream/webshare/providers/{provider}', [AdminUpstreamWebshareController::class, 'destroyProvider']);
+
+    // 代理商城 · 商品与规格（与节点套餐完全独立）
+    Route::get('/proxy-store/products', [AdminProxyProductController::class, 'index']);
+    // 代理商城总开关（默认关闭，关闭时用户端接口一并拒绝）
+    Route::get('/proxy-store/settings', [AdminProxyProductController::class, 'settings']);
+    Route::post('/proxy-store/settings', [AdminProxyProductController::class, 'updateSettings']);
+    Route::post('/proxy-store/products', [AdminProxyProductController::class, 'store']);
+    Route::put('/proxy-store/products/{product}', [AdminProxyProductController::class, 'update']);
+    Route::delete('/proxy-store/products/{product}', [AdminProxyProductController::class, 'destroy']);
+    Route::post('/proxy-store/products/{product}/skus', [AdminProxyProductController::class, 'storeSku']);
+    Route::put('/proxy-store/skus/{sku}', [AdminProxyProductController::class, 'updateSku']);
+    Route::delete('/proxy-store/skus/{sku}', [AdminProxyProductController::class, 'destroySku']);
+
+    // 手工 socks 货源（共享型）：批量粘贴导入 + 增删改
+    Route::get('/proxy-store/socks', [AdminProxySocksController::class, 'index']);
+    Route::post('/proxy-store/socks/import', [AdminProxySocksController::class, 'import']);
+    Route::put('/proxy-store/socks/{sock}', [AdminProxySocksController::class, 'update']);
+    Route::delete('/proxy-store/socks/{sock}', [AdminProxySocksController::class, 'destroy']);
+
+    // 代理运营：谁买了、还剩多少、到期没、待补开
+    Route::get('/proxy-ops/overview', [AdminProxyOpsController::class, 'overview']);
+    // 三类列表各自分页（一个接口塞三张分页表会让翻页互相干扰）
+    Route::get('/proxy-ops/accounts', [AdminProxyOpsController::class, 'accounts']);
+    Route::get('/proxy-ops/socks-groups', [AdminProxyOpsController::class, 'socksGroups']);
+    Route::get('/proxy-ops/pending', [AdminProxyOpsController::class, 'pending']);
+    Route::post('/proxy-ops/accounts/{account}/pull', [AdminProxyOpsController::class, 'pull']);
+    Route::post('/proxy-ops/accounts/{account}/disable', [AdminProxyOpsController::class, 'disable']);
+    Route::post('/proxy-ops/accounts/{account}/reset-password', [AdminProxyOpsController::class, 'resetPassword']);
+    Route::get('/proxy-ops/accounts/{account}/proxies', [AdminProxyOpsController::class, 'proxies']);
+    Route::delete('/proxy-ops/accounts/{account}', [AdminProxyOpsController::class, 'destroy']);
+    Route::post('/proxy-ops/entitlements/{entitlement}/extend', [AdminProxyOpsController::class, 'extend']);
+    Route::post('/proxy-ops/entitlements/{entitlement}/move-socks', [AdminProxyOpsController::class, 'moveSocks']);
+    Route::post('/proxy-ops/orders/{order}/retry', [AdminProxyOpsController::class, 'retryOrder']);
 
     // 教程管理
     Route::get('/tutorials', [AdminTutorialController::class, 'index']);

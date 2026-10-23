@@ -38,6 +38,10 @@ Schedule::command('monitor:rollup')->dailyAt('04:30')->name('monitor-rollup')->w
 // TTL 显式传参，不依赖命令默认值 —— 默认值一旦被改动，这里的口径会跟着变，容易踩坑。
 Schedule::command('order:expire-pending', ['--hours' => 1])->hourly()->name('expire-pending-orders')->withoutOverlapping();
 
+// 代理商城的维护：回采 webshare 用量 + 到期权益标记 + 到期停用上游子账号。
+// 没有代理商品/权益时进命令很快返回（游标扫空表），空跑成本可忽略。
+Schedule::command('proxy:maintain')->hourly()->name('proxy-maintain')->withoutOverlapping();
+
 // 任务超时兜底：超过阈值（config('tasks.stale_after_minutes')）未终态的异步任务标记失败，防止 running 永久停留
 Schedule::call(fn () => app(\App\Services\AsyncTaskService::class)->timeoutStale())->everyFiveMinutes()->name('async-task-timeout')->withoutOverlapping();
 

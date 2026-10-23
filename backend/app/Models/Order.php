@@ -15,10 +15,16 @@ class Order extends Model
     public const STATUS_EXPIRED = 'expired';
     public const STATUS_CANCELLED = 'cancelled';
 
+    public const TYPE_PLAN = 'plan';
+    public const TYPE_PROXY = 'proxy';
+
     protected $fillable = [
         'order_no',
         'user_id',
+        'order_type',
         'plan_id',
+        'proxy_sku_id',
+        'proxy_renewal',
         'amount',
         'original_amount',
         'discount_code_id',
@@ -37,6 +43,8 @@ class Order extends Model
             'original_amount' => 'decimal:2',
             'discount_amount' => 'decimal:2',
             'discount_code_id' => 'integer',
+            'proxy_sku_id' => 'integer',
+            'proxy_renewal' => 'boolean',
             'paid_at' => 'datetime',
         ];
     }
@@ -49,6 +57,17 @@ class Order extends Model
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    /** 代理规格（仅 order_type=proxy） */
+    public function proxySku(): BelongsTo
+    {
+        return $this->belongsTo(ProxySku::class, 'proxy_sku_id');
+    }
+
+    public function isProxyOrder(): bool
+    {
+        return $this->order_type === self::TYPE_PROXY;
     }
 
     public function paymentConfig(): BelongsTo

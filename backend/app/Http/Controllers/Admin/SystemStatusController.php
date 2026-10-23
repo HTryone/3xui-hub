@@ -7,6 +7,7 @@ use App\Models\OperationLog;
 use App\Services\PhpRuntimeAuditor;
 use App\Traits\ApiResponse;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,62 @@ class SystemStatusController extends Controller
             'worker' => $this->workerStatus(),
             'php'    => $this->phpStatus(),
         ]);
+    }
+
+    /**
+     * 操作审计（独立分页接口）。
+     *
+     * 和「系统监控」分开的原因：监控要 30 秒轮询、看的是当前状态；审计是历史查询，
+     * 按需翻页和筛选，不能跟着轮询一起刷（数据量大，翻到第 5 页被刷回第 1 页）。
+     *
+     * 支持 type（admin/user/system）、status（ok/error）、search（动作/路径/操作者/报错）。
+     * GET /admin-api/audit-logs
+     */
+    public function auditLogs(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $query = OperationLog::query()->orderByDesc('id');
+
+        $type = (string) $request->query('type', '');
+        if (in_array($type, ['admin', 'user', 'system'], true)) {
+            $query->where('type', $type);
+        }
+
+        $status = (string) $request->query('status', '');
+        if ($status === 'error') {
+            $query->where('status', '>=', 400);
+        } elseif ($status === 'ok') {
+            $query->where('status', '<', 400);
+        }
+
+        $search = trim((string) $request->query('search', ''));
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $query->where(function ($q) use ($like) {
+                $q->where('action', 'like', $like)
+                    ->orWhere('path', 'like', $like)
+                    ->orWhere('actor_name', 'like', $like)
+                    ->orWhere('error', 'like', $like);
+            });
+        }
+
+        $perPage = min(100, max(10, (int) $request->query('per_page', 50)));
+
+        return $this->successPage(
+            $query,
+            fn (OperationLog $l) => [
+                'id' => $l->id,
+                'type' => $l->type,
+                'actor_name' => $l->actor_name,
+                'action' => $l->action,
+                'method' => $l->method,
+                'path' => $l->path,
+                'status' => $l->status,
+                'error' => $l->error,
+                'ip' => $l->ip,
+                'created_at' => $l->created_at?->toISOString(),
+            ],
+            $perPage,
+        );
     }
 
     /**

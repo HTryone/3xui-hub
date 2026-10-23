@@ -305,6 +305,14 @@ class PaymentService
             'paid_at' => now(),
         ])->save();
 
+        // 代理订单：走独立开通流程（开上游子账号 / 挂共享 socks），
+        // 不碰节点套餐、不发邀请奖励、不调 applyPlan/provisionClient。
+        if ($order->isProxyOrder()) {
+            app(ProxyStoreService::class)->completeOrder($order);
+
+            return;
+        }
+
         $user = $order->user;
 
         // 支付成功才真正占用折扣码：used_count+1、满额置 used_up、邀请码锁死用户。

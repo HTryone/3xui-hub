@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -59,6 +60,16 @@ class User extends Authenticatable
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    /**
+     * 代理权益（代理商城买的住宅 / 共享 socks）。
+     *
+     * 与 plan 无关：代理是独立商品，不占用也不影响节点套餐。
+     */
+    public function proxyEntitlements(): HasMany
+    {
+        return $this->hasMany(ProxyEntitlement::class);
     }
 
     /**

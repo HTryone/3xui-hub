@@ -166,14 +166,16 @@ class PaymentController extends Controller
         $user = $request->user();
 
         $orders = Order::where('user_id', $user->id)
-            ->with('plan')
+            ->with(['plan', 'proxySku'])
             ->orderByDesc('id')
             ->limit(20)
             ->get()
             ->map(fn (Order $o) => [
                 'order_no' => $o->order_no,
                 'plan_id' => $o->plan_id,
-                'plan_name' => $o->plan->name ?? '-',
+                'plan_name' => $o->plan?->name
+                    ?? ($o->proxySku ? '代理 · ' . $o->proxySku->name : '-'),
+                'order_type' => $o->order_type,
                 'amount' => (float) $o->amount,
                 'status' => $o->status,
                 'paid_at' => $o->paid_at?->toIso8601String(),

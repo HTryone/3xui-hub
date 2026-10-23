@@ -26,7 +26,13 @@ class OrderController extends Controller
      */
     public function index(Request $request): \Illuminate\Http\JsonResponse
     {
-        $query = Order::with(['user', 'plan', 'paymentConfig'])->orderByDesc('id');
+        $query = Order::with(['user', 'plan', 'proxySku', 'paymentConfig'])->orderByDesc('id');
+
+        // 订单类型筛选：plan=节点套餐 / proxy=代理商城（运营对账用）
+        $type = (string) $request->query('order_type', '');
+        if (in_array($type, ['plan', 'proxy'], true)) {
+            $query->where('order_type', $type);
+        }
 
         $search = trim((string) $request->query('search', ''));
         if ($search !== '') {
@@ -53,7 +59,9 @@ class OrderController extends Controller
                 'order_no' => $o->order_no,
                 'user_id' => $o->user_id,
                 'user_email' => $o->user?->email,
-                'plan_name' => $o->plan?->name ?? '-',
+                'plan_name' => $o->plan?->name
+                    ?? ($o->proxySku ? '代理 · ' . $o->proxySku->name : '-'),
+                'order_type' => $o->order_type,
                 'amount' => (float) $o->amount,
                 'status' => $o->status,
                 'payment_name' => $o->paymentConfig?->name,

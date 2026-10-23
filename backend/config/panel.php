@@ -247,4 +247,18 @@ return [
         // 锁定时长（秒）
         'rate_discount_lock_seconds'    => (int) env('PANEL_RATE_DISCOUNT_LOCK_SECONDS', 900),
     ],
+
+    /*
+    | Webshare 上游（admin-api/upstream/webshare）
+    |
+    | 面板自己访问 proxy.webshare.io 可能出不去（国内机房很常见），这里给出出口代理与 CA：
+    |   - proxy：HTTP/SOCKS 代理，如 socks5h://127.0.0.1:10808（socks5h 让 DNS 也走代理）
+    |   - ca_bundle：PHP 没配 CA 时指向一个 PEM 文件（Windows 本地开发常见；
+    |     注释里说明「php -d curl.cainfo 或系统 CA 二选一」）
+    | 空值 = 直连 + 系统 CA（生产 Linux 常规形态）。
+    */
+    'webshare' => [
+        'proxy'     => (string) env('WEBSHARE_PROXY', ''),
+        'ca_bundle' => (string) env('WEBSHARE_CA_BUNDLE', ''),
+    ],
 ];

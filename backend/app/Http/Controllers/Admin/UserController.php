@@ -43,7 +43,13 @@ class UserController extends Controller
      */
     public function index(Request $request): \Illuminate\Http\JsonResponse
     {
-        $query = User::with('plan')->orderByDesc('id');
+        $query = User::with('plan')
+            // 代理权益数量：列表里一眼看出「这个用户买了代理没有」。
+            // 只统计仍生效的（过期/停用的不算），与用户端「我的代理」口径一致。
+            ->withCount(['proxyEntitlements as proxy_active_count' => fn ($q) => $q
+                ->where('status', 'active')
+                ->where(fn ($w) => $w->whereNull('expires_at')->orWhere('expires_at', '>', now()))])
+            ->orderByDesc('id');
 
         $search = trim((string) $request->query('search', ''));
         if ($search !== '') {
@@ -66,7 +72,7 @@ class UserController extends Controller
 
     public function show(User $user): \Illuminate\Http\JsonResponse
     {
-        $user->load('plan');
+        $user->load(['plan', 'proxyEntitlements.sku']);
 
         return $this->success($this->present($user, true));
     }
@@ -226,6 +232,26 @@ class UserController extends Controller
             'expired_at' => $u->expired_at?->toIso8601String(),
             'enabled' => (bool) $u->enabled,
             'created_at' => $u->created_at?->toIso8601String(),
+            // 代理权益：列表只给数量，详情给明细（代理是独立商品，和 plan 无关）
+            'proxy_active_count' => (int) ($u->proxy_active_count ?? 0),
+            'proxies' => $full ? $this->presentProxies($u) : null,
         ];
+    }
+
+    /** 用户的代理权益明细（管理员核对「买了什么、什么时候到期」） */
+    private function presentProxies(User $u): array
+    {
+        return $u->proxyEntitlements
+            ->sortByDesc('id')
+            ->map(fn ($e) => [
+                'id' => $e->id,
+                'kind' => $e->kind,
+                'kind_label' => $e->kind === 'socks' ? '共享 socks' : '独享账号',
+                'sku_name' => $e->sku?->name,
+                'status' => $e->isActive() ? 'active' : $e->status,
+                'expires_at' => $e->expires_at?->toIso8601String(),
+            ])
+            ->values()
+            ->all();
     }
 }
