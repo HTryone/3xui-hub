@@ -86,3 +86,10 @@ Schedule::command('geodata:update', ['--dispatch' => true])->weeklyOn(1, '04:45'
 // 每 5 分钟扫一遍 3x-ui 节点：面板认为该开、节点上 enable=false 的 client 重新打开。
 // 与「开关是否全部节点确认」配合：toggleClient 全确认才算成功，失败的下轮由本命令重试。
 Schedule::command('users:reconcile-enable')->everyFiveMinutes()->name('users-reconcile-enable')->withoutOverlapping();
+
+// REALITY 入站巡检（issue #57）：节点侧探测 dest，发现「SNI 不在 dest 证书里」或
+// 「证书链超 8192（REALITY 上限，Xray-core #6356）」就记一条 system 操作日志。
+// 每日一次：证书链大小会随时间变化（微软 8251 就是后来涨上去的），静态校验不够。
+// 时间按 config/app.php 的 UTC（全项目调度同一口径），即北京时间 12:10 —— 刻意放白天，
+// 此时节点在线率高，探测结果更接近用户真实握手；也避开 03:30 备份 / 04:30 汇总。
+Schedule::command('xray:reality-audit')->dailyAt('04:10')->name('reality-audit')->withoutOverlapping();

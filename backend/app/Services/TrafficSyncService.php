@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Node;
+use App\Models\OperationLog;
 use App\Models\SiteConfig;
 use App\Models\TrafficSnapshot;
 use App\Models\User;
@@ -297,6 +298,9 @@ class TrafficSyncService
                         'email' => $email,
                         'node_id' => $node->id,
                     ]);
+                    // issue #56：文件日志用户看不到；后台「日志」页要有痕迹，否则又变成
+                    // 「面板没关人」的假阴性（那次藏在文件日志里一整天没人发现）。
+                    self::recordDrift($candidate, $email, $node);
                 }
             }
 
@@ -654,5 +658,38 @@ class TrafficSyncService
                 \DB::update($sql2, array_merge($params2, $ids2));
             }
         }
+    }
+
+    /**
+     * 漂移告警写进操作日志（issue #56）。
+     *
+     * 同一 user+node 24h 内只留一条：同步每 5 分钟一轮，不去重会把 operation_logs
+     * 的 500 条上限刷满，反而把真正的管理操作挤掉。
+     */
+    private static function recordDrift(?User $user, string $email, Node $node): void
+    {
+        $action = '节点与面板状态分叉';
+        $path = 'node#' . $node->id . '/user#' . ($user->id ?? 0);
+
+        $exists = OperationLog::where('type', 'system')
+            ->where('action', $action)
+            ->where('path', $path)
+            ->where('created_at', '>=', now()->subDay())
+            ->exists();
+
+        if ($exists) {
+            return;
+        }
+
+        OperationLog::create([
+            'type' => 'system',
+            'actor_name' => 'traffic-sync',
+            'action' => $action,
+            'method' => 'CLI',
+            'path' => $path,
+            'status' => 500,
+            'error' => sprintf('%s 在节点 %s(#%d) 上被关闭，面板仍认为放行（可能是另一套面板在写）', $email, $node->name, $node->id),
+            'created_at' => now(),
+        ]);
     }
 }

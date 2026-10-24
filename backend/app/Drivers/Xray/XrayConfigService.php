@@ -263,9 +263,16 @@ class XrayConfigService
      * 用户之间分散（多 SNI 的意义就是把流量摊到多个目标域名）；
      * 不新增列、不加迁移，单 SNI 入站的行为与取 [0] 完全一致。
      *
+     * dest 非空时只用「与 dest 同一站点」的 SNI 参与分派（issue #57）：
+     * REALITY 转发按客户端 SNI 向 dest 取证书，dest 不认的域名必然握手失败，而分派按
+     * crc32 固定 —— 一个坏 SNI 会永久废掉 1/n 的用户，重拉订阅也修不好（2026-10-22 事故：
+     * dest=aws.amazon.com 却配了 www.cloudflare.com，106 个用户连不上）。
+     * 全是坏值时不缩小池子（退回旧行为），避免把多 SNI 功能整条废掉 —— 那时该修配置，
+     * 由保存校验与巡检去发现，而不是让订阅静默变成单 SNI。
+     *
      * @param  array<int,mixed>  $serverNames
      */
-    public function serverNameFor(array $serverNames, int $userId): string
+    public function serverNameFor(array $serverNames, int $userId, string $dest = ''): string
     {
         $names = [];
         foreach ($serverNames as $name) {
@@ -278,7 +285,98 @@ class XrayConfigService
             return self::DEFAULT_SNI;
         }
 
+        $host = self::hostOf($dest);
+        if ($host !== '') {
+            $usable = array_values(array_filter(
+                $names,
+                static fn (string $name) => self::sameSite($name, $host)
+            ));
+            if ($usable !== []) {
+                $names = $usable;
+            }
+        }
+
         return $names[abs(crc32((string) $userId)) % count($names)];
+    }
+
+    /**
+     * dest 串 → 主机名。
+     * 支持 "host:443"、"host"、"[2001:db8::1]:443"、"[2001:db8::1]"；解析不出返回空串。
+     */
+    public static function hostOf(string $dest): string
+    {
+        $dest = trim($dest);
+        if ($dest === '') {
+            return '';
+        }
+
+        // IPv6 字面量：[v6] 或 [v6]:port
+        if (str_starts_with($dest, '[')) {
+            $end = strpos($dest, ']');
+
+            return $end === false ? '' : strtolower(substr($dest, 1, $end - 1));
+        }
+
+        $host = preg_replace('/:\d+$/', '', $dest) ?? $dest;
+
+        return strtolower(trim($host, " \t\n\r\0\x0B."));
+    }
+
+    /**
+     * 两个主机名是否「同一站点」：相等、互为父域，或同属一个注册域。
+     *
+     * 用途：REALITY 的 serverNames 必须被 dest 证书覆盖。同一张证书通常覆盖一个注册域及其
+     * 子域（www.example.com / api.example.com 常见），而跨注册域（aws.amazon.com 与
+     * www.cloudflare.com）几乎不可能同证书 —— 2026-10-22 事故就是后者。
+     * 通配符、IP 字面量与空串一律 false。
+     */
+    public static function sameSite(string $a, string $b): bool
+    {
+        $a = strtolower(trim($a, " \t\n\r\0\x0B."));
+        $b = strtolower(trim($b, " \t\n\r\0\x0B."));
+
+        if ($a === '' || $b === '' || str_contains($a, '*') || str_contains($b, '*')) {
+            return false;
+        }
+
+        if ($a === $b) {
+            return true;
+        }
+
+        // IP 字面量之间没有「站点」概念，只认完全相等（上面已判过）
+        if (filter_var($a, FILTER_VALIDATE_IP) !== false || filter_var($b, FILTER_VALIDATE_IP) !== false) {
+            return false;
+        }
+
+        if (str_ends_with($a, '.' . $b) || str_ends_with($b, '.' . $a)) {
+            return true;
+        }
+
+        // 同注册域的不同子域（a.example.com / b.example.com）
+        return self::registeredDomain($a) === self::registeredDomain($b);
+    }
+
+    /** 常见两级公共后缀（不引 PSL 依赖，覆盖国内常见形态即可）。 */
+    private const SECOND_LEVEL_SUFFIXES = [
+        'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'co.jp', 'ne.jp', 'or.jp', 'ac.jp',
+        'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn',
+        'com.hk', 'com.tw', 'com.sg', 'com.au', 'co.kr', 'co.nz', 'com.br',
+    ];
+
+    /** 取注册域（example.com / example.co.uk）；取不出时返回原串。 */
+    private static function registeredDomain(string $host): string
+    {
+        $parts = explode('.', $host);
+        if (count($parts) <= 2) {
+            return $host;
+        }
+
+        $tail2 = implode('.', array_slice($parts, -2));
+        if (in_array($tail2, self::SECOND_LEVEL_SUFFIXES, true)) {
+            return implode('.', array_slice($parts, -3));
+        }
+
+        return $tail2;
     }
 
     /** Reality 安全参数（公开参数来自入站 stream_settings；私钥解密注入）。 */
@@ -815,7 +913,12 @@ class XrayConfigService
             $fp = trim((string) ($client['fingerprint'] ?? '')) ?: 'chrome';
             $query .= '&fp=' . rawurlencode($fp);
 
-            $sni = $this->serverNameFor((array) ($public['serverNames'] ?? []), (int) $user->id);
+            // dest 传进去：分派池只用同一站点的 SNI（issue #57），坏 SNI 永不分给用户
+            $sni = $this->serverNameFor(
+                (array) ($public['serverNames'] ?? []),
+                (int) $user->id,
+                (string) ($public['dest'] ?? '')
+            );
             $query .= '&sni=' . rawurlencode((string) $sni)
                 . '&pbk=' . rawurlencode((string) ($public['publicKey'] ?? ''));
             $sid = $public['shortIds'][0] ?? '';

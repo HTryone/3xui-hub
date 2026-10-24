@@ -198,6 +198,19 @@ class BanService
             return false; // 无节点可操作：不写标记，下一轮继续尝试
         }
 
+        // issue #56：出「关了就开不回来」时，过去只能靠节点侧 PG 语句日志反推是谁在写
+        // enable=false —— 并发路径（updateClientAsync）完全没有留痕，管理端 audit 也是空的，
+        // 于是「面板没关人」看起来成立（假阴性）。这里记一条发起方留痕，一条就够定位。
+        if (! $enable) {
+            Log::info('client.enable.false', [
+                'user_id' => $user->id,
+                'email' => $email,
+                'protocol' => $user->protocol,
+                'nodes' => $nodes->pluck('id')->all(),
+                'origin' => self::callerChain(),
+            ]);
+        }
+
         $confirmed = $this->applyEnableOnNodes($nodes, $user->protocol, $email, $enable);
 
         if ($enable) {
@@ -310,6 +323,26 @@ class BanService
         Log::warning('节点 client 漂移已修复（同步流量时触发）', ['user_id' => $user->id]);
 
         return true;
+    }
+
+    /**
+     * 调用栈前几帧（issue #56 定位「谁在关人」用；只取类名::方法名 + 文件名行号，不带参数）。
+     *
+     * @return array<int,string>
+     */
+    private static function callerChain(int $depth = 4): array
+    {
+        $frames = [];
+        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, $depth + 2) as $i => $frame) {
+            if ($i === 0) {
+                continue; // 自己这一帧
+            }
+            $where = ($frame['class'] ?? '') . ($frame['type'] ?? '') . ($frame['function'] ?? '');
+            $at = isset($frame['file']) ? basename((string) $frame['file']) . ':' . (int) ($frame['line'] ?? 0) : '';
+            $frames[] = $at !== '' ? "{$where}@{$at}" : $where;
+        }
+
+        return $frames;
     }
 
     /**

@@ -52,6 +52,7 @@ class XrayInboundController extends Controller
     {
         $this->ensureXray($node);
         $data = $this->validatePayload($request);
+        $this->guardServerNames($request, $data);
 
         $inbound = new XrayInbound();
         $inbound->node_id = $node->id;
@@ -73,6 +74,7 @@ class XrayInboundController extends Controller
         $this->ensureOwned($node, $inbound);
 
         $data = $this->validatePayload($request, $inbound);
+        $this->guardServerNames($request, $data, $inbound);
         $this->fillFromPayload($inbound, $data, $node, $inbound);
         $inbound->save();
 
@@ -546,6 +548,57 @@ class XrayInboundController extends Controller
         }
 
         return array_values(array_unique($out)) ?: [XrayConfigService::DEFAULT_SNI];
+    }
+
+    /**
+     * REALITY serverNames 与 dest 的一致性拦截（issue #57）。
+     *
+     * 背景：REALITY 转发时按客户端 SNI 向 dest 取证书，dest 不认的域名必然握手失败；
+     * 分派又按 crc32(user_id) 固定，一条坏 SNI 会永久废掉 1/n 的用户（2026-10-22 现场：
+     * dest=aws.amazon.com 配了 www.cloudflare.com，106 个用户连不上，重拉订阅无效）。
+     *
+     * 这里只做**静态**判定（同站点：相等、互为父域，或同注册域），零网络请求 —— 面板视角在国内实测
+     * 与节点视角完全不一致（见 agent/reality_scan.go 注释），所以"dest 到底认不认这个 SNI"
+     * 只能由节点侧扫描回答（巡检任务 + 前端「检测目标」），保存时不做同步探测。
+     *
+     * 命中可疑项时要求显式确认（confirm_server_names=1）：绝大多数情况是手滑混进了别家域名，
+     * 拦下来；确属同一张证书覆盖的其它站点（CDN 多 SAN）时也能放行，不写死。
+     */
+    private function guardServerNames(Request $request, array $data, ?XrayInbound $existing = null): void
+    {
+        $stream = $existing?->stream_settings ?? [];
+        $security = (string) ($data['security'] ?? ($stream['security'] ?? ''));
+        if ($security !== 'reality') {
+            return;
+        }
+
+        $dest = (string) ($data['dest'] ?? ($stream['realitySettings']['dest'] ?? ''));
+        $host = XrayConfigService::hostOf($dest);
+        if ($host === '') {
+            return;
+        }
+
+        $names = $this->usableServerNames($this->stringList($data['server_names'] ?? [], null));
+        $suspect = [];
+        foreach ($names as $name) {
+            if (! XrayConfigService::sameSite($name, $host)) {
+                $suspect[] = $name;
+            }
+        }
+
+        if ($suspect === [] || $request->boolean('confirm_server_names')) {
+            return;
+        }
+
+        // 用 HttpException 而不是 ValidationException：本项目把 ValidationException 统一
+        // 渲染成 code=500（bootstrap/app.php），前端没法把「需要确认」和真故障分开。
+        abort(422, sprintf(
+            '这些 serverNames 与 dest（%s）不是同一站点的域名：%s。'
+            . 'REALITY 会按客户端 SNI 向 dest 取证书，dest 给不出证书的域名会让被分到的用户全部连不上。'
+            . '若确认这些域名由 dest 的同一张证书覆盖（CDN 多 SAN），请确认后再保存。',
+            $host,
+            implode('、', $suspect)
+        ));
     }
 
     /**

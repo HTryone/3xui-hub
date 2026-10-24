@@ -58,13 +58,47 @@ class DiscountCodeFolderController extends Controller
     }
 
     /**
-     * 删除文件夹：里面的码退回未归档，不删码。
+     * 删除文件夹。
+     *
+     * 默认：里面所有码退回「未归档」，码一条都不删。
+     * with_codes=1：连同文件夹内的码一起删除（需要二次确认，前端负责）。
+     *
+     * 用 query 参数而不是 body：DELETE 带 JSON body 在部分中间件/代理下会被丢掉，
+     * 一个布尔开关没必要冒这个风险。
      */
-    public function destroy(string $folder): \Illuminate\Http\JsonResponse
+    public function destroy(Request $request, string $folder): \Illuminate\Http\JsonResponse
     {
         $model = $this->resolveFolder($folder);
         if (! $model) {
             return $this->error('文件夹不存在', 404);
+        }
+
+        if ($request->boolean('with_codes')) {
+            $codes = DiscountCode::where('folder_id', $model->id)->get();
+            $deleted = 0;
+            $failed = [];
+
+            foreach ($codes as $code) {
+                try {
+                    $code->delete();
+                    $deleted++;
+                } catch (\Throwable $e) {
+                    $failed[] = ['id' => $code->id, 'reason' => $e->getMessage()];
+                }
+            }
+
+            // 没删掉的不能留成孤儿 folder_id：退回未归档
+            if ($failed !== []) {
+                DiscountCode::where('folder_id', $model->id)->update(['folder_id' => null]);
+            }
+            $model->delete();
+
+            return $this->success([
+                'deleted_codes' => $deleted,
+                'failed' => $failed,
+            ], $failed === []
+                ? "已删除文件夹及其中 {$deleted} 个优惠码"
+                : "已删除文件夹，{$deleted} 个码已删，" . count($failed) . ' 个删除失败已转为未归档');
         }
 
         // 先摘码再删文件夹：删到一半失败时，码只会多出一批「未归档」，
