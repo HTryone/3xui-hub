@@ -323,7 +323,7 @@ class SubscriptionService
 
         // 1.0x 也照样展示：用户需要从名称上一眼区分这条线路是不是 1 倍，
         // 与节点列表接口（Api\NodeController 同开关）的行为保持一致。
-        $suffix = '-' . rtrim(rtrim(number_format((float) TrafficSyncService::multiplierFor($node), 1, '.', ''), '0'), '.') . 'x';
+        $suffix = self::multiplierSuffix((float) TrafficSyncService::multiplierFor($node));
 
         $out = [];
         foreach ($links as $link) {
@@ -336,6 +336,17 @@ class SubscriptionService
         }
 
         return $out;
+    }
+
+    /**
+     * 倍率后缀（`-1.25x` / `-2x`）。
+     *
+     * 两位小数：`nodes.traffic_multiplier` 是 decimal(6,2)，计费值最多两位 ——
+     * 用 1 位会把 1.25 显示成 1.3x、0.85 显示成 0.9x，展示与计费分叉。
+     */
+    public static function multiplierSuffix(float $multiplier): string
+    {
+        return '-' . rtrim(rtrim(number_format($multiplier, 2, '.', ''), '0'), '.') . 'x';
     }
 
     /**

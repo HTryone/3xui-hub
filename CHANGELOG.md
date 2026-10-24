@@ -2,6 +2,11 @@
 
 ControlHub 完整更新历史。最新版本见 [README](README.md)。
 
+### v1.39.0 (2026-10-24)
+
+- **订阅节点名显示倍率（PR #58，感谢 @HTryone）**：后台「用户端展示节点倍率」开关打开后，订阅里每个节点名称末尾追加倍率后缀（`香港-01-2x`、`🇭🇰 HK01-1.25x`），Base64 / Clash / Sing-box 三种格式一致；开关关着（默认）时订阅与改动前逐字节相同。1 倍也显示，方便对比线路倍率。数值与计费同源（`TrafficSyncService::multiplierFor`），最多两位小数——`nodes.traffic_multiplier` 是 decimal(6,2)，原实现按一位格式化会把 1.25 显示成 1.3x、0.85 显示成 0.9x，已修
+- **用户端节点列表显示倍率**：补上此前缺失的渲染——开关打开后节点名旁出现 `×2` 标签，1 倍用中性灰、非 1 倍用强调色。此前接口返回了 `traffic_multiplier` 字段但界面没渲染，开关开了用户端也看不见
+
 ### v1.38.0 (2026-10-24)
 
 - **REALITY serverNames 校验（issue #57）**：保存 / 编辑入站时，serverNames 与 `dest` 跨注册域（如 `dest=aws.amazon.com` 却配了 `www.cloudflare.com`）会被拦下并返回 422，需要显式确认才放行。原先这种配置会让**被分到该 SNI 的用户全部握手失败**，而分派按 `crc32(user_id)` 固定——一配错就是 1/n 的用户永久连不上，重拉订阅、换客户端都无效。前端 serverNames 输入框补了说明（必须是 dest 证书覆盖的域名，建议用「检测目标」自动填）
