@@ -580,6 +580,12 @@ setup_nginx() {
 
     if [ "$SSL_ENABLED" = true ]; then
         cat > "$NGINX_CONF" << NGINX
+# Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
+upstream controlhub_backend {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -606,7 +612,7 @@ server {
 
     # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
     location /node-ws {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://controlhub_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -619,8 +625,10 @@ server {
     }
 
     # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
-    location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        proxy_pass http://127.0.0.1:8080;
+    location ~ ^/(node-install\\.sh|node-agent\\.sh|node-bin/) {
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -628,7 +636,9 @@ server {
     }
 
     location ~ ^/(api|admin-api) {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -658,6 +668,12 @@ server {
 NGINX
     else
         cat > "$NGINX_CONF" << NGINX
+# Go 后端连接池（keepalive 复用，消除短连接 TIME_WAIT 堆积）
+upstream controlhub_backend {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -674,7 +690,7 @@ server {
 
     # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
     location /node-ws {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://controlhub_backend;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -688,7 +704,9 @@ server {
 
     # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -696,7 +714,9 @@ server {
     }
 
     location ~ ^/(api|admin-api) {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://controlhub_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
