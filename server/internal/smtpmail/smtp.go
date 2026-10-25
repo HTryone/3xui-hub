@@ -31,6 +31,11 @@ type Settings struct {
 // DialFunc 供测试注入假连接；nil 用 net.Dialer。
 type DialFunc func(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error)
 
+// smtpOpTimeout 是一次发信的全过程超时（含 Auth/Mail/Rcpt/Data/Quit）。
+// 只覆盖建连的 10s dial 不够：net/smtp 的后续命令是阻塞调用且不设 deadline，
+// SMTP 服务器挂起会把邮件队列的单 goroutine 永久卡死。
+const smtpOpTimeout = 30 * time.Second
+
 // Send 发一封 HTML 邮件（单收件人、单主题）。
 //
 // 与 PHP SimpleMailerService / Mail::html 语义一致：
@@ -56,6 +61,15 @@ func Send(ctx context.Context, cfg Settings, to, subject, htmlBody string, dial 
 	if err != nil {
 		return fmt.Errorf("连接 SMTP 失败: %w", err)
 	}
+
+	// 总超时：dial 只覆盖建连，后续 Auth/Mail/Rcpt/Data/Quit 都是阻塞调用
+	// 且 net/smtp 不设 deadline —— SMTP 服务器挂起会无限阻塞，把邮件队列的
+	// 单 goroutine 卡死（一封卡住，后面全发不出去）。设连接 deadline 兜底。
+	deadline := time.Now().Add(smtpOpTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	_ = conn.SetDeadline(deadline)
 
 	// 隐式 TLS（ssl，通常 465）：先包一层再走 SMTP 协议。
 	if strings.EqualFold(cfg.Encryption, "ssl") {
