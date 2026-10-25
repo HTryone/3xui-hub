@@ -1,0 +1,25 @@
+[Unit]
+Description=ControlHub Go 后端（面板 API + 定时调度 + 节点 WS 通道）
+After=network.target mysqld.service mariadb.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Go 单进程：HTTP(:8080) + scheduler 内置 + 节点 WS 升级，均在同一进程内
+User=root
+WorkingDirectory=/www/wwwroot/3xui-hub/server
+# CONFIG_ENV 显式指定 .env 绝对路径（不依赖工作目录），复用 PHP 时代的 backend/.env
+Environment=CONFIG_ENV=/www/wwwroot/3xui-hub/backend/.env
+Environment=LISTEN_ADDR=:8080
+ExecStart=/www/wwwroot/3xui-hub/server/controlhub-server
+Restart=always
+RestartSec=3
+# 优雅退出：给在途请求 15 秒收尾（Go 内部监听 SIGTERM 后 Shutdown）
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+# 防止 OOM 被系统杀掉后静默（Go 内存上限，按需调整）
+# LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

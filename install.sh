@@ -661,33 +661,6 @@ server {
 NGINX
     fi
 
-    # 同步前端产物到 public：先清旧版本残留，再复制。
-    # 不能只 `cp -r`（只覆盖不删除）——Vite 文件名带内容哈希，历次构建的旧 chunk 会一直
-    # 堆在 public 里；浏览器一旦拿到旧 index.html（指向旧 chunk），而旧 chunk 恰好还在，
-    # 就会静默跑一套新旧混杂的前端：页面能开、不报错，但功能区块空白，极难排查。
-    # 只清 assets/ 与顶层哈希资源，跳过 Laravel 必需文件与用户上传目录。
-    if [ -d "$INSTALL_DIR/frontend/dist" ]; then
-        DIST="$INSTALL_DIR/frontend/dist"
-        PUB="$INSTALL_DIR/backend/public"
-
-        if [ -d "$PUB/assets" ] && [ -d "$DIST/assets" ]; then
-            for f in $(ls -1 "$PUB/assets" 2>/dev/null); do
-                [ -e "$DIST/assets/$f" ] || rm -rf "$PUB/assets/$f"
-            done
-        fi
-
-        for f in $(ls -1 "$PUB" 2>/dev/null); do
-            case "$f" in
-                index.php|.htaccess|robots.txt|favicon.ico|storage|uploads|.well-known) continue ;;
-            esac
-            if [ -f "$PUB/$f" ] && [ ! -e "$DIST/$f" ]; then
-                rm -f "$PUB/$f"
-            fi
-        done
-
-        cp -r "$DIST/"* "$PUB/" 2>/dev/null || true
-    fi
-
     # 删除默认站点（避免冲突）
     rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 

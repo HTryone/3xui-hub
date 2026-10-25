@@ -1,0 +1,722 @@
+package admin
+
+// 节点展示层：present() / presentMetrics() / presentInbounds() 与节点表单校验。
+// 逐条对齐 NodeController 的同名私有方法（字段顺序即 PHP 数组顺序）。
+
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"controlhub-server/internal/driver/xray"
+
+	"github.com/gin-gonic/gin"
+)
+
+// presentEnv 是一次列表/详情请求里共享的站点配置（避免逐行查库）。
+type presentEnv struct {
+	site        map[string]string
+	originalMul phpFloat
+	showMul     bool
+	agent       *ManifestAgent
+}
+
+// loadPresentEnv 读 present 需要的站点配置与 manifest。
+func (d *NodeDomain) loadPresentEnv(c *gin.Context) (presentEnv, bool) {
+	cfg, err := d.store.SiteConfigMany(ctxOf(c), []string{siteKeyDefaultMultiplier, siteKeyShowMultiplier})
+	if err != nil {
+		d.failServer(c, "读取节点配置", err)
+		return presentEnv{}, false
+	}
+	return d.presentEnv(cfg), true
+}
+
+// presentEnv 由已读出的 site_configs 构造展示环境。
+func (d *NodeDomain) presentEnv(cfg map[string]string) presentEnv {
+	env := presentEnv{site: cfg}
+
+	// originalMultiplier：配置行不存在/空串时兜底 1.0（TrafficSyncService::originalMultiplier）。
+	env.originalMul = phpFloat(1)
+	if stored, ok := cfg[siteKeyDefaultMultiplier]; ok && stored != "" {
+		env.originalMul = phpFloat(parseFloatSafe(stored))
+	}
+	// show_node_multiplier：只认 '1' / 'true' / 'on'。
+	switch cfg[siteKeyShowMultiplier] {
+	case "1", "true", "on":
+		env.showMul = true
+	}
+	return env
+}
+
+// present 对齐 present()：列表（full=false）与详情（full=true）共用。
+//
+// 返回 (*jsObj, ok)；ok=false 表示已经写过错误响应。
+func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full bool) (any, bool) {
+	data := jo(
+		"id", n.ID,
+		"name", n.Name,
+		"host", n.Host,
+		"port", n.Port,
+		"scheme", n.Scheme,
+		"web_base_path", n.WebBasePath,
+		"username", n.Username,
+		"enabled", n.Enabled,
+		"verify_ssl", n.VerifySSL,
+		"status", n.Status,
+		"latency", n.Latency,
+		"last_check_at", nullableISO(n.LastCheckAt),
+		"region", nullableStr(nodeRegionCode(n.Name)),
+		"metrics", d.presentMetrics(n),
+		"driver_type", nodeDriverTypeOfRecord(n),
+		"inbounds", presentNodeInbounds(n),
+		// null = 该节点继承原始倍率（前端要靠这个区分「继承」和「手动设成 1.0」）
+		"traffic_multiplier", nodeFloatPtr(n.TrafficMultiplier),
+		"original_multiplier", env.originalMul,
+		"show_multiplier", env.showMul,
+	)
+
+	if full {
+		data.put("api_key", nullableStr(n.APIKey))
+		data.put("has_api_key", n.APIKey != nil)
+		data.put("has_password", n.Password != nil)
+	}
+
+	if n.IsXray() {
+		data.put("reality_registered", presentRealityRegistered(n))
+		if n.NodeSecret != nil {
+			secret := []rune(*n.NodeSecret)
+			prefix := string(secret)
+			if len(secret) > 4 {
+				prefix = string(secret[:4])
+			}
+			data.put("node_secret_prefix", prefix+"…")
+		} else {
+			data.put("node_secret_prefix", nil)
+		}
+		data.put("xray_version", nodeDriverConfigString(n, "xray_version"))
+		data.put("config_version", n.ConfigVersion)
+		data.put("lag_seconds", nodeDriverConfigInt(n, "lag_seconds"))
+		data.put("agent", nodeDriverConfigAgent(n))
+		data.put("ws_connected", nodeDriverConfigBool(n, "ws", "connected"))
+		data.put("install_command", d.installCommand(n))
+
+		agent := env.agent
+		if agent == nil {
+			m, err := d.ops.Manifest(ctxOf(c))
+			if err != nil {
+				d.failServer(c, "读取 agent manifest", err)
+				return nil, false
+			}
+			agent = m
+		}
+		env.agent = agent
+		data.put("agent_version", nullableStr(d.reportedAgentVersion(n)))
+		data.put("agent_latest", nullableStr(manifestLatestVersion(agent)))
+		inFlight, err := d.store.HasInFlightUpgrade(ctxOf(c), n.ID)
+		if err != nil {
+			d.failServer(c, "查询在途升级指令", err)
+			return nil, false
+		}
+		data.put("agent_upgrade_pending", inFlight)
+	}
+
+	return data, true
+}
+
+// presentMetrics 对齐 presentMetrics()：两种驱动统一成一个形状，一个数据都没有时返回 null。
+func (d *NodeDomain) presentMetrics(n *NodeRecord) any {
+	if n.IsXray() {
+		agentVal := nodeDriverConfig(n, "agent")
+		if _, isObj := agentVal.(*jsObj); !isObj {
+			return nil
+		}
+		agent := jsonObject(agentVal)
+		num := func(key string) any { return phpNumericOrNil(agent.get(key)) }
+		intOrNull := func(key string) any { return phpIntOrNil(agent.get(key)) }
+		at, atOK := agent.get("at")
+		return jo(
+			"cpu", num("cpu"),
+			"mem", num("mem"),
+			"conns", intOrNull("conns"),
+			"active_users", intOrNull("active_users"),
+			"up_speed", num("up_speed"),
+			"down_speed", num("down_speed"),
+			"at", nonNilValue(at, atOK),
+		)
+	}
+
+	cpu := nullableNumericString(n.CPU)
+	mem := nullableNumericString(n.Mem)
+	if cpu == nil && mem == nil {
+		return nil
+	}
+	return jo(
+		"cpu", cpu,
+		"mem", mem,
+		"conns", nil,
+		"active_users", nil,
+		"up_speed", nil,
+		"down_speed", nil,
+		"at", nullableISO(n.LastCheckAt),
+	)
+}
+
+// presentRealityRegistered 对齐 present 的 reality_registered 判定：
+// 存在启用中的 vless 入站且 security=reality。
+func presentRealityRegistered(n *NodeRecord) bool {
+	for i := range n.XrayInbounds {
+		ib := &n.XrayInbounds[i]
+		if ib.Protocol != "vless" || !ib.Enabled {
+			continue
+		}
+		stream, err := parseOrderedJS(ib.StreamSettings)
+		if err != nil {
+			continue
+		}
+		if jsonGetString(stream, "security") == "reality" {
+			return true
+		}
+	}
+	return false
+}
+
+// presentNodeInbounds 对齐 presentInbounds()：统一成 {协议: [id...]}，只算启用中的入站。
+//
+// 顺序：PHP 的 groupBy 保留「首次出现」的协议顺序（不是固定协议清单），
+// 这里同样按入站出现顺序建键，避免多协议节点输出顺序与 PHP 不一致。
+func presentNodeInbounds(n *NodeRecord) *jsObj {
+	grouped := jo()
+	if n.IsXray() {
+		for _, ib := range n.XrayInbounds {
+			if !ib.Enabled {
+				continue
+			}
+			nodeAppendInboundID(grouped, ib.Protocol, ib.ID)
+		}
+		return grouped
+	}
+	for _, ib := range n.Inbounds {
+		nodeAppendInboundID(grouped, ib.Protocol, ib.InboundID)
+	}
+	return grouped
+}
+
+// nodeAppendInboundID 往「协议 → id 数组」里追加（首见时建键）。
+func nodeAppendInboundID(grouped *jsObj, protocol string, id any) {
+	existing, ok := grouped.get(protocol)
+	if !ok {
+		grouped.put(protocol, jsArr{id})
+		return
+	}
+	grouped.put(protocol, append(existing.(jsArr), id))
+}
+
+// ---- 展示用小工具 ----
+
+func nodeDriverTypeOfRecord(n *NodeRecord) string {
+	if n.DriverType == "" {
+		return "3x-ui"
+	}
+	return n.DriverType
+}
+
+// nodeDriverConfig 解析 driver_config 并取嵌套字段（坏 JSON → nil）。
+func nodeDriverConfig(n *NodeRecord, path ...string) any {
+	if len(n.DriverConfigRaw) == 0 {
+		return nil
+	}
+	cfg, err := parseOrderedJS(n.DriverConfigRaw)
+	if err != nil {
+		return nil
+	}
+	return jsonGet(cfg, path...)
+}
+
+func nodeDriverConfigString(n *NodeRecord, path ...string) any {
+	v := nodeDriverConfig(n, path...)
+	if v == nil {
+		return nil
+	}
+	return nodeScalarString(v)
+}
+
+func nodeDriverConfigInt(n *NodeRecord, path ...string) any {
+	v := nodeDriverConfig(n, path...)
+	if v == nil {
+		return 0
+	}
+	return jsonInt(v)
+}
+
+func nodeDriverConfigBool(n *NodeRecord, path ...string) bool {
+	return nodeTruthy(nodeDriverConfig(n, path...))
+}
+
+func nodeDriverConfigAgent(n *NodeRecord) any {
+	v := nodeDriverConfig(n, "agent")
+	if _, isObj := v.(*jsObj); isObj {
+		return v
+	}
+	return nil
+}
+
+// nonNilValue 把 (any, bool) 的第二个返回值抹平成 PHP 的 `?? null`。
+func nonNilValue(v any, ok bool) any {
+	if !ok {
+		return nil
+	}
+	return v
+}
+
+// nullableFloat 输出 *float64（nil → null）。
+func nullableFloat(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return phpFloat(*v)
+}
+
+// phpNumericOrNil 对应 NodeController::numOrNull（is_numeric → (float)，否则 null）。
+func phpNumericOrNil(v any, ok bool) any {
+	if !ok || !phpNumericPasses(v) {
+		return nil
+	}
+	return phpFloat(phpNumberOf(v))
+}
+
+// nullableNumericString 对应 numOrNull 的可空字符串入参（decimal 列）。
+func nullableNumericString(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return phpNumericOrNil(*v, true)
+}
+
+// phpIntOrNil 对应 NodeController::intOrNull。
+func phpIntOrNil(v any, ok bool) any {
+	if !ok || !phpNumericPasses(v) {
+		return nil
+	}
+	return int64(phpNumberOf(v))
+}
+
+// reportedAgentVersion 对齐 AgentUpgradeService::reportedVersion。
+func (d *NodeDomain) reportedAgentVersion(n *NodeRecord) *string {
+	v := nodeDriverConfigString(n, "agent_version")
+	if v == nil {
+		return nil
+	}
+	s := nodeScalarString(v)
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// manifestLatestVersion 对齐 AgentUpgradeService::latestVersion。
+func manifestLatestVersion(m *ManifestAgent) *string {
+	if m == nil || m.Version == "" {
+		return nil
+	}
+	v := m.Version
+	return &v
+}
+
+// upgradeTarget 是「该节点要升级到哪份资产」。
+type upgradeTarget struct {
+	Arch    string
+	File    string
+	SHA256  string
+	Version string
+}
+
+// nodeUpgradeTarget 对齐 AgentUpgradeService::targetFor（DEFAULT_ARCH = linux-64）。
+func nodeUpgradeTarget(n *NodeRecord, m *ManifestAgent) *upgradeTarget {
+	if m == nil || len(m.Assets) == 0 {
+		return nil
+	}
+	arch := "linux-64"
+	if v := nodeScalarString(nodeDriverConfig(n, "kernel_arch")); v != "" {
+		arch = v
+	}
+	for _, a := range m.Assets {
+		if a.Arch != arch || a.File == "" || a.SHA256 == "" {
+			continue
+		}
+		return &upgradeTarget{Arch: arch, File: a.File, SHA256: a.SHA256, Version: m.Version}
+	}
+	return nil
+}
+
+// installCommand 对齐 Node::installCommand()：拼面板自己的地址（GitHub 零依赖）。
+func (d *NodeDomain) installCommand(n *NodeRecord) string {
+	base := strings.TrimRight(d.cfg.PanelURL, "/")
+	name := phpRawURLEncode(n.Name)
+	secret := ""
+	if n.NodeSecret != nil {
+		secret = *n.NodeSecret
+	}
+	return "curl -fsSL " + base + "/node-install.sh -o /tmp/controlhub-node-install.sh && " +
+		"bash /tmp/controlhub-node-install.sh --hub " + base +
+		" --node " + name + " --secret " + secret
+}
+
+// ---- 节点表单校验 ----
+
+// validateNode 对齐 validateNode()：xray 节点的 host/username/api_key 非必填。
+func (d *NodeDomain) validateNode(c *gin.Context, input map[string]any, forUpdate bool) bool {
+	isXray := nodeDriverTypeOf(input) == "xray"
+
+	hostRule := "sometimes"
+	if !isXray && !forUpdate {
+		hostRule = "required"
+	}
+	nameRule := "required"
+	if forUpdate {
+		nameRule = "sometimes"
+	}
+
+	v := newNodeValidator(ctxOf(c), input)
+	v.field("driver_type", "sometimes", "in:3x-ui,xray")
+	v.field("name", nameRule, "string", "max:120")
+	v.field("host", hostRule, "string", "max:200")
+	v.field("port", "sometimes", "integer", "between:1,65535")
+	v.field("scheme", "sometimes", "in:http,https")
+	v.field("web_base_path", "sometimes", "nullable", "string", "max:200")
+	v.field("username", "sometimes", "nullable", "string")
+	v.field("password", "sometimes", "nullable", "string")
+	v.field("api_key", "sometimes", "nullable", "string")
+	v.field("enabled", "sometimes", "boolean")
+	v.field("verify_ssl", "sometimes", "boolean")
+	v.field("inbounds", "sometimes", "array")
+	// 下限取 1：倍率 < 1 时 floor(delta*m) 在小增量下恒为 0，用户流量永远不涨。
+	v.field("traffic_multiplier", "sometimes", "nullable", "numeric", "min:1", "max:100")
+	v.field("inbounds.vless", "sometimes", "nullable", "array")
+	v.field("inbounds.vless.*", "integer")
+	v.field("inbounds.trojan", "sometimes", "nullable", "array")
+	v.field("inbounds.trojan.*", "integer")
+
+	if !v.passes() {
+		d.failNodeValidation(c, v)
+		return false
+	}
+	return true
+}
+
+// changesInitConfiguration 对齐 changesInitConfiguration()：连接信息或入站是否变化。
+func (d *NodeDomain) changesInitConfiguration(n *NodeRecord, input map[string]any, inboundsPresent bool, inbounds map[string][]int64) bool {
+	for _, field := range []string{"host", "port", "scheme", "web_base_path", "username", "password", "api_key", "verify_ssl"} {
+		val, present := input[field]
+		if !present {
+			continue
+		}
+		var current any
+		switch field {
+		case "host":
+			current = n.Host
+		case "port":
+			current = n.Port
+		case "scheme":
+			current = n.Scheme
+		case "web_base_path":
+			current = n.WebBasePath
+		case "username":
+			current = n.Username
+		case "password":
+			current = nullableStr(n.Password)
+		case "api_key":
+			current = nullableStr(n.APIKey)
+		case "verify_ssl":
+			current = n.VerifySSL
+		}
+		if !phpLooseEqual(val, current) {
+			return true
+		}
+	}
+
+	if !inboundsPresent {
+		return false
+	}
+	for _, proto := range []string{"vless", "trojan"} {
+		if !int64SetsEqual(nodeInboundIDs(n, proto), inbounds[proto]) {
+			return true
+		}
+	}
+	return false
+}
+
+// phpLooseEqual 复刻 PHP 的 `!=` 松散比较（用于 changesInitConfiguration）。
+func phpLooseEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	aNumeric := phpNumericPasses(a)
+	bNumeric := phpNumericPasses(b)
+	if aNumeric && bNumeric {
+		return phpNumberOf(a) == phpNumberOf(b)
+	}
+	if aNumeric != bNumeric {
+		// 一边数值一边非数值：PHP 8 里 "abc" != 1 → true（不等）
+		// 但 "" == 0、null == false 之类的空值比较仍相等。
+		if isEmptyPHPValue(a) || isEmptyPHPValue(b) {
+			return phpNumberOf(valueOrZero(a)) == phpNumberOf(valueOrZero(b))
+		}
+		return false
+	}
+	if aBool, ok := a.(bool); ok {
+		if bBool, ok := b.(bool); ok {
+			return aBool == bBool
+		}
+		return aBool == phpTruthyValue(b)
+	}
+	if bBool, ok := b.(bool); ok {
+		return phpTruthyValue(a) == bBool
+	}
+	return nodeScalarString(a) == nodeScalarString(b)
+}
+
+func valueOrZero(v any) any {
+	if v == nil {
+		return int64(0)
+	}
+	return v
+}
+
+func isEmptyPHPValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == "" || t == "0"
+	case bool:
+		return !t
+	}
+	return false
+}
+
+func phpTruthyValue(v any) bool {
+	return nodeTruthy(v) || phpNumericPasses(v) && phpNumberOf(v) != 0
+}
+
+// nodeInboundIDs 取节点某协议已挂的入站（升序）。
+func nodeInboundIDs(n *NodeRecord, proto string) []int64 {
+	out := []int64{}
+	for _, ib := range n.Inbounds {
+		if ib.Protocol == proto {
+			out = append(out, ib.InboundID)
+		}
+	}
+	sortInt64s(out)
+	return out
+}
+
+// sortInt64s 升序排序（PHP sort() 对整数数组）。
+func sortInt64s(v []int64) {
+	for i := 1; i < len(v); i++ {
+		for j := i; j > 0 && v[j] < v[j-1]; j-- {
+			v[j], v[j-1] = v[j-1], v[j]
+		}
+	}
+}
+
+// int64SetsEqual 比较两个已排序序列是否相同（PHP 的 `$a !== $b`）。
+func int64SetsEqual(a, b []int64) bool {
+	aa := append([]int64{}, a...)
+	bb := append([]int64{}, b...)
+	sortInt64s(aa)
+	sortInt64s(bb)
+	if len(aa) != len(bb) {
+		return false
+	}
+	for i := range aa {
+		if aa[i] != bb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ---- 表单取值 ----
+
+// nodeDriverTypeOf 取表单里的 driver_type（缺省 '3x-ui'）。
+func nodeDriverTypeOf(input map[string]any) string {
+	if s, ok := inputString(input["driver_type"]); ok && s != "" {
+		return s
+	}
+	return "3x-ui"
+}
+
+// nodeStringField 取字符串字段（缺失 → 空串）。
+func nodeStringField(input map[string]any, key string) string {
+	if s, ok := inputString(input[key]); ok {
+		return s
+	}
+	return ""
+}
+
+// nodeOptionalString 取「请求里出现过才更新」的字符串字段。
+func nodeOptionalString(input map[string]any, key string) *string {
+	val, present := input[key]
+	if !present {
+		return nil
+	}
+	return ptrStringOrNil(val)
+}
+
+// multiplierInput 把 traffic_multiplier 规范成 decimal(6,2) 字符串；null → nil（继承）。
+func multiplierInput(v any) *string {
+	if v == nil {
+		return nil
+	}
+	s, ok := decimalString(v, 2)
+	if !ok {
+		return nil
+	}
+	// PHP 写的是 (float)$data['traffic_multiplier']：(float)"1" → 1.0 → MySQL 存 1.00。
+	// decimalString 已给出两位小数，与 MySQL decimal(6,2) 的落库结果一致。
+	return &s
+}
+
+// nodeInboundsOf 取表单里的入站（不区分是否出现过）。
+func nodeInboundsOf(input map[string]any) map[string][]int64 {
+	m, _ := nodeInboundsOfOK(input)
+	if m == nil {
+		m = map[string][]int64{}
+	}
+	return m
+}
+
+// nodeInboundsOfOK 取表单入站并返回「是否出现过 inbounds 键」。
+func nodeInboundsOfOK(input map[string]any) (map[string][]int64, bool) {
+	raw, present := input["inbounds"]
+	if !present || raw == nil {
+		return map[string][]int64{}, false
+	}
+	obj, isObj := raw.(map[string]any)
+	if !isObj {
+		return map[string][]int64{}, true
+	}
+	out := map[string][]int64{}
+	for _, proto := range []string{"vless", "trojan"} {
+		val, ok := obj[proto]
+		if !ok || val == nil {
+			continue
+		}
+		out[proto] = inboundIDList(val)
+	}
+	return out, true
+}
+
+// inboundIDList 复刻 syncInbounds 的兼容口径：单值也接受（旧数据/前端过渡）。
+func inboundIDList(v any) []int64 {
+	switch t := v.(type) {
+	case []any:
+		out := make([]int64, 0, len(t))
+		for _, item := range t {
+			out = append(out, inputInt(item))
+		}
+		return out
+	case nil:
+		return []int64{}
+	default:
+		return []int64{inputInt(t)}
+	}
+}
+
+// selectedInboundIDs 对齐 selectedInboundIds()：两协议合并；全空返回 nil（= PHP 的 []）。
+func selectedInboundIDs(inbounds map[string][]int64) []int64 {
+	out := []int64{}
+	out = append(out, inbounds["vless"]...)
+	out = append(out, inbounds["trojan"]...)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ---- 任务派发 ----
+
+// submitNodeInit 对齐 NodeInitService::submit：按用户逐条建 item。
+func (d *NodeDomain) submitNodeInit(c *gin.Context, n *NodeRecord, shouldEnable bool) (*NodeTaskRecord, error) {
+	userIDs, err := d.store.AllUserIDs(ctxOf(c))
+	if err != nil {
+		return nil, err
+	}
+	itemKeys := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		itemKeys = append(itemKeys, "user:"+strconv.FormatUint(id, 10))
+	}
+	meta := phpEncode(jo("should_enable", shouldEnable, "node_name", n.Name))
+
+	task, err := d.store.CreateTask(ctxOf(c), TaskCreateInput{
+		Type:        "node_init",
+		SubjectType: "node",
+		SubjectID:   n.ID,
+		Meta:        meta,
+		MaxAttempts: 3,
+		ItemKeys:    itemKeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(userIDs) == 0 {
+		// 无用户：直接判终态（succeeded），enable 交给 FinalizeInitTask。
+		task, err = d.store.CompleteEmptyTask(ctxOf(c), task.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.store.FinalizeInitTask(ctxOf(c), n.ID, task.ID); err != nil {
+			return nil, err
+		}
+	}
+	return task, nil
+}
+
+// submitInboundSync 对齐 NodeInboundSyncService::submit：只取「变化协议下、有套餐」的用户。
+func (d *NodeDomain) submitInboundSync(c *gin.Context, n *NodeRecord, changed map[string][]int64) (*NodeTaskRecord, error) {
+	protocols := make([]string, 0, len(changed))
+	for proto := range changed {
+		protocols = append(protocols, proto)
+	}
+	userIDs, err := d.store.UserIDsWithPlanByProtocols(ctxOf(c), protocols)
+	if err != nil {
+		return nil, err
+	}
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+
+	changedJSON := jo()
+	for _, proto := range []string{"vless", "trojan"} {
+		if ids, ok := changed[proto]; ok {
+			arr := jsArr{}
+			for _, id := range ids {
+				arr = append(arr, id)
+			}
+			changedJSON.put(proto, arr)
+		}
+	}
+	meta := phpEncode(jo(
+		"action", "sync_inbounds",
+		"node_name", n.Name,
+		"inbounds", changedJSON,
+	))
+	itemKeys := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		itemKeys = append(itemKeys, "user:"+strconv.FormatUint(id, 10))
+	}
+
+	return d.store.CreateTask(ctxOf(c), TaskCreateInput{
+		Type:        "node_action",
+		SubjectType: "node",
+		SubjectID:   n.ID,
+		Meta:        meta,
+		MaxAttempts: 3,
+		ItemKeys:    itemKeys,
+	})
+}
+
+// 编译期断言：本地引用的 xray 常量与包内实现保持一致（防止将来包重构时静默漂移）。
+var _ = xray.HeartbeatFreshSeconds
+var _ = context.Background

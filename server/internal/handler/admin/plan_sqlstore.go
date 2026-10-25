@@ -1,0 +1,227 @@
+package admin
+
+// PlanStore 的 database/sql 实现（套餐域）。
+
+import (
+	"context"
+	"database/sql"
+	"strings"
+	"time"
+)
+
+// NewPlanSQLStore 用已有连接池构造套餐域的 PlanStore。
+func NewPlanSQLStore(db *sql.DB) PlanStore {
+	return &planSQLStore{db: db}
+}
+
+type planSQLStore struct {
+	db *sql.DB
+}
+
+const planSelectColumns = `id, name, type, months, monthly_traffic, period_traffic, total_traffic,
+	price, reset_price, is_active, include_local, third_party_sub_ids, created_at`
+
+func scanPlanRow(row interface{ Scan(...any) error }) (*PlanRow, error) {
+	var (
+		p          PlanRow
+		months     sql.NullInt64
+		monthly    sql.NullInt64
+		period     sql.NullInt64
+		total      sql.NullInt64
+		price      sql.NullString
+		resetPrice sql.NullString
+		isActive   int
+		includeLcl int
+		subIDs     sql.NullString
+		createdAt  sql.NullTime
+	)
+	if err := row.Scan(&p.ID, &p.Name, &p.Type, &months, &monthly, &period, &total,
+		&price, &resetPrice, &isActive, &includeLcl, &subIDs, &createdAt); err != nil {
+		return nil, err
+	}
+	p.Months = nullIntPtr(months)
+	p.MonthlyTraffic = nullIntPtr(monthly)
+	p.PeriodTraffic = nullIntPtr(period)
+	p.TotalTraffic = nullIntPtr(total)
+	if price.Valid {
+		p.Price = price.String
+	} else {
+		p.Price = "0.00"
+	}
+	if resetPrice.Valid {
+		p.ResetPrice = resetPrice.String
+	} else {
+		p.ResetPrice = "0.00"
+	}
+	p.IsActive = isActive != 0
+	p.IncludeLocal = includeLcl != 0
+	p.ThirdPartySubIDs = jsonIntList(nullStrPtr(subIDs))
+	if p.ThirdPartySubIDs == nil {
+		p.ThirdPartySubIDs = []int64{}
+	}
+	p.CreatedAt = nullTimePtr(createdAt)
+	return &p, nil
+}
+
+func (s *planSQLStore) PlanPage(ctx context.Context, page, perPage int64) ([]PlanRow, int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plans`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * perPage
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+planSelectColumns+` FROM plans ORDER BY id DESC LIMIT ? OFFSET ?`, perPage, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []PlanRow{}
+	for rows.Next() {
+		p, err := scanPlanRow(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *p)
+	}
+	return out, total, rows.Err()
+}
+
+func (s *planSQLStore) PlanAll(ctx context.Context) ([]PlanRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+planSelectColumns+` FROM plans ORDER BY id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PlanRow{}
+	for rows.Next() {
+		p, err := scanPlanRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+func (s *planSQLStore) PlanByID(ctx context.Context, id uint64) (*PlanRow, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+planSelectColumns+` FROM plans WHERE id = ?`, id)
+	return scanPlanRow(row)
+}
+
+func (s *planSQLStore) PlanExists(ctx context.Context, id uint64) (bool, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plans WHERE id = ?`, id).Scan(&n)
+	return n > 0, err
+}
+
+func (s *planSQLStore) ThirdPartySubExists(ctx context.Context, id int64) (bool, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM third_party_subs WHERE id = ?`, id).Scan(&n)
+	return n > 0, err
+}
+
+// planWriteValues 把 PlanInput 摊成列值（create/update 共用语义）。
+//
+// 未传的金额不写（create 用 DB 默认 0.00，update 保持旧值）；类型派生字段由
+// validatePlan 全部填好，这里一律落库。
+func planWriteValues(in PlanInput) (cols []string, args []any) {
+	cols = append(cols, "name = ?", "type = ?", "include_local = ?", "third_party_sub_ids = ?")
+	args = append(args, in.Name, in.Type, boolToInt(in.IncludeLocal), intListToJSON(in.ThirdPartySubIDs))
+
+	if in.PriceSet {
+		cols = append(cols, "price = ?")
+		if in.Price != nil {
+			args = append(args, *in.Price)
+		} else {
+			args = append(args, nil)
+		}
+	}
+	if in.ResetPriceSet {
+		cols = append(cols, "reset_price = ?")
+		if in.ResetPrice != nil {
+			args = append(args, *in.ResetPrice)
+		} else {
+			args = append(args, nil)
+		}
+	}
+	cols = append(cols, "months = ?", "monthly_traffic = ?", "period_traffic = ?", "total_traffic = ?")
+	args = append(args, nullInt64Value(in.Months), nullInt64Value(in.MonthlyTraffic),
+		nullInt64Value(in.PeriodTraffic), nullInt64Value(in.TotalTraffic))
+	return cols, args
+}
+
+// nullInt64Value 把 int64 指针变成可绑定值（nil → NULL）。
+func nullInt64Value(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func (s *planSQLStore) CreatePlan(ctx context.Context, in PlanInput, now time.Time) (*PlanRow, error) {
+	price := "0.00"
+	if in.PriceSet && in.Price != nil {
+		price = *in.Price
+	}
+	reset := "0.00"
+	if in.ResetPriceSet && in.ResetPrice != nil {
+		reset = *in.ResetPrice
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plans
+		(name, type, months, monthly_traffic, period_traffic, total_traffic,
+		 price, reset_price, is_active, include_local, third_party_sub_ids, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+		in.Name, in.Type,
+		nullInt64Value(in.Months), nullInt64Value(in.MonthlyTraffic),
+		nullInt64Value(in.PeriodTraffic), nullInt64Value(in.TotalTraffic),
+		price, reset,
+		boolToInt(in.IncludeLocal), intListToJSON(in.ThirdPartySubIDs), now, now)
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return s.PlanByID(ctx, uint64(id))
+}
+
+func (s *planSQLStore) UpdatePlan(ctx context.Context, id uint64, in PlanInput, now time.Time) error {
+	cols, args := planWriteValues(in)
+	cols = append(cols, "updated_at = ?")
+	args = append(args, now, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE plans SET `+strings.Join(cols, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *planSQLStore) SetPlanActive(ctx context.Context, id uint64, active bool, now time.Time) (*PlanRow, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE plans SET is_active = ?, updated_at = ? WHERE id = ?`, boolToInt(active), now, id)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return s.PlanByID(ctx, id)
+}
