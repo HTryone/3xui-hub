@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/driver/payment"
+	"controlhub-server/internal/tgbot"
 )
 
 // ---------------------------------------------------------------------------
@@ -303,6 +304,8 @@ type PaymentServiceOptions struct {
 	DefaultNotifyURL func(ctx context.Context) (string, error)
 	// RateGuard 是折扣码限流（与 /api/discount/check 共用计数）；为空时不限流。
 	RateGuard DiscountRateGuard
+	// TGSender Telegram 通知（支付到账通知；nil 则跳过）。
+	TGSender *tgbot.Sender
 }
 
 // DiscountRateGuard 是 RateGuardService 里折扣码那一段的接缝（限流键与 PHP 逐字一致）。

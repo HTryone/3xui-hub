@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/driver/payment"
+	"controlhub-server/internal/tgbot"
 )
 
 // PaymentService 对齐 backend/app/Services/PaymentService.php。
@@ -40,6 +41,7 @@ type PaymentService struct {
 	returnURL        func(ctx context.Context) string
 	defaultNotifyURL func(ctx context.Context) (string, error)
 	rateGuard        DiscountRateGuard
+	tg               *tgbot.Sender
 
 	logger loggerLike
 }
@@ -93,6 +95,7 @@ func NewPaymentService(store PaymentStore, opts PaymentServiceOptions, logger lo
 		returnURL:        opts.ReturnURL,
 		defaultNotifyURL: opts.DefaultNotifyURL,
 		rateGuard:        opts.RateGuard,
+		tg:               opts.TGSender,
 		logger:           logger,
 	}
 	return s
@@ -545,6 +548,14 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 	order.Status = "paid"
 	order.TradeNo = tradeNo
 	order.PaidAt = sql.NullTime{Time: now, Valid: true}
+
+	// TG 到账通知（开关 tg_notify_payment 开启才发）。
+	if s.tg != nil {
+		text := fmt.Sprintf("💰 新订单支付成功\n订单号：%s\n金额：%s", order.OrderNo, order.Amount)
+		if err := s.tg.Notify(ctx, tgbot.KeyNotifyPayment, text); err != nil {
+			s.logger.Printf("TG 支付到账通知失败: %v", err)
+		}
+	}
 
 	// 代理订单：走独立开通流程，不碰节点套餐、不发邀请奖励。
 	if order.IsProxyOrder() {

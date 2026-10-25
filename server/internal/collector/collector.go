@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"controlhub-server/internal/tgbot"
 )
 
 // Options 是采集层的构造参数。
@@ -44,6 +46,8 @@ type Options struct {
 	Now func() time.Time
 	// Logf 是日志出口（默认丢弃；P9 接 slog 时注入）。
 	Logf func(format string, args ...any)
+	// TGSender Telegram 通知（节点离线告警；nil 则跳过 TG 推送）。
+	TGSender *tgbot.Sender
 }
 
 // Collector 是采集层的入口，持有数据库连接与配置。
@@ -55,6 +59,7 @@ type Collector struct {
 	key    []byte
 	nowFn  func() time.Time
 	logf   func(format string, args ...any)
+	tg     *tgbot.Sender
 	logger sync.Mutex // 只用于序列化 Logf 调用，避免业务日志交错
 }
 
@@ -71,6 +76,7 @@ func New(opts Options) (*Collector, error) {
 		key:   opts.AppKey,
 		nowFn: opts.Now,
 		logf:  opts.Logf,
+		tg:    opts.TGSender,
 	}
 	if c.nowFn == nil {
 		c.nowFn = func() time.Time { return time.Now().UTC() }

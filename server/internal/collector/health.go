@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"controlhub-server/internal/tgbot"
 )
 
 // 健康检查 + 机器流量采样：逐行对齐 HealthCheckService（M9）与 MonitorService::record()。
@@ -100,6 +102,14 @@ func (c *Collector) markOffline(ctx context.Context, node nodeRow, cause error) 
 		return HealthResult{}, err
 	}
 	c.recordMonitor(ctx, node, nil)
+
+	// TG 告警：只在「之前不在 offline」（本轮新掉线）时推，避免每 5 分钟刷屏。
+	if c.tg != nil && node.Status != "offline" {
+		text := fmt.Sprintf("🚨 节点离线：%s（%s）\n原因：%s", node.Name, node.Host, cause.Error())
+		if err := c.tg.Notify(ctx, tgbot.KeyNotifyNodeOff, text); err != nil {
+			c.logf_("TG 节点离线告警失败: %v", err)
+		}
+	}
 	return HealthResult{Status: "offline", Error: cause.Error()}, nil
 }
 

@@ -20,12 +20,13 @@ import (
 	"controlhub-server/internal/nodeapi"
 	"controlhub-server/internal/subscription"
 	"controlhub-server/internal/task"
+	"controlhub-server/internal/tgbot"
 	"controlhub-server/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
 
-func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) (*ws.Server, *admin.MailDomain) {
+func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender) (*ws.Server, *admin.MailDomain) {
 	logger := log.Default()
 	db := app.DB
 	cfg := app.Cfg
@@ -66,6 +67,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) (*w
 	payStore := api.NewPaymentSQLStore(db)
 	paySvc := api.NewPaymentService(payStore, api.PaymentServiceOptions{
 		ProxyOrders: api.NewProxyCompleter(db, logger),
+		TGSender:    tgSender,
 	}, logger)
 	payHandlers := api.NewPaymentHandlers(apiHandler, payStore, paySvc)
 	payHandlers.RegisterPayment(r)
@@ -175,6 +177,14 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) (*w
 		Logger: logger,
 	})
 	mailDomain.Register(adminGroup)
+
+	// Telegram 机器人（通知渠道：节点离线/支付到账/备份推送）
+	telegramDomain := admin.NewTelegramDomain(admin.TelegramDeps{
+		Store:  adminStore,
+		AppKey: cfg.AppKey,
+		Logger: logger,
+	})
+	telegramDomain.Register(adminGroup)
 
 	// 域名域
 	domainDomain := admin.NewDomainsDomain(admin.DomainDeps{

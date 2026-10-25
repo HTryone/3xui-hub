@@ -17,7 +17,7 @@ import (
 func TestPingContract(t *testing.T) {
 	// 只测路由，不连库：NewApp 的 db 传 nil。
 	app := httpx.NewApp(nil, &config.Config{AppEnv: "testing"})
-	r, _, _ := newRouter(app, nil)
+	r, _, _ := newRouter(app, nil, nil)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
@@ -52,7 +52,7 @@ func TestPingContract(t *testing.T) {
 // 生产环境要自动切 gin release 模式，别把调试输出打到线上。
 func TestRouterUsesReleaseModeInProduction(t *testing.T) {
 	app := httpx.NewApp(nil, &config.Config{AppEnv: "production"})
-	_, _, _ = newRouter(app, nil)
+	_, _, _ = newRouter(app, nil, nil)
 	if gin.Mode() != gin.ReleaseMode {
 		t.Fatalf("gin.Mode() = %q, want release", gin.Mode())
 	}

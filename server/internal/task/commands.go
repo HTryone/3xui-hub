@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"controlhub-server/internal/driver/threexui"
+	"controlhub-server/internal/tgbot"
 )
 
 // ── 命令运行器 ──────────────────────────────────────────────────────
@@ -86,6 +87,8 @@ type CommandDeps struct {
 	// BackupTimeout 单次备份的超时（0 = 默认 30 分钟）。mysqldump 卡住会永久
 	// 占用 withoutOverlapping 标志，导致后续每天备份被跳过，超时兜底掐断。
 	BackupTimeout time.Duration
+	// TGSender Telegram 通知（备份完成推送 zip；nil 则跳过 TG 推送）。
+	TGSender *tgbot.Sender
 	// DBHost/DBPort/DBName/DBUser/DBPassword 备份连接参数。
 	DBHost     string
 	DBPort     string
@@ -507,6 +510,15 @@ func (r *commandRunner) runBackupRun(ctx context.Context) error {
 
 	size := fileSize(target)
 	r.logf("备份完成：%s（%.1f KB）", target, float64(size)/1024)
+
+	// TG 推送（开关 tg_backup_push 开启且已配置 token/chat_id 才发）。
+	if r.deps.TGSender != nil && r.deps.TGSender.NotifyEnabled(ctx, tgbot.KeyBackupPush) {
+		caption := fmt.Sprintf("ControlHub 每日备份 %s（%.1f KB）",
+			r.now().Format("2006-01-02 15:04:05"), float64(size)/1024)
+		if err := r.deps.TGSender.SendDocument(ctx, caption, target); err != nil {
+			r.logf("TG 推送备份失败: %v", err)
+		}
+	}
 	return nil
 }
 

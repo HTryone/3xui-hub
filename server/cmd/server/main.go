@@ -21,6 +21,7 @@ import (
 	"controlhub-server/internal/httpx"
 	"controlhub-server/internal/store"
 	"controlhub-server/internal/task"
+	"controlhub-server/internal/tgbot"
 	"controlhub-server/internal/ws"
 
 	"github.com/gin-gonic/gin"
@@ -39,19 +40,23 @@ func main() {
 		defer db.Close()
 	}
 
+	// Telegram 通知（节点离线/支付到账/备份推送，全局共享一个实例）
+	tgSender := tgbot.NewSender(db, app.Cfg.AppKey, log.Printf)
+
 	// collector（P6 采集层 + P8a 用户域下发的驱动构造，全局共享一个实例）
 	col, colErr := collector.New(collector.Options{
-		DB:     db,
-		AppKey: app.Cfg.AppKey,
-		Now:    time.Now,
-		Logf:   log.Printf,
+		DB:       db,
+		AppKey:   app.Cfg.AppKey,
+		Now:      time.Now,
+		Logf:     log.Printf,
+		TGSender: tgSender,
 	})
 	if colErr != nil {
 		log.Fatalf("初始化 collector 失败: %v", colErr)
 	}
 
 	addr := envOr("LISTEN_ADDR", ":8080")
-	router, wsServer, mailDomain := newRouter(app, col)
+	router, wsServer, mailDomain := newRouter(app, col, tgSender)
 	srv := &http.Server{
 		Handler:           router,
 		Addr:              addr,
@@ -66,7 +71,7 @@ func main() {
 	defer stop()
 
 	// 启动调度器（P9 常驻 goroutine，随服务启动/优雅退出一起关闭）
-	startScheduler(ctx, app, db, col, mailDomain)
+	startScheduler(ctx, app, db, col, mailDomain, tgSender)
 
 	// 启动节点 WS 通道（轮询/心跳节拍；握手由 /node-ws 路由 ServeHTTP 处理）
 	if wsServer != nil {
@@ -108,7 +113,7 @@ func bootstrap() (*httpx.App, *sql.DB, error) {
 
 // newRouter 构建 gin 引擎并注册路由。单独拆出来便于单测/健康检查复用。
 // 返回 gin 引擎 + 节点 WS 服务（WS 的 Run 需由 main 用 ctx 启动）。
-func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Server, *admin.MailDomain) {
+func newRouter(app *httpx.App, col *collector.Collector, tgSender *tgbot.Sender) (*gin.Engine, *ws.Server, *admin.MailDomain) {
 	if app.Cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -118,7 +123,7 @@ func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Serve
 
 	// 路由注册随迁移阶段逐步接入（handler/api、handler/admin）。
 	// /api/ping 由 api.Handler.Register 注册（对齐 PHP 契约）。
-	wsServer, mailDomain := registerRoutes(r, app, col)
+	wsServer, mailDomain := registerRoutes(r, app, col, tgSender)
 
 	return r, wsServer, mailDomain
 }
@@ -146,7 +151,7 @@ func backupTimeoutMinutes() time.Duration {
 
 // startScheduler 组装并启动定时调度器（P9 常驻 goroutine）。
 // 队列分离默认关闭（全部进 default 队列）。
-func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector, mailDomain *admin.MailDomain) {
+func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector, mailDomain *admin.MailDomain, tgSender *tgbot.Sender) {
 	logger := log.Default()
 	cfg := app.Cfg
 
@@ -169,6 +174,7 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		BackupDir:  envOr("BACKUP_DIR", "/var/backups/3xui-hub"),
 		BackupKeep: 7,
 		BackupTimeout: backupTimeoutMinutes(),
+		TGSender:      tgSender,
 		DBHost:     cfg.DB.Host,
 		DBPort:     cfg.DB.Port,
 		DBName:     cfg.DB.Database,
