@@ -661,9 +661,14 @@ fetch_backend_binary() {
 
     BIN="controlhub-server-linux-${ARCH}"
     URL="https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+    # 先下到临时文件再原子替换：curl 直写运行中的二进制会 Text file busy（内核拒绝
+    # 覆盖正在执行的文件）；mv 换新 inode 允许覆盖。stop 后由 phase2 的 restart 拉起来。
+    local TMP="${INSTALL_DIR}/server/.controlhub-server.new"
     for u in "$URL" "https://gh-proxy.com/$URL" "https://ghfast.top/$URL"; do
-        if curl -fL --connect-timeout 15 --max-time 300 -o "${INSTALL_DIR}/server/controlhub-server" "$u" 2>/dev/null; then
-            chmod +x "${INSTALL_DIR}/server/controlhub-server"
+        if curl -fL --connect-timeout 15 --max-time 300 -o "$TMP" "$u" 2>/dev/null; then
+            chmod +x "$TMP"
+            systemctl stop controlhub 2>/dev/null || true
+            mv -f "$TMP" "${INSTALL_DIR}/server/controlhub-server"
             return 0
         fi
         echo -e "${YELLOW}下载失败，尝试下一个镜像...${NC}"

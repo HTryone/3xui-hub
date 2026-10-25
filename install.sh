@@ -277,10 +277,11 @@ download_binary() {
         "https://ghfast.top/https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
     )
 
+    local TMP="${INSTALL_DIR}/server/.controlhub-server.new"
     local downloaded=""
     for url in "${URLS[@]}"; do
         info "下载 $url"
-        if curl -fL --connect-timeout 15 --max-time 300 -o "${INSTALL_DIR}/server/controlhub-server" "$url" 2>&1 | tee -a "$LOG_FILE"; then
+        if curl -fL --connect-timeout 15 --max-time 300 -o "$TMP" "$url" 2>&1 | tee -a "$LOG_FILE"; then
             # PIPESTATUS 兜底：管道里 tee 恒 0，直接 if 会吞掉 curl 的下载失败 → fallback 失效
             if [ "${PIPESTATUS[0]}" -eq 0 ]; then
                 downloaded="ok"
@@ -291,7 +292,12 @@ download_binary() {
     done
 
     [ -n "$downloaded" ] || error_exit "二进制下载失败（已尝试所有镜像）"
-    chmod +x "${INSTALL_DIR}/server/controlhub-server"
+    chmod +x "$TMP"
+    # 原子替换：curl 直写运行中的二进制会 Text file busy（内核拒绝覆盖正在执行的文件），
+    # 所以先下到临时文件，再停服务 + mv（mv 换新 inode，Linux 允许覆盖）。全新装时
+    # controlhub.service 尚未创建，stop 静默跳过，后续 setup_go_service 会 start。
+    systemctl stop controlhub 2>/dev/null || true
+    mv -f "$TMP" "${INSTALL_DIR}/server/controlhub-server"
     success "Go 后端二进制就绪（v${VER} / linux-${ARCH}）"
 }
 

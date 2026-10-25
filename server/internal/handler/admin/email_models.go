@@ -194,7 +194,11 @@ type MailDomain struct {
 	logger    loggerLike
 }
 
-// NewMailDomain 组装邮件域。Transport / Queue 为空时用 noop（只记日志，测试可换 mock）。
+// NewMailDomain 组装邮件域。Transport / Queue 为空时用真实实现（不是 noop 假成功）：
+//   - Transport 空 → NewSMTPTransport（net/smtp 真实发信）；
+//   - Queue 空 → newMailQueue（单 goroutine 串行 + DelaySeconds，执行体是 m.deliver）。
+//
+// 测试可注入 mock 覆盖两者；nil 不再退化为「记日志后假装成功」。
 func NewMailDomain(d MailDeps) *MailDomain {
 	if d.Store == nil {
 		panic("admin: MailStore 不能为空")
@@ -209,34 +213,19 @@ func NewMailDomain(d MailDeps) *MailDomain {
 	}
 	transport := d.Transport
 	if transport == nil {
-		transport = noopMailTransport{logger: logger}
+		transport = NewSMTPTransport(logger)
 	}
-	queue := d.Queue
-	if queue == nil {
-		queue = noopMailQueue{logger: logger}
-	}
-	return &MailDomain{
+	m := &MailDomain{
 		store:     d.Store,
 		transport: transport,
-		queue:     queue,
 		appKey:    d.AppKey,
 		now:       now,
 		logger:    logger,
 	}
-}
-
-// noopMailTransport 未注入真实 SMTP 时的占位：记日志后假装成功（与 PHP null mailer 同为开发态）。
-type noopMailTransport struct{ logger loggerLike }
-
-func (n noopMailTransport) Send(_ SMTPSettings, to, subject, _ string) error {
-	n.logger.Printf("admin mail: noop transport 发信 %s %q → %s", subject, subject, to)
-	return nil
-}
-
-// noopMailQueue 未注入队列时的占位。
-type noopMailQueue struct{ logger loggerLike }
-
-func (n noopMailQueue) Enqueue(job MailJob) error {
-	n.logger.Printf("admin mail: noop queue 入队 %s → %s", job.Type, job.ToEmail)
-	return nil
+	queue := d.Queue
+	if queue == nil {
+		queue = newMailQueue(m.deliver, logger)
+	}
+	m.queue = queue
+	return m
 }
