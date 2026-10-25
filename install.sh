@@ -221,8 +221,11 @@ install_go() {
     for url in "${GO_URLS[@]}"; do
         info "下载 $url"
         if curl -fL --connect-timeout 15 --max-time 300 -o "/tmp/${GO_TAR}" "$url" 2>&1 | tee -a "$LOG_FILE"; then
-            downloaded="/tmp/${GO_TAR}"
-            break
+            # PIPESTATUS 兜底：管道里 tee 恒 0，直接 if 会吞掉 curl 的下载失败 → fallback 失效
+            if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+                downloaded="/tmp/${GO_TAR}"
+                break
+            fi
         fi
         warn "下载失败，尝试下一个镜像..."
     done
@@ -243,7 +246,8 @@ install_go() {
 build_go() {
     info "编译 Go 后端..."
     cd "$INSTALL_DIR/server"
-    CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 | tee -a "$LOG_FILE" || error_exit "Go 编译失败"
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 | tee -a "$LOG_FILE"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "Go 编译失败"
     success "Go 后端编译完成"
 }
 
@@ -381,8 +385,11 @@ deploy_project() {
         for MIRROR_URL in "${MIRRORS[@]}"; do
             info "尝试: ${MIRROR_URL%%://*}..."
             if git clone --depth 1 --single-branch --branch main "$MIRROR_URL" "$INSTALL_DIR" 2>&1 | tee -a "$LOG_FILE"; then
-                CLONED=true
-                break
+                # PIPESTATUS 兜底：git clone 失败时 tee 恒 0，直接 if 会让 fallback 失效
+                if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+                    CLONED=true
+                    break
+                fi
             fi
             warn "失败，尝试下一个..."
             rm -rf "$INSTALL_DIR" 2>/dev/null
@@ -439,7 +446,8 @@ EOF
 
     # 创建 MySQL 数据库
     if command -v mysql &>/dev/null; then
-        mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1 | tee -a "$LOG_FILE" || warn "MySQL 数据库创建失败，请手动创建"
+        mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1 | tee -a "$LOG_FILE"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || warn "MySQL 数据库创建失败，请手动创建"
     else
         warn "mysql 命令不可用，请手动创建 MySQL 数据库: controlhub"
     fi
@@ -452,8 +460,10 @@ EOF
     else
         info "初始化数据库表结构..."
         if [ -f "$INSTALL_DIR/server/schema/schema.sql" ]; then
-            mysql -u root controlhub < "$INSTALL_DIR/server/schema/schema.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "建表失败"
-            mysql -u root controlhub < "$INSTALL_DIR/server/schema/seed.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "默认管理员填充失败"
+            mysql -u root controlhub < "$INSTALL_DIR/server/schema/schema.sql" 2>&1 | tee -a "$LOG_FILE"
+            [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "建表失败"
+            mysql -u root controlhub < "$INSTALL_DIR/server/schema/seed.sql" 2>&1 | tee -a "$LOG_FILE"
+            [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "默认管理员填充失败"
         else
             error_exit "缺少 server/schema/schema.sql"
         fi
@@ -557,18 +567,18 @@ server {
     # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
         proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location ~ ^/(api|admin-api) {
         proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
@@ -625,18 +635,18 @@ server {
     # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
         proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location ~ ^/(api|admin-api) {
         proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
@@ -664,8 +674,9 @@ NGINX
     # 删除默认站点（避免冲突）
     rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-    # 测试并重载 Nginx
-    nginx -t 2>&1 | tee -a "$LOG_FILE" || error_exit "Nginx 配置错误"
+    # 测试并重载 Nginx（管道里 tee 的退出码会吞掉 nginx 的真实失败，必须用 PIPESTATUS 判）
+    nginx -t 2>&1 | tee -a "$LOG_FILE"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "Nginx 配置错误"
     systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
 
     success "Nginx 配置完成"

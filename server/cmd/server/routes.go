@@ -83,9 +83,11 @@ func registerRoutes(r *gin.Engine, app *httpx.App) *ws.Server {
 	nodeHandler := nodeapi.NewHandler(nodeRepo, cfg.AppKey)
 	nodeHandler.RegisterRoutes(r)
 
-	// 节点资产（公开，无鉴权）
-	assetRoot := envOr("NODE_ASSET_ROOT", filepath.Join("storage", "app", "node-bin"))
-	geoRoot := envOr("NODE_GEO_ROOT", filepath.Join("storage", "app", "geo"))
+	// 节点资产（公开，无鉴权）。默认路径对齐 NewAssetHandler 的空默认（../backend/storage/app/xray）：
+	// 资产自持在发布仓 backend/storage/app/xray/（Xray 内核 zip + agent 二进制 + 安装脚本），
+	// 相对 server/ 工作目录一层 .. 即可定位。历史默认 storage/app/node-bin 是错的（少了 xray 且多套 node-bin）。
+	assetRoot := envOr("NODE_ASSET_ROOT", filepath.Join("..", "backend", "storage", "app", "xray"))
+	geoRoot := envOr("NODE_GEO_ROOT", filepath.Join("..", "backend", "storage", "app", "xray", "geo"))
 	assetHandler := nodeapi.NewAssetHandler(assetRoot, geoRoot)
 	assetHandler.RegisterRoutes(r)
 
