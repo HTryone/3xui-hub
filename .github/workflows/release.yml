@@ -1,0 +1,94 @@
+name: Release
+
+# 打 tag（v*）或手动触发时，在 CI（大机器）上编译 linux 多架构二进制并发布到
+# GitHub Release。用户服务器只下载二进制、不编译，避免小服务器 go build OOM。
+#
+# 版本号来源：tag 名去 v 前缀（v2.0.0 → 2.0.0），与 frontend/package.json 的
+# version 对齐。二进制内通过 -X main.Version 烙进版本号，供启动日志排查。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要编译的分支或 tag（默认当前默认分支）'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+
+      - name: 提取版本号（tag 去 v 前缀）
+        id: version
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: 编译 Go 后端（静态链接，无 CGO）
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          cd server
+          go build -trimpath \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o "controlhub-server-linux-${{ matrix.arch }}" ./cmd/server
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlhub-server-linux-${{ matrix.arch }}
+          path: server/controlhub-server-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 收集产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: controlhub-server-linux-*
+          merge-multiple: true
+          path: dist/
+
+      - name: 生成 checksum
+        run: |
+          cd dist
+          sha256sum controlhub-server-linux-* > checksums.txt
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/controlhub-server-linux-amd64
+            dist/controlhub-server-linux-arm64
+            dist/checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true

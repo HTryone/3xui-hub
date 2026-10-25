@@ -465,9 +465,9 @@ cmd_status() {
     # 版本
     echo -e "版本:      ${GREEN}${VERSION}${NC}"
 
-    # Go
-    GO_VER=$(/usr/local/go/bin/go version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    echo -e "Go:        ${GREEN}${GO_VER}${NC}"
+    # 后端版本（预编译二进制分发，版本号与 frontend/package.json 对齐）
+    BACKEND_VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    echo -e "后端版本:  ${GREEN}${BACKEND_VER:-未知}${NC}"
 
     # 数据库
     if command -v mysql &>/dev/null; then
@@ -621,10 +621,9 @@ _update_rollback() {
         return 1
     fi
 
-    # 重新编译与旧代码匹配的 Go 后端（失败告警不中断：回滚中途再断会更难收拾）
-    cd "$INSTALL_DIR/server" 2>/dev/null || true
-    CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 \
-        || echo -e "${YELLOW}Go 重新编译失败，请手工执行: cd ${INSTALL_DIR}/server && go build -o controlhub-server ./cmd/server${NC}"
+    # 下载与旧代码匹配的 Go 二进制（失败告警不中断：回滚中途再断会更难收拾）
+    fetch_backend_binary 2>/dev/null \
+        || echo -e "${YELLOW}Go 二进制下载失败，请重新运行 3hub update${NC}"
 
     systemctl restart controlhub 2>/dev/null || true
 
@@ -635,6 +634,34 @@ _update_rollback() {
     SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null)
     echo -e "${GREEN}已回滚到 ${SHORT}。${NC}数据库未自动回滚（迁移通常是加表加列，旧代码兼容）；最近数据库备份在 ${BACKUP_DIR}/"
     return 0
+}
+
+# 下载预编译 Go 后端二进制（升级/回滚共用）。版本号读 frontend/package.json 的
+# version（与 release tag 对齐），架构由 uname -m 检测；下载到 server/controlhub-server。
+# 下载源按序回退：GitHub Release → gh-proxy → ghfast.top。成功返回 0，失败返回 1。
+fetch_backend_binary() {
+    local VER ARCH BIN URL
+    VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
+        | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$VER" ] || { echo -e "${RED}无法从 frontend/package.json 读取版本号${NC}"; return 1; }
+
+    case "$(uname -m)" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *) echo -e "${RED}不支持的架构: $(uname -m)${NC}"; return 1 ;;
+    esac
+
+    BIN="controlhub-server-linux-${ARCH}"
+    URL="https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+    for u in "$URL" "https://gh-proxy.com/$URL" "https://ghfast.top/$URL"; do
+        if curl -fL --connect-timeout 15 --max-time 300 -o "${INSTALL_DIR}/server/controlhub-server" "$u" 2>/dev/null; then
+            chmod +x "${INSTALL_DIR}/server/controlhub-server"
+            return 0
+        fi
+        echo -e "${YELLOW}下载失败，尝试下一个镜像...${NC}"
+    done
+    echo -e "${RED}二进制下载失败（已尝试所有镜像）${NC}"
+    return 1
 }
 
 # 更新系统（两段式：第一段只换代码，随后 exec 重新执行刚落盘的新脚本）
@@ -675,15 +702,12 @@ cmd_update_phase2() {
 
     local SNAP="${HUB_UPDATE_SNAPSHOT:-}"
 
-    # 编译 Go 后端（静态链接，无 CGO 依赖；go.mod 在 server/ 下）
-    echo -e "${CYAN}编译 Go 后端...${NC}"
-    cd "$INSTALL_DIR/server"
-    if ! CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1; then
-        echo -e "${RED}Go 编译失败${NC}"
+    # 下载预编译 Go 二进制（版本号读 package.json，与 release tag 对齐，免编译）
+    echo -e "${CYAN}下载 Go 后端二进制...${NC}"
+    if ! fetch_backend_binary; then
         _update_rollback "$SNAP"
         return 1
     fi
-    cd "$INSTALL_DIR"
 
     # 重启 Go 后端服务（单进程：HTTP + scheduler + WS 内置）
     systemctl restart controlhub 2>/dev/null || true

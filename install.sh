@@ -242,13 +242,67 @@ install_go() {
     success "Go 安装完成: $(go version)"
 }
 
-# 编译 Go 后端（静态链接，无 CGO 依赖）
+# 编译 Go 后端（静态链接，无 CGO 依赖）—— 仅 --from-source 源码编译路径使用
 build_go() {
     info "编译 Go 后端..."
     cd "$INSTALL_DIR/server"
     CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 | tee -a "$LOG_FILE"
     [ "${PIPESTATUS[0]}" -eq 0 ] || error_exit "Go 编译失败"
     success "Go 后端编译完成"
+}
+
+# 下载预编译 Go 后端二进制（默认路径，避免小服务器 go build 占满 CPU/内存 OOM）。
+# 版本号来源：frontend/package.json 的 version（与 release tag 对齐），
+# 架构由 uname -m 检测（amd64/arm64），二进制下载到 server/controlhub-server。
+# 下载源按序回退：GitHub Release → gh-proxy → ghfast.top（国内镜像加速）。
+download_binary() {
+    info "下载 Go 后端二进制（预编译，免编译）..."
+
+    local VER
+    VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$INSTALL_DIR/frontend/package.json" 2>/dev/null \
+        | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -n "$VER" ] || error_exit "无法从 frontend/package.json 读取版本号"
+
+    local ARCH
+    case "$(uname -m)" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *) error_exit "不支持的架构: $(uname -m)" ;;
+    esac
+
+    local BIN="controlhub-server-linux-${ARCH}"
+    local URLS=(
+        "https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+        "https://gh-proxy.com/https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+        "https://ghfast.top/https://github.com/YouzSpace/3xui-hub/releases/download/v${VER}/${BIN}"
+    )
+
+    local downloaded=""
+    for url in "${URLS[@]}"; do
+        info "下载 $url"
+        if curl -fL --connect-timeout 15 --max-time 300 -o "${INSTALL_DIR}/server/controlhub-server" "$url" 2>&1 | tee -a "$LOG_FILE"; then
+            # PIPESTATUS 兜底：管道里 tee 恒 0，直接 if 会吞掉 curl 的下载失败 → fallback 失效
+            if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+                downloaded="ok"
+                break
+            fi
+        fi
+        warn "下载失败，尝试下一个镜像..."
+    done
+
+    [ -n "$downloaded" ] || error_exit "二进制下载失败（已尝试所有镜像）"
+    chmod +x "${INSTALL_DIR}/server/controlhub-server"
+    success "Go 后端二进制就绪（v${VER} / linux-${ARCH}）"
+}
+
+# 获取 Go 后端：默认下载预编译二进制；FROM_SOURCE=1 时源码编译（专业用户）。
+fetch_backend_binary() {
+    if [ "${FROM_SOURCE:-0}" = "1" ]; then
+        install_go
+        build_go
+    else
+        download_binary
+    fi
 }
 
 # 写 systemd 服务并启动 Go 后端（单进程：HTTP + scheduler + WS 内置）
@@ -912,8 +966,7 @@ main() {
     detect_os
     detect_arch
 
-    # 安装依赖（Go 工具链 + Nginx；不再装 PHP/composer，Go 后端直连 MySQL）
-    install_go
+    # 安装依赖（Nginx；不再装 Go 工具链/PHP —— Go 后端走预编译二进制下载）
     install_nginx
 
     # 确保 git 可用
@@ -945,8 +998,8 @@ main() {
     # 配置环境（.env + 建库 + 导入 schema/seed）
     setup_env
 
-    # 编译 Go 后端
-    build_go
+    # 获取 Go 后端（默认下载预编译二进制；FROM_SOURCE=1 时源码编译）
+    fetch_backend_binary
 
     # 启动 Go 后端服务（systemd 单进程：HTTP + scheduler + WS 内置）
     setup_go_service

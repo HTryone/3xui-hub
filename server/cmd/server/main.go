@@ -25,6 +25,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Version 是构建版本号，由发布流程通过 -ldflags "-X main.Version=vX.Y.Z" 注入；
+// 本地/开发环境未注入时保持 "dev"。用于启动日志与 --version 排查「服务器跑的哪一版」。
+var Version = "dev"
+
 func main() {
 	app, db, err := bootstrap()
 	if err != nil {
@@ -58,7 +62,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("ControlHub Go 后端启动，监听 %s", addr)
+		log.Printf("ControlHub Go 后端启动（版本 %s），监听 %s", Version, addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("服务启动失败: %v", err)
 		}
