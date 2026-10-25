@@ -70,7 +70,7 @@ func (h *AdminExtras) SyncTraffic(c *gin.Context) {
 // AsyncTaskIndex 对齐 GET /admin-api/async-tasks。
 func (h *AdminExtras) AsyncTaskIndex(c *gin.Context) {
 	rows, err := h.db.QueryContext(c.Request.Context(),
-		"SELECT id, type, status, meta, error, created_at, updated_at FROM async_tasks ORDER BY id DESC LIMIT 100")
+		"SELECT id, type, status, meta, error, total, completed, failed, attempts, max_attempts, created_at, updated_at FROM async_tasks ORDER BY id DESC LIMIT 100")
 	if err != nil {
 		h.fail(c, "服务器错误", 500)
 		return
@@ -82,18 +82,38 @@ func (h *AdminExtras) AsyncTaskIndex(c *gin.Context) {
 		var id int64
 		var typ, status string
 		var meta, errMsg sql.NullString
+		var total, completed, failed, attempts, maxAttempts int
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&id, &typ, &status, &meta, &errMsg, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &typ, &status, &meta, &errMsg,
+			&total, &completed, &failed, &attempts, &maxAttempts,
+			&createdAt, &updatedAt); err != nil {
 			continue
 		}
+		// meta 对齐 PHP 的 array cast：落库是 JSON 字符串，输出解码成数组/对象。
+		metaVal := any(nil)
+		if meta.Valid && meta.String != "" {
+			var decoded any
+			if json.Unmarshal([]byte(meta.String), &decoded) == nil {
+				metaVal = decoded
+			} else {
+				metaVal = meta.String
+			}
+		}
+		// created_at/updated_at 对齐 Eloquent datetime cast：ISO 8601（带微秒 + Z），
+		// 不能输出 Unix 秒 —— 前端 new Date(秒) 会按毫秒解析成 1970 年。
 		items = append(items, jo(
 			"id", id,
 			"type", typ,
 			"status", status,
-			"meta", meta.String,
+			"meta", metaVal,
 			"error", errMsg.String,
-			"created_at", createdAt.Unix(),
-			"updated_at", updatedAt.Unix(),
+			"total", total,
+			"completed", completed,
+			"failed", failed,
+			"attempts", attempts,
+			"max_attempts", maxAttempts,
+			"created_at", eloqTime(createdAt),
+			"updated_at", eloqTime(updatedAt),
 		))
 	}
 

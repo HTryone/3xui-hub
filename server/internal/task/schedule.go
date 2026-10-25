@@ -14,6 +14,7 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"sync"
@@ -42,6 +43,9 @@ type Scheduler struct {
 	cron *cron.Cron
 	logf func(format string, args ...any)
 	now  func() time.Time
+	// db 用于写运行记录（scheduled_task_runs）与 worker 心跳（cache 表）；
+	// nil（测试/无库场景）则只跑任务不落记录，不影响调度本身。
+	db *sql.DB
 
 	mu   sync.Mutex
 	busy map[string]bool // name → 上一轮还在跑
@@ -55,6 +59,8 @@ type Options struct {
 	Logf func(format string, args ...any)
 	// Location 是 cron 时区（nil → UTC，与 Laravel 同口径）。
 	Location *time.Location
+	// DB 用于写 scheduled_task_runs 运行记录与 worker 心跳（nil 则跳过落库）。
+	DB *sql.DB
 }
 
 // NewScheduler 构造调度器。时区固定 UTC（PHP 全项目口径）。
@@ -79,6 +85,7 @@ func NewScheduler(opts Options) *Scheduler {
 		logf: logf,
 		now:  now,
 		busy: map[string]bool{},
+		db:   opts.DB,
 	}
 }
 
@@ -135,13 +142,78 @@ func (s *Scheduler) tick(ctx context.Context, j Job) {
 	}
 
 	start := s.now()
-	if err := j.Run(ctx); err != nil {
+	err := j.Run(ctx)
+	// 写运行记录（对齐 PHP RecordScheduledTaskRun listener）：
+	// finished → error=null、duration_ms=runtime 毫秒；failed → duration_ms=0、error=异常消息。
+	status := "finished"
+	errText := ""
+	durMS := int(s.now().Sub(start).Milliseconds())
+	if err != nil {
 		s.logf("[schedule] %s 执行失败: %v", j.Name, err)
+		status = "failed"
+		errText = truncateRunes(err.Error(), 1000)
+		durMS = 0
+	}
+	s.recordRun(ctx, j.Name, status, errText, durMS)
+	// ban-check 跑完写 worker 心跳（对齐 PHP BanCheckJob 的 Cache::put，20 分钟 TTL）。
+	if j.Name == NameBanCheck {
+		s.writeWorkerHeartbeat(ctx)
 	}
 	// 长任务留痕（备份/全量扫描是分钟级）。
 	if d := s.now().Sub(start); d > 30*time.Second {
 		s.logf("[schedule] %s 耗时 %s", j.Name, d)
 	}
+}
+
+// recordRun 写一条 scheduled_task_runs 并保留每命令最近 5 条（对齐 RecordScheduledTaskRun::KEEP）。
+func (s *Scheduler) recordRun(ctx context.Context, command, status, errText string, durationMS int) {
+	if s.db == nil {
+		return
+	}
+	var errVal any
+	if errText != "" {
+		errVal = errText
+	}
+	if _, err := s.db.ExecContext(ctx,
+		"INSERT INTO scheduled_task_runs (command, status, error, duration_ms, ran_at) VALUES (?, ?, ?, ?, ?)",
+		command, status, errVal, durationMS, s.now().UTC()); err != nil {
+		s.logf("[schedule] 写运行记录失败（%s）: %v", command, err)
+		return
+	}
+	// 保留最近 5 条（MySQL 不支持 DELETE ... LIMIT 的子查询直接用同表，需套一层）。
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM scheduled_task_runs
+		WHERE command = ? AND id NOT IN (
+			SELECT id FROM (
+				SELECT id FROM scheduled_task_runs WHERE command = ? ORDER BY id DESC LIMIT 5
+			) keep
+		)`, command, command); err != nil {
+		s.logf("[schedule] 清理运行记录失败（%s）: %v", command, err)
+	}
+}
+
+// writeWorkerHeartbeat 写 cache 表的 controlhub:worker-heartbeat（对齐 PHP BanCheckJob）。
+func (s *Scheduler) writeWorkerHeartbeat(ctx context.Context) {
+	if s.db == nil {
+		return
+	}
+	now := s.now().UTC()
+	// 值用 Y-m-d H:i:s（PHP toDateTimeString 口径），WorkerHeartbeat 侧兼容 RFC3339 与它两种。
+	val := now.Format("2006-01-02 15:04:05")
+	if _, err := s.db.ExecContext(ctx,
+		"INSERT INTO cache (`key`, `value`, `expiration`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), `expiration` = VALUES(`expiration`)",
+		"controlhub:worker-heartbeat", val, now.Add(20*time.Minute).Unix()); err != nil {
+		s.logf("[schedule] 写 worker 心跳失败: %v", err)
+	}
+}
+
+// truncateRunes 按 rune 截断到 n 个字符（对齐 PHP mb_substr($error, 0, 1000)）。
+func truncateRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n])
 }
 
 // Start 启动调度（非阻塞）。ctx 取消后停止。

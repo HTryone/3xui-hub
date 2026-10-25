@@ -160,10 +160,11 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB) {
 		Geodata:           &geodataAdapter{inner: geoService},
 	})
 
-	// 调度器
+	// 调度器（DB 用于写 scheduled_task_runs 运行记录与 worker 心跳）
 	sched := task.NewScheduler(task.Options{
 		Now:  time.Now,
 		Logf: logger.Printf,
+		DB:   db,
 	})
 
 	if err := sched.Register(task.DefaultJobs(task.Deps{
