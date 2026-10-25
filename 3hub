@@ -128,6 +128,68 @@ PY
     fi
 }
 
+# 把老 PHP 版 nginx 反代完整切到 Go（root backend/public→frontend/dist、
+# api/admin-api 与 node-install 的 try_files index.php→proxy_pass 8080、
+# 删 php-fpm location、node-ws 8091→8080）。幂等：检测到 Go 特征才跳过。
+# 为什么不能只靠 ensure_nginx_node_ws：它只「补」/node-ws + /node-install 的
+# proxy_pass，但老 PHP 版 conf 的 root 还指 backend/public、api 还是 try_files
+# index.php —— 升级后 PHP 源码已删，前端和 API 会 404，面板整个打不开。
+ensure_nginx_go_proxy() {
+    local CONF=""
+    CONF="$(nginx_conf_path)"
+    [ -f "$CONF" ] || return 0
+
+    # 已切 Go 的特征：root 指 frontend/dist 且全文无 index.php 反代
+    if grep -q 'frontend/dist' "$CONF" 2>/dev/null && ! grep -q 'index\.php' "$CONF" 2>/dev/null; then
+        return 0
+    fi
+
+    cp -f "$CONF" "${CONF}.bak-goproxy"
+    python3 - "$CONF" <<'PY'
+import re, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    s = f.read()
+
+# 1. root backend/public → frontend/dist
+s = re.sub(r'root\s+[^;]*backend/public\s*;', lambda m: m.group(0).replace('backend/public', 'frontend/dist'), s)
+
+# 2. index index.html index.php → index index.html
+s = s.replace('index index.html index.php;', 'index index.html;')
+
+# 3. 删 php-fpm location 块（location ~ [^/]\.php(/|$) { ... }）
+s = re.sub(r'[ \t]*location ~ \[\^/\]\\\.php\(/\|\$\) \{[^{}]*\}\n?', '', s)
+
+# 4. node-ws 端口 8091 → 8080（PHP 时代 node-ws 独立进程监听 8091）
+s = s.replace('127.0.0.1:8091', '127.0.0.1:8080')
+
+# 5. api/admin-api + node-install 的 try_files index.php → proxy_pass 8080
+proxy = ('        proxy_pass http://127.0.0.1:8080;\n'
+         '        proxy_set_header Host $host;\n'
+         '        proxy_set_header X-Real-IP $remote_addr;\n'
+         '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n'
+         '        proxy_set_header X-Forwarded-Proto $scheme;')
+s = re.sub(r'[ \t]*try_files \$uri \$uri/ /index\.php\?\$query_string;', proxy, s)
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(s)
+PY
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 || true
+            echo "Nginx 反代: 已切到 Go（root=frontend/dist + api→8080）"
+            rm -f "${CONF}.bak-goproxy"
+        else
+            mv -f "${CONF}.bak-goproxy" "$CONF"
+            echo "Nginx 反代: 切 Go 补丁未通过 nginx -t，已回滚"
+        fi
+    else
+        rm -f "${CONF}.bak-goproxy"
+        echo "Nginx 反代: 切 Go 失败，请手工确认 $(nginx_conf_path)"
+    fi
+}
+
 # nginx 前端缓存规则自愈（幂等）
 #
 # 为什么需要：Vite 产物文件名带内容哈希，index.html 决定去加载哪批 chunk。
@@ -646,6 +708,8 @@ cmd_update_phase2() {
         systemctl disable "$u" 2>/dev/null || true
     done
 
+    # 老 PHP 版 nginx 反代完整切到 Go（root/api/php-fpm/node-ws 端口）——升级关键
+    ensure_nginx_go_proxy
     # 前端缓存规则 + gzip 自愈
     ensure_nginx_cache_rules
     ensure_nginx_gzip
@@ -687,6 +751,9 @@ nginx_node_ws_applied() {
 
 # 补 nginx 反代（给老版本升级上来的机器用；幂等，可反复执行）
 cmd_fix_nginx() {
+    # 老 PHP 版反代完整切 Go（root/api/php-fpm/node-ws 端口）
+    ensure_nginx_go_proxy
+
     # 顺带补前端缓存规则（幂等）：老 conf 缺 index.html no-cache 时在这里一并修好
     ensure_nginx_cache_rules
 
