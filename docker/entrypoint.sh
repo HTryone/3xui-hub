@@ -2,63 +2,39 @@
 set -e
 
 echo "=========================================="
-echo " ControlHub - Docker 启动"
+echo " ControlHub - Docker 启动（Go 后端）"
 echo "=========================================="
 
-# 创建日志目录
-mkdir -p /var/log/supervisor /var/log/php /var/log/nginx
-chown -R www-data:www-data /var/log/php /var/log/nginx
+mkdir -p /var/log/supervisor /var/log/nginx
 
-# ============================================
-# 初始化 MySQL
-# ============================================
+# ── 初始化 MySQL ──
 if [ ! -d "/var/lib/mysql/mysql" ]; then
     echo "[1/5] 初始化 MySQL 数据库..."
     mysqld --initialize-insecure --user=mysql
 fi
 
-# 启动 MySQL
 echo "[2/5] 启动 MySQL..."
 mysqld --user=mysql &
 sleep 5
-
-# 等待 MySQL 就绪
 for i in $(seq 1 30); do
-    if mysqladmin ping -h 127.0.0.1 --silent 2>/dev/null; then
-        break
-    fi
+    if mysqladmin ping -h 127.0.0.1 --silent 2>/dev/null; then break; fi
     echo "  等待 MySQL 启动... ($i/30)"
     sleep 1
 done
 
-# 创建数据库
 echo "[3/5] 创建数据库..."
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS controlhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
-# ============================================
-# 配置 Laravel
-# ============================================
-cd /var/www/html/backend
-
-# 生成 .env（如果不存在）
-if [ ! -f ".env" ]; then
-    echo "  创建 .env 文件..."
-    cat > .env << EOF
+# ── 生成 .env（Go 后端复用；APP_KEY base64:32字节，与 Laravel 同格式）──
+if [ ! -f "/var/www/html/backend/.env" ]; then
+    echo "[4/5] 生成 .env..."
+    APP_KEY_GEN="base64:$(openssl rand -base64 32)"
+    cat > /var/www/html/backend/.env << EOF
 APP_NAME=ControlHub
 APP_ENV=production
-APP_KEY=
+APP_KEY=${APP_KEY:-${APP_KEY_GEN}}
 APP_DEBUG=false
 APP_URL=${APP_URL:-http://localhost:8080}
-
-APP_LOCALE=zh_CN
-APP_FALLBACK_LOCALE=en
-APP_FAKER_LOCALE=zh_CN
-
-BCRYPT_ROUNDS=12
-
-LOG_CHANNEL=daily
-LOG_STACK=single
-LOG_LEVEL=error
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -67,80 +43,24 @@ DB_DATABASE=controlhub
 DB_USERNAME=root
 DB_PASSWORD=
 
-SESSION_DRIVER=file
+SESSION_DRIVER=database
 SESSION_LIFETIME=120
-SESSION_ENCRYPT=false
-SESSION_PATH=/
-SESSION_DOMAIN=null
-
-BROADCAST_CONNECTION=log
-FILESYSTEM_DISK=local
-QUEUE_CONNECTION=database
-DB_QUEUE_RETRY_AFTER=180
-# 节点类 Job 走独立队列 node-ops，与 supervisord 里的 queue-node-1/2 配套
-PANEL_NODE_OPS_QUEUE=node-ops
-
-CACHE_STORE=file
-
-MAIL_MAILER=log
-MAIL_FROM_ADDRESS="noreply@example.com"
-MAIL_FROM_NAME="\${APP_NAME}"
-
-VITE_APP_NAME="\${APP_NAME}"
 EOF
 fi
 
-# 可写的持久化 .env 直接升级；只读挂载由 Compose 环境变量覆盖
-if [ -w .env ]; then
-    if grep -q '^QUEUE_CONNECTION=' .env; then
-        sed -i 's/^QUEUE_CONNECTION=.*/QUEUE_CONNECTION=database/' .env
-    else
-        echo 'QUEUE_CONNECTION=database' >> .env
-    fi
-    if grep -q '^DB_QUEUE_RETRY_AFTER=' .env; then
-        sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' .env
-    else
-        echo 'DB_QUEUE_RETRY_AFTER=180' >> .env
-    fi
-    # 已有该行则改写，没有才追加（不重复追加）。必须与 supervisord 的
-    # queue-node-* 同时成立：只开 .env 没起 worker，节点任务会派进空队列永不执行。
-    if grep -q '^PANEL_NODE_OPS_QUEUE=' .env; then
-        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' .env
-    else
-        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> .env
-    fi
-fi
-
-# 生成 APP_KEY
-if [ -z "$APP_KEY" ] || [ "$APP_KEY" = "" ]; then
-    echo "[4/5] 生成 APP_KEY..."
-    php artisan key:generate --force
+# ── 建表 + 默认管理员（Go 直连 MySQL，不跑 Laravel migrate）──
+TABLE_COUNT=$(mysql -u root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='controlhub'" 2>/dev/null || echo 0)
+if [ "$TABLE_COUNT" -gt 0 ]; then
+    echo "  数据库已有 ${TABLE_COUNT} 张表，跳过建表"
 else
-    echo "[4/5] 使用自定义 APP_KEY..."
-    sed -i "s|APP_KEY=|APP_KEY=${APP_KEY}|" .env
+    echo "[5/5] 初始化数据库表结构..."
+    mysql -u root controlhub < /var/www/html/server/schema/schema.sql
+    mysql -u root controlhub < /var/www/html/server/schema/seed.sql
 fi
-
-# 设置权限
-chown -R www-data:www-data storage bootstrap/cache
-chmod -R 775 storage bootstrap/cache
-
-# 运行迁移
-echo "[5/5] 运行数据库迁移..."
-php artisan migrate --force
-
-# 清除缓存
-php artisan config:clear
-php artisan cache:clear
-php artisan view:clear
-
-# 配置 cron 任务
-echo "  配置定时任务..."
-echo "* * * * * cd /var/www/html/backend && php artisan schedule:run >> /dev/null 2>&1" | crontab -
 
 echo "=========================================="
 echo " 启动完成！"
 echo " 访问: ${APP_URL:-http://localhost:8080}"
 echo "=========================================="
 
-# 启动 Supervisor（管理 Nginx、PHP-FPM、MySQL、Cron 和队列 Worker）
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

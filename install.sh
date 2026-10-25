@@ -93,11 +93,9 @@ detect_os() {
     case $OS in
         centos|rhel|almalinux|rocky)
             PKG_MANAGER="yum"
-            PHP_PKG="php"
             ;;
         ubuntu|debian)
             PKG_MANAGER="apt"
-            PHP_PKG="php8.4"
             ;;
         *)
             error_exit "不支持的发行版: $OS"
@@ -162,140 +160,8 @@ remove_cli_opcache() {
 }
 
 # 安装 PHP 8.4
-install_php() {
-    if command -v php &>/dev/null; then
-        PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
-        if [ "$PHP_VER" = "8.4" ]; then
-            success "PHP 8.4 已安装"
-            # 并发调优已改为流程后段统一执行（代码就绪后直调 php artisan fpm:tune，见 setup_env）——
-            # 重跑安装同样会在后段被调到，不再因 PHP 已装就早退跳过（issue #28：单一实现）
-            # 清理历史 CLI opcache 残留（v1.25.1 写过 ini；重跑安装同样要能清掉）
-            remove_cli_opcache
-            return 0
-        else
-            warn "当前 PHP 版本: $PHP_VER，需要 8.4，将重新安装"
-        fi
-    fi
-
-    info "安装 PHP 8.4..."
-
-    case $PKG_MANAGER in
-        yum)
-            # CentOS/RHEL: 使用 Remi 仓库安装 PHP 8.4
-            OS_MAJOR=${OS_VERSION%%.*}
-
-            # 安装 EPEL（Remi 依赖它）
-            info "安装 EPEL 仓库..."
-            if ! rpm -q epel-release &>/dev/null; then
-                dnf install -y epel-release 2>/dev/null || \
-                    dnf install -y "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${OS_MAJOR}.noarch.rpm" 2>/dev/null || true
-            fi
-
-            # 安装 Remi 仓库
-            if ! rpm -q remi-release &>/dev/null; then
-                info "安装 Remi 仓库..."
-                dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${OS_MAJOR}.rpm" || \
-                    error_exit "Remi 仓库安装失败"
-            fi
-
-            # CentOS 8/9: 用 module 方式
-            # CentOS 10+: module 不可用，用 php84-* 包直接装
-            if dnf module reset php -y 2>/dev/null && dnf module enable php:remi-8.4 -y 2>/dev/null; then
-                info "通过 module 安装 PHP 8.4..."
-                dnf install -y php php-fpm php-cli php-mbstring php-gd php-opcache php-pdo php-mysql php-xml php-pecl-zip php-curl
-                FPM_SERVICE="php-fpm"
-                FPM_CONF="/etc/php-fpm.d/www.conf"
-            else
-                info "通过 Remi php84 安装 PHP 8.4..."
-                dnf install -y php84-php php84-php-fpm php84-php-cli php84-php-mbstring \
-                    php84-php-gd php84-php-opcache php84-php-pdo php84-php-mysql \
-                    php84-php-xml php84-php-pecl-zip php84-php-curl
-                # 创建符号链接
-                ln -sf /opt/remi/php84/root/usr/bin/php /usr/bin/php
-                ln -sf /opt/remi/php84/root/usr/sbin/php-fpm /usr/sbin/php-fpm
-                FPM_SERVICE="php84-php-fpm"
-                FPM_CONF="/etc/opt/remi/php84/php-fpm.d/www.conf"
-            fi
-
-            # 配置 PHP-FPM
-            if [ -f "$FPM_CONF" ]; then
-                sed -i 's/^user = .*/user = nginx/' "$FPM_CONF"
-                sed -i 's/^group = .*/group = nginx/' "$FPM_CONF"
-                sed -i 's|^listen = .*|listen = /run/php-fpm/www.sock|' "$FPM_CONF"
-                sed -i 's/^listen\.owner = .*/listen.owner = nginx/' "$FPM_CONF"
-                sed -i 's/^listen\.group = .*/listen.group = nginx/' "$FPM_CONF"
-                sed -i 's/^listen\.acl_users = .*/listen.acl_users = nginx/' "$FPM_CONF"
-                # 取消注释 listen.owner/group
-                sed -i 's/^;listen\.owner/listen.owner/' "$FPM_CONF"
-                sed -i 's/^;listen\.group/listen.group/' "$FPM_CONF"
-            fi
-
-            mkdir -p /run/php-fpm
-            systemctl enable "$FPM_SERVICE" 2>/dev/null || true
-            systemctl restart "$FPM_SERVICE"
-            ;;
-        apt)
-            # 第三方源（如 mysql/sury）签名过期是公网常见情况，会让 apt-get update 整体返回
-            # 非 0 并中断安装。这里不因单个源坏掉就退出：先更新、失败只告警，随后由下面的
-            # 实际安装步骤来判定依赖是否真的可用（装不上再报错，信息更准确）。
-            if ! apt-get update -y; then
-                warn "apt-get update 有源报错（常见为第三方源 GPG 签名过期），继续尝试安装"
-            fi
-            mkdir -p /etc/apt/sources.list.d
-            if [ "$OS" = "debian" ]; then
-                apt-get install -y apt-transport-https lsb-release ca-certificates curl gnupg
-                curl -sSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/php.gpg 2>/dev/null
-                echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
-            else
-                apt-get install -y software-properties-common
-                add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
-            fi
-            if ! apt-get update -y; then
-                warn "apt-get update 仍有源报错，继续尝试安装"
-            fi
-            apt-get install -y php8.4 php8.4-fpm php8.4-cli php8.4-mbstring php8.4-gd php8.4-opcache php8.4-pdo php8.4-mysql php8.4-xml php8.4-zip php8.4-curl sudo cron
-            # Debian/Ubuntu 的 php-fpm 池配置在这里（发行版默认 pm.max_children=5，必须显式调优）
-            FPM_SERVICE="php8.4-fpm"
-            FPM_CONF="/etc/php/8.4/fpm/pool.d/www.conf"
-            ;;
-    esac
-
-    # 并发调优与 CLI opcache 清理的位置说明：
-    #   - fpm 调优：代码与依赖就绪后在 setup_env 里直调 php artisan fpm:tune（issue #28，单一实现）
-    #   - CLI opcache：v1.25.1 写过 ini；重跑安装同样要能清掉
-    remove_cli_opcache
-
-    # 配置 PHP（禁用 putenv）
-    PHP_INI=$(php --ini | grep "Loaded Configuration" | awk '{print $NF}')
-    if [ -n "$PHP_INI" ]; then
-        sed -i 's/disable_functions = .*/disable_functions =/' "$PHP_INI" 2>/dev/null || true
-    fi
-
-    # 验证 PHP 版本
-    PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "unknown")
-    if [ "$PHP_VER" != "8.4" ]; then
-        error_exit "PHP 8.4 安装失败，当前版本: $PHP_VER"
-    fi
-
-    success "PHP 8.4 安装完成"
-}
 
 # 安装 Composer
-install_composer() {
-    if command -v composer &>/dev/null; then
-        success "Composer 已安装"
-        return 0
-    fi
-
-    info "安装 Composer..."
-    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 2>&1 | tee -a "$LOG_FILE"
-
-    if ! command -v composer &>/dev/null; then
-        error_exit "Composer 安装失败"
-    fi
-
-    success "Composer 安装完成"
-}
 
 # 安装 Nginx
 install_nginx() {
@@ -318,6 +184,102 @@ install_nginx() {
     systemctl start nginx
 
     success "Nginx 安装完成"
+}
+
+# 安装 Go 工具链（编译 Go 后端用）。优先国内镜像，失败退回官方。
+GO_VERSION="1.25.0"
+install_go() {
+    if command -v go &>/dev/null; then
+        GO_VER=$(go version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        success "Go 已安装 (v$GO_VER)"
+        return 0
+    fi
+
+    # 已解压到 /usr/local/go 但没进 PATH
+    if [ -x /usr/local/go/bin/go ]; then
+        export PATH="/usr/local/go/bin:$PATH"
+        success "Go 已安装 (/usr/local/go)"
+        return 0
+    fi
+
+    info "安装 Go $GO_VERSION..."
+    local GO_ARCH
+    case "$(uname -m)" in
+        x86_64|amd64) GO_ARCH="amd64" ;;
+        aarch64|arm64) GO_ARCH="arm64" ;;
+        *) error_exit "不支持的架构: $(uname -m)" ;;
+    esac
+
+    local GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+    local GO_URLS=(
+        "https://mirrors.aliyun.com/golang/${GO_TAR}"
+        "https://golang.google.cn/dl/${GO_TAR}"
+        "https://go.dev/dl/${GO_TAR}"
+    )
+
+    local downloaded=""
+    for url in "${GO_URLS[@]}"; do
+        info "下载 $url"
+        if curl -fL --connect-timeout 15 --max-time 300 -o "/tmp/${GO_TAR}" "$url" 2>&1 | tee -a "$LOG_FILE"; then
+            downloaded="/tmp/${GO_TAR}"
+            break
+        fi
+        warn "下载失败，尝试下一个镜像..."
+    done
+
+    if [ -z "$downloaded" ]; then
+        error_exit "Go 下载失败（已尝试所有镜像）"
+    fi
+
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf "$downloaded"
+    export PATH="/usr/local/go/bin:$PATH"
+    rm -f "$downloaded"
+
+    success "Go 安装完成: $(go version)"
+}
+
+# 编译 Go 后端（静态链接，无 CGO 依赖）
+build_go() {
+    info "编译 Go 后端..."
+    cd "$INSTALL_DIR/server"
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 | tee -a "$LOG_FILE" || error_exit "Go 编译失败"
+    success "Go 后端编译完成"
+}
+
+# 写 systemd 服务并启动 Go 后端（单进程：HTTP + scheduler + WS 内置）
+setup_go_service() {
+    info "配置 Go 后端服务..."
+    cat > /etc/systemd/system/controlhub.service << EOF
+[Unit]
+Description=ControlHub Go 后端（面板 API + 定时调度 + 节点 WS 通道）
+After=network.target mysqld.service mariadb.service mysql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${INSTALL_DIR}/server
+Environment=CONFIG_ENV=${INSTALL_DIR}/backend/.env
+Environment=LISTEN_ADDR=:8080
+ExecStart=${INSTALL_DIR}/server/controlhub-server
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable controlhub 2>/dev/null || true
+    systemctl restart controlhub
+    sleep 1
+    if systemctl is-active --quiet controlhub; then
+        success "Go 后端服务已启动"
+    else
+        error_exit "Go 后端服务启动失败（journalctl -u controlhub 查看原因）"
+    fi
 }
 
 # 安装 MySQL
@@ -433,8 +395,8 @@ deploy_project() {
 
     cd "$INSTALL_DIR"
 
-    # 检查必要文件
-    if [ ! -f "backend/artisan" ]; then
+    # 检查必要文件（Go 后端源码）
+    if [ ! -f "server/go.mod" ]; then
         error_exit "项目文件不完整，请检查网络"
     fi
 
@@ -445,17 +407,18 @@ deploy_project() {
 setup_env() {
     info "配置环境..."
 
-    cd "$INSTALL_DIR/backend"
-    # 安装 PHP 依赖（使用国内镜像加速）
-    info "安装 Composer 依赖..."
-    composer config -g repos.packagist composer https://mirrors.aliyun.com/composer/ 2>/dev/null || true
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1 | tee -a "$LOG_FILE" || error_exit "Composer 依赖安装失败"
+    cd "$INSTALL_DIR"
+    mkdir -p backend
 
-    # 生成 .env（始终使用自定义配置，不用 .env.example）
-    cat > .env << EOF
+    # 生成 .env（APP_KEY 用 openssl 生成 base64:32字节，与 Laravel key:generate 同格式；
+    # Go 后端用同一个 APP_KEY 解 AES-256-CBC 密文）。已存在则不覆盖（重跑/升级幂等）。
+    if [ ! -f backend/.env ]; then
+        info "生成 .env..."
+        APP_KEY="base64:$(openssl rand -base64 32)"
+        cat > backend/.env << EOF
 APP_NAME=ControlHub
 APP_ENV=production
-APP_KEY=
+APP_KEY=${APP_KEY}
 APP_DEBUG=false
 APP_URL=http://localhost
 
@@ -468,26 +431,11 @@ DB_PASSWORD=
 
 SESSION_DRIVER=database
 SESSION_LIFETIME=120
-
-CACHE_STORE=file
-QUEUE_CONNECTION=database
-DB_QUEUE_RETRY_AFTER=180
-
-# 节点类 Job（新建节点初始化/扫描/流量同步）派到独立队列 node-ops，
-# 避免它们把定时任务（封禁检查、健康检查）堵在 default 队列后面。
-# 必须与 setup_node_ops_worker 里起的 node-ops worker 配套：只开一边的任务会丢（见该函数注释）。
-PANEL_NODE_OPS_QUEUE=node-ops
 EOF
-
-    # 生成 APP_KEY
-    info "生成 APP_KEY..."
-    php artisan key:generate 2>&1 | tee -a "$LOG_FILE" || error_exit "APP_KEY 生成失败"
-
-    # 设置 .env 权限（运行用户只读）
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-    chown "$NGINX_USER":"$NGINX_USER" .env 2>/dev/null || true
-    chmod 640 .env 2>/dev/null || true
+        chmod 640 backend/.env
+    else
+        info ".env 已存在，跳过生成"
+    fi
 
     # 创建 MySQL 数据库
     if command -v mysql &>/dev/null; then
@@ -496,66 +444,25 @@ EOF
         warn "mysql 命令不可用，请手动创建 MySQL 数据库: controlhub"
     fi
 
-    # 运行迁移
-    info "运行数据库迁移..."
-    php artisan migrate --force 2>&1 | tee -a "$LOG_FILE" || error_exit "数据库迁移失败"
-
-    # 填充默认管理员
-    info "填充默认数据..."
-    php artisan db:seed --force 2>&1 | tee -a "$LOG_FILE" || error_exit "数据填充失败"
-
-    # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的环节。
-    # 公式的唯一实现在后端（fpm:tune 自带备份 / 语法校验 / 失败回滚），shell 侧不再重复实现
-    # （issue #28：两处实现曾漂移过一次）。安装早期 artisan 不可用的问题，由「调优点放在
-    # 代码与依赖就绪之后」解决。root 运行写入的 storage 属主由流程末尾的 fix_storage_ownership 修复。
-    info "调整 php-fpm 并发..."
-    php artisan fpm:tune 2>&1 | tee -a "$LOG_FILE"
-    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-        warn "php-fpm 并发未调整（可稍后手动执行: cd ${INSTALL_DIR}/backend && php artisan fpm:tune）"
+    # 建表 + 填充默认管理员（Go 后端直连 MySQL，不跑 Laravel migrate）。
+    # schema.sql/seed.sql 由 PHP 迁移最终状态导出，随 server/ 一起发布。
+    TABLE_COUNT=$(mysql -u root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='controlhub'" 2>/dev/null || echo 0)
+    if [ "$TABLE_COUNT" -gt 0 ]; then
+        info "数据库已有 ${TABLE_COUNT} 张表，跳过建表"
+    else
+        info "初始化数据库表结构..."
+        if [ -f "$INSTALL_DIR/server/schema/schema.sql" ]; then
+            mysql -u root controlhub < "$INSTALL_DIR/server/schema/schema.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "建表失败"
+            mysql -u root controlhub < "$INSTALL_DIR/server/schema/seed.sql" 2>&1 | tee -a "$LOG_FILE" || error_exit "默认管理员填充失败"
+        else
+            error_exit "缺少 server/schema/schema.sql"
+        fi
     fi
-
-    # 设置权限（确保 storage 目录存在）
-    mkdir -p storage/{app/public,framework/{cache/data,sessions,testing,views},logs}
-    chmod -R 775 storage bootstrap/cache
-    # 自动检测 Nginx worker 用户
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-    chown -R "$NGINX_USER":"$NGINX_USER" storage bootstrap/cache 2>/dev/null || true
-    # 导入备份需要在 backend/ 目录本身创建 .env.bak（BackupController 的 File::copy）
-    chown "$NGINX_USER":"$NGINX_USER" . 2>/dev/null || true
 
     success "环境配置完成"
 }
 
 # 检测 PHP-FPM socket 路径
-detect_fpm_sock() {
-    # 按优先级查找 socket 文件
-    local SOCK_PATHS=(
-        "/run/php/php8.4-fpm.sock"
-        "/run/php-fpm/www.sock"
-        "/var/run/php-fpm/www.sock"
-        "/var/opt/remi/php84/run/php-fpm/www.sock"
-        "/tmp/php-cgi-84.sock"
-    )
-
-    for sock in "${SOCK_PATHS[@]}"; do
-        if [ -S "$sock" ]; then
-            echo "$sock"
-            return 0
-        fi
-    done
-
-    # 全局搜索
-    FOUND=$(find /run /var/run /tmp -name "*.sock" 2>/dev/null | grep -i php | head -1 || true)
-    if [ -n "$FOUND" ]; then
-        echo "$FOUND"
-        return 0
-    fi
-
-    # 兜底默认值
-    echo "/run/php/php8.4-fpm.sock"
-    return 0
-}
 
 # 检测 nginx 环境（宝塔 vs 标准），设置 conf 目录变量
 # 宝塔：/www/server/panel 或 /www/server/nginx 存在 → vhost 目录
@@ -603,13 +510,6 @@ setup_nginx() {
     # 设置 APP_URL
     sed -i "s|APP_URL=.*|APP_URL=http://${DOMAIN}|" "$INSTALL_DIR/backend/.env"
 
-    # 确保 PHP-FPM 运行
-    systemctl start php8.4-fpm 2>/dev/null || systemctl start php-fpm 2>/dev/null || true
-
-    # 检测 PHP-FPM socket
-    FPM_SOCK=$(detect_fpm_sock)
-    info "PHP-FPM socket: $FPM_SOCK"
-
     # 生成 Nginx 配置
     NGINX_CONF="${NGINX_CONF_DIR}3xui-hub.conf"
     mkdir -p "$NGINX_CONF_DIR"
@@ -625,8 +525,8 @@ server {
 server {
     listen 443 ssl http2;
     server_name ${DOMAIN};
-    root ${INSTALL_DIR}/backend/public;
-    index index.html index.php;
+    root ${INSTALL_DIR}/frontend/dist;
+    index index.html;
 
     # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
     # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
@@ -640,16 +540,9 @@ server {
     ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    location ~ [^/]\\.php(/|$) {
-        fastcgi_pass unix:${FPM_SOCK};
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-    }
-
     # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
     location /node-ws {
-        proxy_pass http://127.0.0.1:8091;
+        proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -661,13 +554,21 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # xray 节点资产与安装脚本（转 PHP；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
+    # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location ~ ^/(api|admin-api) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
@@ -696,8 +597,8 @@ NGINX
 server {
     listen 80;
     server_name ${DOMAIN};
-    root ${INSTALL_DIR}/backend/public;
-    index index.html index.php;
+    root ${INSTALL_DIR}/frontend/dist;
+    index index.html;
 
     # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
     # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
@@ -707,16 +608,9 @@ server {
     gzip_vary on;
     gzip_proxied any;
 
-    location ~ [^/]\\.php(/|$) {
-        fastcgi_pass unix:${FPM_SOCK};
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-    }
-
     # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
     location /node-ws {
-        proxy_pass http://127.0.0.1:8091;
+        proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -728,13 +622,21 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # xray 节点资产与安装脚本（转 PHP；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
+    # xray 节点资产与安装脚本（Go 后端动态提供；否则被下方 SPA fallback 吞掉，节点机下载拿到 HTML）
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location ~ ^/(api|admin-api) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
@@ -793,63 +695,7 @@ NGINX
     nginx -t 2>&1 | tee -a "$LOG_FILE" || error_exit "Nginx 配置错误"
     systemctl reload nginx 2>/dev/null || systemctl start nginx 2>/dev/null || true
 
-    # 确保 PHP-FPM 运行
-    systemctl restart php8.4-fpm 2>/dev/null || systemctl restart php-fpm 2>/dev/null || true
-
     success "Nginx 配置完成"
-}
-
-# 配置 cron（调度器：流量同步 / 封禁检查 / 月度重置 / 异步任务超时）
-# 真正的实现在 3hub 的 ensure_artisan_cron()，这里调同一个入口，不再自己维护一份，
-# 免得安装脚本和 3hub 各写一份后漂移（更新路径那份曾经没人管，线上 root crontab
-# 被其它工具覆盖后一直没补回来）。走子进程调用而不是 source：3hub 是可执行命令，
-# 里面定义了同名常量（INSTALL_DIR/VERSION），source 进安装脚本会污染后续步骤的环境。
-setup_cron() {
-    info "配置定时任务（流量自动同步）..."
-
-    if [ ! -f "$INSTALL_DIR/3hub" ]; then
-        warn "未找到 $INSTALL_DIR/3hub，跳过定时任务配置（安装完成后运行 3hub sync-status 可自检）"
-        return 0
-    fi
-
-    if bash "$INSTALL_DIR/3hub" __ensure-cron; then
-        success "定时任务已就绪（schedule:run 每分钟，以网站运行用户执行）"
-    else
-        warn "定时任务写入失败，请运行 3hub sync-status 自检，或手工 crontab -e 添加"
-    fi
-}
-
-# 配置常驻队列 Worker（后台流量同步）
-setup_queue_worker() {
-    info "配置后台任务 Worker..."
-
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    cat > /etc/systemd/system/3xui-hub-queue.service << EOF
-[Unit]
-Description=3xui-hub Queue Worker
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${INSTALL_DIR}/backend
-ExecStart=/usr/bin/php artisan queue:work database --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable --now 3xui-hub-queue.service
-    systemctl is-active --quiet 3xui-hub-queue.service || error_exit "后台任务 Worker 启动失败"
-    success "后台任务 Worker 已启动"
 }
 
 # ── node-ops worker 实例数：自适应小机器 ────────────────────────────────
@@ -860,44 +706,15 @@ EOF
 #   否则 2 个。管理员可用覆盖文件 /etc/3xui-hub/node-queue-instances 显式指定（空格分隔）。
 #
 # 纯函数（入参 mem_mb，只回显实例列表）便于脚本级单独测试 —— 不读任何环境。
-node_instance_count_for_mem() {
-    local mem_mb="${1:-0}"
-    if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
-        echo "1"
-    else
-        echo "1 2"
-    fi
-}
 
 # node-ops 实例的单元目录（软链来源）与覆盖文件路径，集中成常量便于测试/复用
 NODE_QUEUE_UNIT_DIR="/etc/systemd/system/multi-user.target.wants"
 NODE_QUEUE_INSTANCES_FILE="/etc/3xui-hub/node-queue-instances"
 
 # 解析本机该开几个 node-ops 实例：覆盖文件优先（须含数字，空格分隔），否则按 MemTotal 自适应
-resolve_node_queue_instances() {
-    local mem_mb
-    if [ -f "$NODE_QUEUE_INSTANCES_FILE" ] && grep -q '[0-9]' "$NODE_QUEUE_INSTANCES_FILE" 2>/dev/null; then
-        tr -s ' \t\n' ' ' < "$NODE_QUEUE_INSTANCES_FILE" | sed -e 's/^ *//' -e 's/ *$//'
-        return 0
-    fi
-    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    node_instance_count_for_mem "$mem_mb"
-}
 
 # 关闭「已 enabled 但不在名单内」的 node-ops 实例（老 937MB 机器升级后 2→1，残留 @2 必须停掉）。
 # 来源是 multi-user.target.wants 下的软链，不写死 1..N —— 人工 enable 过 @3 也能被收敛。
-converge_node_queue_instances() {
-    local keep="$1" link inst i
-    for link in "$NODE_QUEUE_UNIT_DIR"/3xui-hub-queue-node@*.service; do
-        [ -e "$link" ] || continue
-        inst="${link##*/3xui-hub-queue-node@}"
-        inst="${inst%.service}"
-        for i in $keep; do
-            [ "$i" = "$inst" ] && continue 2
-        done
-        systemctl disable --now "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
-    done
-}
 
 # 配置节点任务专用队列 Worker（node-ops，实例数自适应）
 #
@@ -908,87 +725,6 @@ converge_node_queue_instances() {
 #   default 队列仍由上面的 setup_queue_worker 负责，那条不加 --queue（默认就是 default）。
 #
 # 下面三段的顺序不能调换，理由见各段注释。
-setup_node_ops_worker() {
-    info "配置节点任务 Worker (node-ops)..."
-
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    # ---------- 1. 先写 .env：让节点类 Job 派到 node-ops ----------
-    # 必须排在启动 worker 之前：反过来的话会先有一段「worker 在监听 node-ops、
-    # 但 Job 还往 default 派」的空转窗口，人工排查时很难判断到底生效没有。
-    # 幂等：已有该行就改写成 node-ops，没有才追加，绝不重复追加
-    #（dotenv 同名变量以最后一行为准，重复追加会让旧值留在文件里，看着像没生效）。
-    if grep -q '^PANEL_NODE_OPS_QUEUE=' "${INSTALL_DIR}/backend/.env"; then
-        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' "${INSTALL_DIR}/backend/.env"
-    else
-        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> "${INSTALL_DIR}/backend/.env"
-    fi
-
-    # ---------- 2. 安装并启动 node-ops worker ----------
-    # 用模板单元 + 实例编号（@1/@2）而不是两份独立的服务文件：
-    # 命令行只写一份，实例 1 和 2 共用，杜绝「两份文件只改了一份」导致某个实例漏掉
-    # --queue=node-ops 而去和 default worker 抢同一条队列（那样等于白开一个进程）。
-    # 加减实例也只需 systemctl enable/disable，不用重新生成文件。
-    cat > /etc/systemd/system/3xui-hub-queue-node@.service << EOF
-[Unit]
-Description=3xui-hub Node Ops Queue Worker (instance %i)
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${INSTALL_DIR}/backend
-ExecStart=/usr/bin/php artisan queue:work database --queue=node-ops --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-# 小机器（1 核/473MB 这类）上让队列任务给 Web 请求让路：Nice 降优先级、
-# CPUWeight 压低 cgroup 权重。这里只用优先级手段，不设内存硬上限 ——
-# 硬上限会在内存吃紧时把 worker 杀掉，一个跑到一半的节点初始化任务会中断重跑。
-Nice=10
-CPUWeight=20
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    # 实例数自适应：覆盖文件 /etc/3xui-hub/node-queue-instances 优先（含数字则以其为准），
-    # 否则按 MemTotal（<1024MB → 1 个，否则 2 个）。小机器上少开一个 = 少占 ~40~80MB。
-    local NODE_QUEUE_INSTANCES i
-    NODE_QUEUE_INSTANCES=$(resolve_node_queue_instances)
-
-    # enable --now 失败不在这里中断：交给下面第 3 步自检统一报错。
-    # 本脚本是 set -e，让 enable 自己失败会变成一句没有上下文的退出，
-    # 而 error_exit 会带上系统信息、日志尾巴和可复制给开发者的报告。
-    for i in $NODE_QUEUE_INSTANCES; do
-        systemctl enable --now "3xui-hub-queue-node@${i}.service" || true
-    done
-
-    # 收敛：关掉「已 enabled 但不在本次名单内」的实例 —— 老 937MB 机器升级上来时
-    # 上一次安装 enable 过 @2，本次自适应只留 @1，@2 若不停会继续占内存（本改动核心目的）。
-    converge_node_queue_instances "$NODE_QUEUE_INSTANCES"
-
-    # ---------- 3. 启动后自检 ----------
-    # 为什么必须自检：.env 里开了 PANEL_NODE_OPS_QUEUE=node-ops、但没有 worker 监听
-    # node-ops 时，节点类 Job 会被派进一条没人消费的队列 —— 任务永远不执行，而且不报错，
-    # 面板上一直停在 pending 直到被判超时失败。这比「两类任务抢一条队列」严重得多，
-    # 所以「两边都到位」才算装好，这里检查不过就直接中断安装，而不是留下一个静默坏掉的面板。
-    # active 和 enabled 都要查：active 只证明「现在在跑」，enabled 才保证重启后还在
-    #（enable 失败但被 --now 拉起来的边界情况，只查 active 会漏过去）。
-    for i in $NODE_QUEUE_INSTANCES; do
-        systemctl is-active --quiet "3xui-hub-queue-node@${i}.service" || \
-            error_exit "节点任务 Worker (实例 ${i}) 未在运行，请查看: systemctl status 3xui-hub-queue-node@${i}.service"
-        systemctl is-enabled --quiet "3xui-hub-queue-node@${i}.service" || \
-            error_exit "节点任务 Worker (实例 ${i}) 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-node@${i}.service"
-    done
-    local INSTANCE_COUNT=0
-    for i in $NODE_QUEUE_INSTANCES; do INSTANCE_COUNT=$((INSTANCE_COUNT + 1)); done
-    success "节点任务 Worker 已启动（node-ops 队列，${INSTANCE_COUNT} 实例：${NODE_QUEUE_INSTANCES}）"
-}
 
 # 配置邮件专用队列 Worker（mail，1 实例）
 #
@@ -1001,99 +737,13 @@ EOF
 # 与 node-ops 同一套规矩「两边都到位才算装好」：.env 写 PANEL_MAIL_QUEUE=mail
 # （面板据此把邮件派过去）+ 起一个 --queue=mail 的 worker。缺任一边都会静默坏掉
 #（Job 进了一条没人消费的队列），所以第 3 段自检不过就中断安装。
-setup_mail_worker() {
-    info "配置邮件 Worker (mail)..."
 
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    # ---------- 1. 先写 .env：让 SendMailJob 派到 mail ----------
-    # 与 node-ops 同款幂等写法（dotenv 同名变量以最后一行为准，重复追加会让旧值残留）
-    if grep -q '^PANEL_MAIL_QUEUE=' "${INSTALL_DIR}/backend/.env"; then
-        sed -i 's/^PANEL_MAIL_QUEUE=.*/PANEL_MAIL_QUEUE=mail/' "${INSTALL_DIR}/backend/.env"
-    else
-        echo 'PANEL_MAIL_QUEUE=mail' >> "${INSTALL_DIR}/backend/.env"
-    fi
-
-    # ---------- 2. 安装并启动 mail worker ----------
-    # 单实例够用：发信是 IO 等待型（每封 1~3 秒都在等 SMTP），一条 worker 的吞吐
-    # 已经超过常见 SMTP 服务商的限速，多开只会互相抢同一个发信账号。
-    cat > /etc/systemd/system/3xui-hub-queue-mail.service << EOF
-[Unit]
-Description=3xui-hub Mail Queue Worker
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${INSTALL_DIR}/backend
-ExecStart=/usr/bin/php artisan queue:work database --queue=mail --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-# 与 node-ops 同款：小机器上让队列任务给 Web 请求让路（只用优先级，不设内存硬上限）
-Nice=10
-CPUWeight=20
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    # enable --now 失败不在这里中断：交给第 3 段自检统一报错（带系统信息与日志尾巴）
-    systemctl enable --now 3xui-hub-queue-mail.service || true
-
-    # ---------- 3. 启动后自检 ----------
-    systemctl is-active --quiet 3xui-hub-queue-mail.service || \
-        error_exit "邮件 Worker 未在运行，请查看: systemctl status 3xui-hub-queue-mail.service"
-    systemctl is-enabled --quiet 3xui-hub-queue-mail.service || \
-        error_exit "邮件 Worker 未设置开机自启，请执行: systemctl enable 3xui-hub-queue-mail.service"
-    success "邮件 Worker 已启动（mail 队列，1 实例）"
-}
-
-# 配置 xray 节点 WS 长连接服务（agent 主通道；nginx 反代 /node-ws → 127.0.0.1:8091）
+# 配置 xray 节点 WS 长连接服务（agent 主通道；nginx 反代 /node-ws → Go 单进程 8080）
 #
 # 为什么单开一个服务：xray 节点 agent 与面板之间用 WebSocket 长连接做实时通道
 # （指令秒级下发 / 配置变更即时通知），Workerman 常驻进程由 systemd 看护。
 # 连不上 WS 时 agent 会自动降级到 HTTP 六端点通道，面板核心功能不依赖本服务，
 # 因此启动失败只告警不阻断安装。
-setup_node_ws() {
-    info "配置节点 WS 长连接服务..."
-
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    cat > /etc/systemd/system/3xui-hub-node-ws.service << EOF
-[Unit]
-Description=3xui-hub Node WebSocket Server (xray nodes)
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${INSTALL_DIR}/backend
-ExecStart=/usr/bin/php artisan node:ws-serve
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable --now 3xui-hub-node-ws.service 2>/dev/null || true
-
-    if systemctl is-active --quiet 3xui-hub-node-ws.service; then
-        success "节点 WS 服务已启动"
-    else
-        warn "节点 WS 服务未启动（节点将使用 HTTP 降级通道，不影响功能；排查: systemctl status 3xui-hub-node-ws.service）"
-    fi
-}
 
 # 修复 storage / bootstrap/cache 属主（幂等自愈）
 #
@@ -1105,48 +755,6 @@ EOF
 # + 面板显示 worker 离线（BanCheckJob 不再写心跳缓存）。所以装完必须把属主收回来。
 #
 # 安静且幂等：先扫一遍有没有非目标属主的文件，没有就一声不响地返回，不做多余动作。
-# bootstrap/cache 不能漏 —— composer 的 root 属主文件正写在那里。
-fix_storage_ownership() {
-    local NGINX_USER BAD SCAN_RC=0 d
-    local -a TARGETS=()
-    local BACKEND_DIR="${INSTALL_DIR}/backend"
-
-    # 与 setup_env / setup_queue_worker 同一套判定：nginx worker 用户，兜底 www-data
-    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    for d in "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache"; do
-        if [ -d "$d" ]; then
-            TARGETS+=("$d")
-        fi
-    done
-    if [ ${#TARGETS[@]} -eq 0 ]; then
-        return 0
-    fi
-
-    # -print -quit：撞见第一个属主不对的就停，只有干净时才会走完整棵树
-    BAD=$(find "${TARGETS[@]}" ! -user "$NGINX_USER" -print -quit 2>/dev/null) || SCAN_RC=$?
-
-    # 干净：不动、不吭声。扫不出结果（权限不足 / 该用户不存在）时按「脏」处理 ——
-    # 宁可多做一次幂等的 chown，也不要静默放过一次真实的污染。
-    if [ "$SCAN_RC" -eq 0 ] && [ -z "$BAD" ]; then
-        return 0
-    fi
-
-    # 非 root 改不了属主，chown 只会失败刷屏；说明原因后直接返回，不动任何文件
-    if [ "$(id -u)" -ne 0 ]; then
-        warn "存在非 ${NGINX_USER} 属主的缓存文件（如 ${BAD:-扫描失败}），但当前不是 root，跳过属主修复；请以 root 执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
-        return 0
-    fi
-
-    if chown -R "$NGINX_USER":"$NGINX_USER" "${TARGETS[@]}" 2>/dev/null; then
-        info "已修复 storage/bootstrap/cache 属主（此前存在非 ${NGINX_USER} 属主文件，如 ${BAD:-扫描失败}）"
-    else
-        # 修不好也不中断安装：属主问题比起前面报过的错要轻，留提示让人工收尾即可
-        warn "修复 storage/bootstrap/cache 属主失败，请以 root 手工执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
-    fi
-    return 0
-}
 
 # 安装 3hub 命令
 install_3hub() {
@@ -1320,9 +928,8 @@ main() {
     detect_os
     detect_arch
 
-    # 安装依赖
-    install_php
-    install_composer
+    # 安装依赖（Go 工具链 + Nginx；不再装 PHP/composer，Go 后端直连 MySQL）
+    install_go
     install_nginx
 
     # 确保 git 可用
@@ -1351,30 +958,17 @@ main() {
     # 部署项目
     deploy_project
 
-    # 配置环境
+    # 配置环境（.env + 建库 + 导入 schema/seed）
     setup_env
 
-    # 配置 Nginx
+    # 编译 Go 后端
+    build_go
+
+    # 启动 Go 后端服务（systemd 单进程：HTTP + scheduler + WS 内置）
+    setup_go_service
+
+    # 配置 Nginx（静态 + 反代 Go 8080）
     setup_nginx
-
-    # 配置 cron
-    setup_cron
-
-    # 配置后台任务 Worker（default 队列：定时任务类 Job）
-    setup_queue_worker
-
-    # 配置节点任务 Worker（node-ops 队列）
-    # 必须排在 setup_env（写 .env）之后：它要先确认 .env 里的 PANEL_NODE_OPS_QUEUE
-    # 已生效再起 worker，顺序反了就成了「worker 监听一条没人投递的队列」
-    setup_node_ops_worker
-
-    # 配置邮件 Worker（mail 队列）
-    # 同样必须排在 setup_env（写 .env）之后：先确认 PANEL_MAIL_QUEUE 生效再起 worker，
-    # 顺序反了会先出现「worker 监听 mail、邮件仍往 default 派」的空转窗口。
-    setup_mail_worker
-
-    # 配置节点 WS 长连接服务（xray 节点 agent 实时通道）
-    setup_node_ws
 
     # 安装 3hub 命令
     install_3hub
@@ -1384,12 +978,6 @@ main() {
 
     # 备份目录（数据库每日 03:30 定时备份的落盘位置）
     ensure_backup_dir
-
-    # 属主自愈：必须排在所有以 root 身份跑过 artisan / composer 的步骤之后
-    #（composer install 的 package:discover、key:generate / migrate / db:seed 都会往
-    # storage 和 bootstrap/cache 写 root 属主文件），否则网站运行用户一写缓存就
-    # Permission denied，queue / schedule 静默失效 —— 详见函数注释
-    fix_storage_ownership
 
     # 输出结果
     show_result

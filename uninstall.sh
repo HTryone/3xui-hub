@@ -292,11 +292,13 @@ remove_cron() {
 # 它会不停重启失败、刷满 journal 日志，留下指向空目录的僵尸服务。
 # ------------------------------------------------------------
 remove_queue_services() {
-    info "停止队列 Worker / 节点服务..."
+    info "停止面板服务（Go 后端 + 历史 PHP worker）..."
     local unit link inst
-    # 固定单元名直接 stop/disable（三个逐一覆盖：漏掉任何一个都会变成
-    # 指向已删项目目录的重启循环 / 僵尸进程）
-    for unit in 3xui-hub-queue.service 3xui-hub-queue-mail.service 3xui-hub-node-ws.service; do
+    # 固定单元名直接 stop/disable（逐一覆盖：漏掉任何一个都会变成
+    # 指向已删项目目录的重启循环 / 僵尸进程）。controlhub 是 Go 后端单进程
+    # 服务（Restart=always），其余四个是 Go 化前的历史 PHP worker，老机器升级
+    # 前可能还在，一并清掉。
+    for unit in controlhub.service 3xui-hub-queue.service 3xui-hub-queue-mail.service 3xui-hub-node-ws.service; do
         systemctl stop "$unit" 2>/dev/null || true
         systemctl disable "$unit" 2>/dev/null || true
     done
@@ -311,6 +313,7 @@ remove_queue_services() {
         systemctl disable "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
     done
     # 单元文件本体（模板单元只有一份）
+    rm -f /etc/systemd/system/controlhub.service 2>/dev/null || true
     rm -f /etc/systemd/system/3xui-hub-queue.service 2>/dev/null || true
     rm -f /etc/systemd/system/3xui-hub-queue-mail.service 2>/dev/null || true
     rm -f /etc/systemd/system/3xui-hub-node-ws.service 2>/dev/null || true
@@ -318,8 +321,8 @@ remove_queue_services() {
     systemctl daemon-reload 2>/dev/null || true
     # 清掉失败状态残留（漏清的 worker 陷入重启失败循环时会在 systemd 留下 failed 记录）
     systemctl reset-failed 2>/dev/null || true
-    success "队列 Worker / 节点服务已清理"
-    log "已清理队列 Worker / 节点服务"
+    success "面板服务已清理"
+    log "已清理面板服务"
 }
 
 # ------------------------------------------------------------

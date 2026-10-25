@@ -8,24 +8,6 @@ INSTALL_DIR="/www/wwwroot/3xui-hub"
 BACKEND_DIR="${INSTALL_DIR}/backend"
 # 数据库备份目录：与 backend/config/backup.php 的默认值保持一致（env BACKUP_DIR 可覆盖）
 BACKUP_DIR="/var/backups/3xui-hub"
-QUEUE_SERVICE="3xui-hub-queue.service"
-# 节点任务专用队列（node-ops）的 worker：模板单元 + 实例编号，命令只写一份。
-# 实例数运行期自适应（见 node_queue_instances_for_mem / resolve_node_queue_instances）：
-# 覆盖文件 /etc/3xui-hub/node-queue-instances 优先，否则 MemTotal <1024MB → 1 个、否则 2 个。
-# status/restart/update 都跟随同一份名单（详见 INSTALL.md「队列与并发」）。
-NODE_QUEUE_TEMPLATE="3xui-hub-queue-node@"
-NODE_QUEUE_UNIT_FILE="/etc/systemd/system/3xui-hub-queue-node@.service"
-NODE_QUEUE_UNIT_DIR="/etc/systemd/system/multi-user.target.wants"
-NODE_QUEUE_INSTANCES_FILE="/etc/3xui-hub/node-queue-instances"
-# 占位默认值；实际值在脚本底部（命令分发前）由 resolve_node_queue_instances 覆盖
-NODE_QUEUE_INSTANCES="1 2"
-# 邮件专用队列（mail）的 worker：单实例。
-# 邮件任务（自动通知/群发/每月定时）与控制类定时任务（封禁检查、健康检查）挤在同一条
-# default 队列时，一条单线程 worker 会被一次群发独占十几分钟，5 分钟定时任务只能排队 ——
-# 到期/超量用户因此没有及时被关掉 3x-ui 流量。邮件单独一条队列后堵不到控制类任务。
-MAIL_QUEUE_SERVICE="3xui-hub-queue-mail.service"
-# xray 节点 WebSocket 长连接服务（Workerman 常驻；nginx 反代 /node-ws → 127.0.0.1:8091）
-NODE_WS_SERVICE="3xui-hub-node-ws.service"
 
 # 颜色
 RED='\033[0;31m'
@@ -37,7 +19,7 @@ NC='\033[0m'
 
 # 检查安装
 check_install() {
-    if [ ! -f "$BACKEND_DIR/artisan" ]; then
+    if [ ! -f "$INSTALL_DIR/server/go.mod" ]; then
         echo -e "${RED}错误: 3xui-hub 未安装或安装目录不正确${NC}"
         exit 1
     fi
@@ -45,57 +27,16 @@ check_install() {
 
 # node-ops 实例数规则（纯函数，入参 mem_mb，只回显列表）：<1024MB → 1，否则 2。
 # 与 install.sh 里的 node_instance_count_for_mem 同一规则；分开两处保持各自可独立运行。
-node_queue_instances_for_mem() {
-    local mem_mb="${1:-0}"
-    if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
-        echo "1"
-    else
-        echo "1 2"
-    fi
-}
 
 # 解析本机该开几个 node-ops 实例：覆盖文件优先（含数字，空格分隔），否则按 MemTotal 自适应。
-resolve_node_queue_instances() {
-    local mem_mb
-    if [ -f "$NODE_QUEUE_INSTANCES_FILE" ] && grep -q '[0-9]' "$NODE_QUEUE_INSTANCES_FILE" 2>/dev/null; then
-        tr -s ' \t\n' ' ' < "$NODE_QUEUE_INSTANCES_FILE" | sed -e 's/^ *//' -e 's/ *$//'
-        return 0
-    fi
-    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    node_queue_instances_for_mem "$mem_mb"
-}
 
 # 关闭「已 enabled 但不在名单内」的 node-ops 实例（老机器升级后 2→1 时残留的 @2 必须停掉）。
 # 来源是 multi-user.target.wants 下的软链，不写死 1..N —— 人工 enable 过 @3 也能被收敛。
-converge_node_queue_instances() {
-    local keep="$1" link inst i
-    for link in "$NODE_QUEUE_UNIT_DIR"/3xui-hub-queue-node@*.service; do
-        [ -e "$link" ] || continue
-        inst="${link##*/3xui-hub-queue-node@}"
-        inst="${inst%.service}"
-        for i in $keep; do
-            [ "$i" = "$inst" ] && continue 2
-        done
-        systemctl disable --now "3xui-hub-queue-node@${inst}.service" 2>/dev/null || true
-    done
-}
 
 # 展开 node-ops worker 的实例单元名（3xui-hub-queue-node@1.service ...）
-node_queue_units() {
-    local i
-    for i in $NODE_QUEUE_INSTANCES; do
-        echo "${NODE_QUEUE_TEMPLATE}${i}.service"
-    done
-}
 
 # artisan 必须以网站运行用户执行：root 跑会往 storage/bootstrap/cache
 # 写 root 属主文件，导致 www-data 的队列 worker 间歇性 Permission denied
-run_artisan() {
-    local NGINX_USER
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-    sudo -u "$NGINX_USER" php artisan "$@"
-}
 
 # 保障 Laravel 调度器 cron（幂等）：
 #   已有 artisan schedule:run 条目 → 原样不动；缺失 → 合并式补写并回显
@@ -104,162 +45,7 @@ run_artisan() {
 # health-check / traffic:monthly-reset / async-task-timeout 全部停摆，BanCheckJob 不再
 # 写 worker 心跳缓存，后台「系统状态」就会一直显示 worker 离线（其实 worker 好着）。
 # 返回 0=已配置（含本次补写），1=需要人工处理（无权限 / 写入失败）
-ensure_artisan_cron() {
-    local NGINX_USER CRON_CMD CURRENT
 
-    # 必须用网站运行用户执行：root 直跑会持续往 storage/framework/cache 写 root 属主
-    # 缓存文件，导致 www-data 的队列 worker 间歇性 Permission denied
-    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    CRON_CMD="* * * * * sudo -u ${NGINX_USER} bash -c 'cd ${BACKEND_DIR} && php artisan schedule:run >> /dev/null 2>&1'"
-
-    CURRENT=$(crontab -l 2>/dev/null)
-    if printf '%s\n' "$CURRENT" | grep -q "artisan schedule:run"; then
-        echo -e "Cron 定时任务: ${GREEN}已配置${NC}（schedule:run 以 ${NGINX_USER} 运行）"
-        return 0
-    fi
-
-    # 非 root 只提示不改写：那样写进的是当前用户自己的 crontab，看似修复实则永不生效
-    if [ "$(id -u)" -ne 0 ]; then
-        echo -e "Cron 定时任务: ${YELLOW}未配置${NC}（写入 root crontab 需要 root 权限，请用 sudo 运行）"
-        return 1
-    fi
-
-    # 合并式写入：只剔除同名旧条目再追加，acme.sh 等其它条目必须原样保留。
-    # 绝不能用 `crontab <文件>` 整体覆盖——那会把别人的条目一并吞掉。
-    if ! { [ -n "$CURRENT" ] && printf '%s\n' "$CURRENT" | grep -v "artisan schedule:run"; echo "$CRON_CMD"; } | crontab -; then
-        echo -e "Cron 定时任务: ${RED}写入失败${NC}，请手工执行 crontab -e 添加："
-        echo "  $CRON_CMD"
-        return 1
-    fi
-
-    echo -e "Cron 定时任务: ${GREEN}已自动补配${NC}（schedule:run 以 ${NGINX_USER} 运行，此前缺失）"
-    return 0
-}
-
-configure_queue_worker() {
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    if grep -q '^QUEUE_CONNECTION=' "$BACKEND_DIR/.env"; then
-        sed -i 's/^QUEUE_CONNECTION=.*/QUEUE_CONNECTION=database/' "$BACKEND_DIR/.env"
-    else
-        echo 'QUEUE_CONNECTION=database' >> "$BACKEND_DIR/.env"
-    fi
-    if grep -q '^DB_QUEUE_RETRY_AFTER=' "$BACKEND_DIR/.env"; then
-        sed -i 's/^DB_QUEUE_RETRY_AFTER=.*/DB_QUEUE_RETRY_AFTER=180/' "$BACKEND_DIR/.env"
-    else
-        echo 'DB_QUEUE_RETRY_AFTER=180' >> "$BACKEND_DIR/.env"
-    fi
-
-    # 节点类 Job 走独立队列 node-ops。已有该行则改写，没有才追加（不重复追加：
-    # dotenv 以最后一行为准，重复行会让旧值残留在文件里，排查时极易看错）。
-    # 顺序上必须排在下面启动 worker 之前，否则会先出现「worker 监听 node-ops、
-    # Job 仍往 default 派」的空转窗口。
-    if grep -q '^PANEL_NODE_OPS_QUEUE=' "$BACKEND_DIR/.env"; then
-        sed -i 's/^PANEL_NODE_OPS_QUEUE=.*/PANEL_NODE_OPS_QUEUE=node-ops/' "$BACKEND_DIR/.env"
-    else
-        echo 'PANEL_NODE_OPS_QUEUE=node-ops' >> "$BACKEND_DIR/.env"
-    fi
-
-    # 邮件类 Job 走独立队列 mail（同款幂等写法，同样必须排在启动 worker 之前）
-    if grep -q '^PANEL_MAIL_QUEUE=' "$BACKEND_DIR/.env"; then
-        sed -i 's/^PANEL_MAIL_QUEUE=.*/PANEL_MAIL_QUEUE=mail/' "$BACKEND_DIR/.env"
-    else
-        echo 'PANEL_MAIL_QUEUE=mail' >> "$BACKEND_DIR/.env"
-    fi
-
-    chown "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/.env" 2>/dev/null || true
-    chmod 640 "$BACKEND_DIR/.env" 2>/dev/null || true
-    chown -R "$NGINX_USER":"$NGINX_USER" "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
-    chmod -R 775 "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache" 2>/dev/null || true
-
-    cat > "/etc/systemd/system/$QUEUE_SERVICE" << EOF
-[Unit]
-Description=3xui-hub Queue Worker
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${BACKEND_DIR}
-ExecStart=/usr/bin/php artisan queue:work database --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # node-ops worker：模板单元 + 实例编号，命令行只写一份，实例共用，
-    # 避免两份文件只改一份导致某个实例漏掉 --queue=node-ops 而和 default worker 抢同一条队列。
-    cat > "$NODE_QUEUE_UNIT_FILE" << EOF
-[Unit]
-Description=3xui-hub Node Ops Queue Worker (instance %i)
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${BACKEND_DIR}
-ExecStart=/usr/bin/php artisan queue:work database --queue=node-ops --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-# 小机器上让队列任务给 Web 请求让路（只用优先级，不设内存硬上限，
-# 上限会在内存吃紧时杀掉跑到一半的节点任务）
-Nice=10
-CPUWeight=20
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # mail worker：单实例。发信是 IO 等待型（每封 1~3 秒都在等 SMTP），一条 worker
-    # 的吞吐已超过常见 SMTP 服务商的限速，多开只会互相抢同一个发信账号。
-    cat > "/etc/systemd/system/$MAIL_QUEUE_SERVICE" << EOF
-[Unit]
-Description=3xui-hub Mail Queue Worker
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${BACKEND_DIR}
-ExecStart=/usr/bin/php artisan queue:work database --queue=mail --sleep=2 --tries=5 --timeout=120 --max-time=3600
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=130
-Nice=10
-CPUWeight=20
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable "$QUEUE_SERVICE" >/dev/null 2>&1
-    systemctl restart "$QUEUE_SERVICE"
-
-    local u
-    for u in $(node_queue_units); do
-        systemctl enable "$u" >/dev/null 2>&1
-        systemctl restart "$u"
-    done
-    # 收敛：名单外但已 enabled 的实例（如老机器升级后 2→1 残留的 @2）显式停掉
-    converge_node_queue_instances "$NODE_QUEUE_INSTANCES"
-
-    systemctl enable "$MAIL_QUEUE_SERVICE" >/dev/null 2>&1
-    systemctl restart "$MAIL_QUEUE_SERVICE"
-}
 
 # 配置 xray 节点 WS 长连接服务（3xui-hub-node-ws.service）
 #
@@ -267,51 +53,6 @@ EOF
 # 不装就会出现「agent 连不上 WS → 降级 HTTP 通道」，功能可用但实时性打折；
 # 而且单元文件由脚本统一维护，避免线上手改漂移。restart 失败降级为告警不中断更新
 # （WS 挂掉时 agent 会自动降级 HTTP，面板功能不受影响，不应该阻断整个升级流程）。
-configure_node_ws() {
-    if [ ! -f "$BACKEND_DIR/artisan" ]; then
-        return 0
-    fi
-
-    NGINX_USER=$(ps -eo user,comm | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    # .env 显式写入开关（幂等；默认值即 true，写入是让管理员可见可控）
-    if ! grep -q '^XRAY_WS_ENABLED=' "$BACKEND_DIR/.env" 2>/dev/null; then
-        echo 'XRAY_WS_ENABLED=true' >> "$BACKEND_DIR/.env"
-    fi
-
-    cat > "/etc/systemd/system/$NODE_WS_SERVICE" << EOF
-[Unit]
-Description=3xui-hub Node WebSocket Server (xray nodes)
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=${NGINX_USER}
-Group=${NGINX_USER}
-WorkingDirectory=${BACKEND_DIR}
-ExecStart=/usr/bin/php artisan node:ws-serve
-Restart=always
-RestartSec=5
-KillSignal=SIGTERM
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable "$NODE_WS_SERVICE" >/dev/null 2>&1
-    systemctl restart "$NODE_WS_SERVICE"
-
-    # nginx 反代自愈：老版本升级上来的 conf 缺 /node-ws location，补上（幂等）
-    ensure_nginx_node_ws
-
-    if systemctl is-active --quiet "$NODE_WS_SERVICE"; then
-        return 0
-    fi
-    return 1
-}
 
 # nginx /node-ws 反代自愈（幂等）
 #
@@ -339,7 +80,7 @@ blocks = ''
 if '/node-ws' not in s:
     blocks += '''    # xray 节点 WS 长连接（agent 主通道；连不上时 agent 自动降级 HTTP）
     location /node-ws {
-        proxy_pass http://127.0.0.1:8091;
+        proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -550,46 +291,6 @@ PY
 #
 # 安静且幂等：先扫一遍有没有非目标属主的文件，没有就一声不响地返回，不做多余动作。
 # bootstrap/cache 不能漏 —— composer 的 root 属主文件正写在那里。
-fix_storage_ownership() {
-    local NGINX_USER BAD SCAN_RC=0 d
-    local -a TARGETS=()
-
-    # 用文件顶部的 BACKEND_DIR；与 run_artisan / configure_queue_worker 同一套用户判定
-    NGINX_USER=$(ps -eo user,comm 2>/dev/null | grep nginx | awk '{print $1}' | grep -v root | head -1)
-    NGINX_USER=${NGINX_USER:-www-data}
-
-    for d in "$BACKEND_DIR/storage" "$BACKEND_DIR/bootstrap/cache"; do
-        if [ -d "$d" ]; then
-            TARGETS+=("$d")
-        fi
-    done
-    if [ ${#TARGETS[@]} -eq 0 ]; then
-        return 0
-    fi
-
-    # -print -quit：撞见第一个属主不对的就停，只有干净时才会走完整棵树
-    BAD=$(find "${TARGETS[@]}" ! -user "$NGINX_USER" -print -quit 2>/dev/null) || SCAN_RC=$?
-
-    # 干净：不动、不吭声。扫不出结果（权限不足 / 该用户不存在）时按「脏」处理 ——
-    # 宁可多做一次幂等的 chown，也不要静默放过一次真实的污染。
-    if [ "$SCAN_RC" -eq 0 ] && [ -z "$BAD" ]; then
-        return 0
-    fi
-
-    # 非 root 改不了属主，chown 只会失败刷屏；说明原因后直接返回，不动任何文件
-    if [ "$(id -u)" -ne 0 ]; then
-        echo -e "目录属主: ${YELLOW}跳过修复${NC}（存在非 ${NGINX_USER} 属主的缓存文件，如 ${BAD:-扫描失败}；需要 root 权限，请用 sudo 运行）"
-        return 0
-    fi
-
-    if chown -R "$NGINX_USER":"$NGINX_USER" "${TARGETS[@]}" 2>/dev/null; then
-        echo -e "目录属主: ${GREEN}已修复${NC}（storage/bootstrap/cache → ${NGINX_USER}，此前存在非 ${NGINX_USER} 属主文件，如 ${BAD:-扫描失败}）"
-    else
-        # 修不好也不中断更新：属主问题比起前面报过的错要轻，留提示让人工收尾即可
-        echo -e "目录属主: ${YELLOW}修复失败${NC}，请以 root 手工执行: chown -R ${NGINX_USER}:${NGINX_USER} ${TARGETS[*]}"
-    fi
-    return 0
-}
 
 # 保障备份目录存在且属主正确（幂等）。
 # 为什么需要在更新/安装路径保障：调度器每天 03:30 以网站运行用户跑 backup:run，
@@ -634,23 +335,6 @@ ensure_backup_dir() {
 # 旧的 laravel.log 不再增长；但升级上来的机器它可能已经是几十 MB，白占空间。
 # 超过 5MB 就整体改名 laravel-legacy-<时间戳>.log：保留（不丢历史）但不再增长，
 # 轮转后的新日志由 Laravel daily 驱动接管，14 天自动清理。
-rotate_legacy_laravel_log() {
-    local LOG_FILE SIZE THRESHOLD=5242880   # 5MB
-
-    LOG_FILE="$BACKEND_DIR/storage/logs/laravel.log"
-    [ -f "$LOG_FILE" ] || return 0
-
-    SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
-    [ "$SIZE" -gt "$THRESHOLD" ] 2>/dev/null || return 0
-
-    local ARCHIVE="$BACKEND_DIR/storage/logs/laravel-legacy-$(date +%Y%m%d%H%M%S).log"
-    if mv "$LOG_FILE" "$ARCHIVE" 2>/dev/null; then
-        echo -e "遗留日志: ${GREEN}已归档${NC}（laravel.log $(du -h "$ARCHIVE" 2>/dev/null | awk '{print $1}') → ${ARCHIVE##*/}）"
-    else
-        echo -e "遗留日志: ${YELLOW}归档失败${NC}，请手工检查 ${LOG_FILE} 的权限"
-    fi
-    return 0
-}
 
 # 命令列表（编号对应）
 CMDS=(
@@ -707,7 +391,7 @@ show_help() {
 # 查看状态
 cmd_status() {
     check_install
-    cd "$BACKEND_DIR"
+    cd "$INSTALL_DIR"
 
     echo -e "${CYAN}=== 系统状态 ===${NC}"
     echo ""
@@ -715,9 +399,9 @@ cmd_status() {
     # 版本
     echo -e "版本:      ${GREEN}${VERSION}${NC}"
 
-    # PHP
-    PHP_VER=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
-    echo -e "PHP:       ${GREEN}${PHP_VER}${NC}"
+    # Go
+    GO_VER=$(/usr/local/go/bin/go version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    echo -e "Go:        ${GREEN}${GO_VER}${NC}"
 
     # 数据库
     if command -v mysql &>/dev/null; then
@@ -727,16 +411,16 @@ cmd_status() {
         echo -e "数据库:    ${YELLOW}MySQL${NC}"
     fi
 
-    # 统计
+    # 统计（Go 后端直连 MySQL，直接 SQL 查询）
     echo ""
     echo -e "${CYAN}--- 数据统计 ---${NC}"
-    run_artisan tinker --execute="
-        echo '用户:      ' . \App\Models\User::count() . PHP_EOL;
-        echo '服务器:    ' . \App\Models\Node::count() . PHP_EOL;
-        echo '节点:      ' . \App\Models\NodeInbound::count() . PHP_EOL;
-        echo '套餐:      ' . \App\Models\Plan::count() . PHP_EOL;
-        echo '订单:      ' . \App\Models\Order::count() . PHP_EOL;
-        echo '支付配置:  ' . \App\Models\PaymentConfig::count() . PHP_EOL;
+    mysql -u root controlhub -sN -e "
+        SELECT CONCAT('用户:      ', COUNT(*)) FROM users;
+        SELECT CONCAT('服务器:    ', COUNT(*)) FROM nodes;
+        SELECT CONCAT('节点:      ', COUNT(*)) FROM node_inbounds;
+        SELECT CONCAT('套餐:      ', COUNT(*)) FROM plans;
+        SELECT CONCAT('订单:      ', COUNT(*)) FROM orders;
+        SELECT CONCAT('支付配置:  ', COUNT(*)) FROM payment_configs;
     " 2>/dev/null
 
     # Nginx 状态
@@ -747,43 +431,11 @@ cmd_status() {
         echo -e "Nginx:     ${RED}未运行${NC}"
     fi
 
-    # PHP-FPM 状态
-    if systemctl is-active php8.4-fpm &>/dev/null || pgrep -f "php-fpm" &>/dev/null; then
-        echo -e "PHP-FPM:   ${GREEN}运行中${NC}"
+    # Go 后端服务（单进程：HTTP + scheduler + WS 内置）
+    if systemctl is-active controlhub &>/dev/null; then
+        echo -e "Go 后端:   ${GREEN}运行中${NC}（面板 API + 定时调度 + 节点 WS 通道）"
     else
-        echo -e "PHP-FPM:   ${RED}未运行${NC}"
-    fi
-
-    if systemctl is-active "$QUEUE_SERVICE" &>/dev/null; then
-        echo -e "队列 Worker: ${GREEN}运行中${NC}（default，定时任务）"
-    else
-        echo -e "队列 Worker: ${RED}未运行${NC}（default，定时任务）"
-    fi
-
-    # 节点任务 Worker（node-ops）：按实例统计，可能被人工增减
-    local NODE_TOTAL=0 NODE_ACTIVE=0 u
-    for u in $(node_queue_units); do
-        NODE_TOTAL=$((NODE_TOTAL + 1))
-        if systemctl is-active "$u" &>/dev/null; then
-            NODE_ACTIVE=$((NODE_ACTIVE + 1))
-        fi
-    done
-    if [ "$NODE_TOTAL" -eq 0 ]; then
-        echo -e "节点 Worker: ${YELLOW}未配置${NC}（node-ops）"
-    elif [ "$NODE_ACTIVE" -eq "$NODE_TOTAL" ]; then
-        echo -e "节点 Worker: ${GREEN}运行中${NC}（node-ops，${NODE_ACTIVE}/${NODE_TOTAL}）"
-    elif [ "$NODE_ACTIVE" -eq 0 ]; then
-        echo -e "节点 Worker: ${RED}未运行${NC}（node-ops，0/${NODE_TOTAL}）"
-        echo -e "  ${YELLOW}节点任务会一直停在 pending，修复: 3hub update${NC}"
-    else
-        echo -e "节点 Worker: ${YELLOW}部分运行${NC}（node-ops，${NODE_ACTIVE}/${NODE_TOTAL}）"
-    fi
-
-    # xray 节点 WS 长连接服务（agent 主通道；未运行时节点自动走 HTTP 降级）
-    if systemctl is-active "$NODE_WS_SERVICE" &>/dev/null; then
-        echo -e "节点 WS 服务: ${GREEN}运行中${NC}（xray 节点实时通道）"
-    else
-        echo -e "节点 WS 服务: ${YELLOW}未运行${NC}（xray 节点走 HTTP 降级通道，修复: 3hub update）"
+        echo -e "Go 后端:   ${RED}未运行${NC}"
     fi
 }
 
@@ -821,12 +473,6 @@ cmd_check_update() {
 # 必须 root：要改 /etc/php/*/fpm/pool.d/www.conf 并 reload 系统服务，不能走 run_artisan 的降权
 #（那个是给「会写 storage/ 属主」的 artisan 命令用的）。
 # 幂等：当前值已等于推荐值时不改配置、不 reload。
-cmd_fpm_tune() {
-    check_install
-    cd "$BACKEND_DIR" || return 1
-
-    php artisan fpm:tune "$@"
-}
 
 # 清理历史 CLI opcache 配置（v1.25.1 曾默认开启，v1.25.3 回退为默认关）
 #
@@ -840,28 +486,6 @@ cmd_fpm_tune() {
 # 必须在 configure_queue_worker 之前跑：worker restart 前删掉 ini，重启后才落到关态。
 # php 不可用 / 找不到扫描目录时只提示跳过，不中断更新。
 # 注意：本函数名与 __cli-opcache 子命令名不能改 —— 老版本 update 的子进程调用依赖它们。
-cmd_cli_opcache() {
-    if ! command -v php >/dev/null 2>&1; then
-        echo -e "CLI opcache: ${YELLOW}跳过${NC}（php 不可用）"
-        return 0
-    fi
-
-    local scan_dir ini
-    scan_dir=$(php --ini 2>/dev/null | awk -F': ' '/Scan for additional .ini files in/ {print $2; exit}')
-    if [ -z "$scan_dir" ] || [ "$scan_dir" = "(none)" ] || [ ! -d "$scan_dir" ]; then
-        echo -e "CLI opcache: ${YELLOW}跳过${NC}（未找到 php ini 扫描目录）"
-        return 0
-    fi
-
-    ini="${scan_dir}/99-3xui-hub-opcache.ini"
-    if [ -f "$ini" ]; then
-        rm -f "$ini"
-        echo -e "CLI opcache: ${GREEN}已清理历史残留配置${NC}（${ini}）"
-    else
-        echo -e "CLI opcache: ${GREEN}无需清理${NC}"
-    fi
-    return 0
-}
 
 # 把前端产物同步到 backend/public：先按 dist 清单清理旧版本残留，再复制新文件。
 #
@@ -875,50 +499,6 @@ cmd_cli_opcache() {
 # favicon.ico 这类静态资源），并跳过 Laravel 必需文件与用户上传目录。
 # dist 是被 git 跟踪的（116 个文件），所以 git pull 后它必然等于本次发布的内容，
 # 可以放心当权威清单。
-_sync_frontend_dist() {
-    local DIST="$INSTALL_DIR/frontend/dist"
-    local PUB="$BACKEND_DIR/public"
-    local removed=0 f rel
-
-    if [ ! -d "$DIST" ]; then
-        echo -e "${YELLOW}未找到 $DIST，跳过前端产物同步${NC}"
-        return 0
-    fi
-
-    # 1) 清理：public/assets 里有、dist/assets 里没有的 = 旧版本残留
-    if [ -d "$PUB/assets" ] && [ -d "$DIST/assets" ]; then
-        while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            if [ ! -e "$DIST/assets/$f" ]; then
-                rm -rf "$PUB/assets/$f" && removed=$((removed + 1))
-            fi
-        done < <(ls -1 "$PUB/assets" 2>/dev/null)
-    fi
-
-    # 2) top-level 的哈希资源（如 favicon-<hash>.ico / *.css 等）：
-    #    只处理「dist 顶层存在同名同类、但哈希不同」的情况，绝不能删 index.php 等。
-    if [ -d "$DIST" ]; then
-        while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            case "$f" in
-                # Laravel / 用户资产，永不清理
-                index.php|.htaccess|robots.txt|favicon.ico|storage|uploads|.well-known) continue ;;
-            esac
-            # 是文件才算；且只在「dist 顶层没有这个文件」时删
-            if [ -f "$PUB/$f" ] && [ ! -e "$DIST/$f" ]; then
-                rm -f "$PUB/$f" && removed=$((removed + 1))
-            fi
-        done < <(ls -1 "$PUB" 2>/dev/null)
-    fi
-
-    # 3) 复制新产物（保留原语义：失败不阻断升级）
-    cp -r "$DIST/"* "$PUB/" 2>/dev/null || true
-
-    if [ "$removed" -gt 0 ]; then
-        echo -e "${CYAN}前端产物同步：清理旧版本残留 ${removed} 项${NC}"
-    fi
-    return 0
-}
 
 # 升级前快照：记下当前 commit（供失败回滚），并尽力做一次数据库备份。
 # 快照路径由 cmd_update 第一段算好，经环境变量 HUB_UPDATE_SNAPSHOT 传给 exec 后的 phase2。
@@ -938,11 +518,8 @@ _update_snapshot() {
     printf '%s\n' "$PREV" > "$SNAP" 2>/dev/null || true
 
     # 数据库备份：失败仅告警，不阻断升级。回滚只回代码，这份备份是额外保险，
-    # 让人工在必要时有数据库回滚点可用。
-    # 注意 cwd：本函数在 cmd_update 里被调用时 cwd 是 $INSTALL_DIR（根目录没有
-    # artisan 文件），run_artisan 内部不 cd —— 必须先进 backend 再跑，否则必然
-    # 报「Could not open input file: artisan」，备份永远失败。
-    if ! (cd "$BACKEND_DIR" 2>/dev/null && run_artisan backup:run); then
+    # 让人工在必要时有数据库回滚点可用。Go 化后直接 mysqldump，不再走 artisan。
+    if ! mysqldump -u root controlhub 2>/dev/null | gzip > "${BACKUP_DIR}/pre-update-$(date +%Y%m%d%H%M%S).sql.gz"; then
         echo -e "${YELLOW}数据库备份失败，回滚时将没有数据库回滚点${NC}"
     fi
 
@@ -978,28 +555,16 @@ _update_rollback() {
         return 1
     fi
 
-    # 回装与旧代码匹配的依赖（失败告警不中断：回滚中途再断会更难收拾）
-    cd "$BACKEND_DIR" 2>/dev/null || true
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1 \
-        || echo -e "${YELLOW}依赖回装失败，请手工执行: cd ${BACKEND_DIR} && composer install --no-dev --optimize-autoloader${NC}"
+    # 重新编译与旧代码匹配的 Go 后端（失败告警不中断：回滚中途再断会更难收拾）
+    cd "$INSTALL_DIR/server" 2>/dev/null || true
+    CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1 \
+        || echo -e "${YELLOW}Go 重新编译失败，请手工执行: cd ${INSTALL_DIR}/server && go build -o controlhub-server ./cmd/server${NC}"
 
-    run_artisan config:clear 2>&1
-    run_artisan route:clear 2>&1
-    run_artisan view:clear 2>&1
-
-    systemctl restart "$QUEUE_SERVICE" 2>/dev/null || true
-    for u in $(node_queue_units); do
-        systemctl restart "$u" 2>/dev/null || true
-    done
-
-    systemctl reload php8.4-fpm 2>/dev/null || pkill -USR2 php-fpm 2>/dev/null || true
+    systemctl restart controlhub 2>/dev/null || true
 
     # CLI 退回旧版本，与刚 reset 下来的源码保持一致（否则命令行仍是新版逻辑）
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub 2>/dev/null || true
     chmod +x /usr/local/bin/3hub 2>/dev/null || true
-
-    # 回滚里的 composer 以 root 跑过，收回 storage/bootstrap/cache 属主
-    fix_storage_ownership
 
     SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null)
     echo -e "${GREEN}已回滚到 ${SHORT}。${NC}数据库未自动回滚（迁移通常是加表加列，旧代码兼容）；最近数据库备份在 ${BACKUP_DIR}/"
@@ -1042,114 +607,50 @@ cmd_update_phase2() {
     check_install
     cd "$INSTALL_DIR"
 
-    # 升级前快照路径（由 cmd_update 第一段经环境变量传入）。
-    # 为空属预期：老版本的第一次升级走的是没有 exec 的旧脚本，环境里不会带这个变量，
-    # 那时 _update_rollback 会退回 reflog 兜底。
     local SNAP="${HUB_UPDATE_SNAPSHOT:-}"
 
-    # 更新后端依赖
-    cd "$BACKEND_DIR"
-    if ! COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader 2>&1; then
-        echo -e "${RED}依赖更新失败${NC}"
+    # 编译 Go 后端（静态链接，无 CGO 依赖；go.mod 在 server/ 下）
+    echo -e "${CYAN}编译 Go 后端...${NC}"
+    cd "$INSTALL_DIR/server"
+    if ! CGO_ENABLED=0 /usr/local/go/bin/go build -o controlhub-server ./cmd/server 2>&1; then
+        echo -e "${RED}Go 编译失败${NC}"
+        _update_rollback "$SNAP"
+        return 1
+    fi
+    cd "$INSTALL_DIR"
+
+    # 重启 Go 后端服务（单进程：HTTP + scheduler + WS 内置）
+    systemctl restart controlhub 2>/dev/null || true
+    sleep 1
+    if ! systemctl is-active --quiet controlhub; then
+        echo -e "${RED}Go 后端服务启动失败，请运行: journalctl -u controlhub${NC}"
         _update_rollback "$SNAP"
         return 1
     fi
 
-    # 迁移数据库
-    if ! run_artisan migrate --force 2>&1; then
-        echo -e "${RED}数据库迁移失败${NC}"
-        _update_rollback "$SNAP"
-        return 1
-    fi
-
-    # 保障调度器 cron（幂等）：root crontab 常被 acme.sh / 面板等工具整体重写，
-    # 更新路径必须每次自愈，否则 schedule:run 一丢就是「定时任务全停 + 心跳空白」
-    echo -e "${CYAN}检查定时任务...${NC}"
-    ensure_artisan_cron || echo -e "${YELLOW}定时任务未就绪，见上方提示${NC}"
-
-    # 备份目录自愈（幂等）：调度器每天 03:30 以网站运行用户跑 backup:run，
-    # 目录缺失或属主为 root 会导致凌晨静默失败，所以更新路径每次保障。
-    ensure_backup_dir
-
-    # 遗留大日志自愈（幂等）：老版本 upgrade 上来时 storage/logs/laravel.log 可能已经
-    # 涨到几十 MB。改版后新日志按天写 laravel-YYYY-MM-DD.log，这个旧文件不会再有新内容，
-    # 但它永远占着空间；超过阈值就整体改名归档（保留、不再增长），便于人工排查后删除。
-    rotate_legacy_laravel_log
-
-    # CLI opcache：清理 v1.25.1 的残留 ini（回退为默认关）；必须在 worker 重启前完成，
-    # 否则 worker 起来时读到的还是旧配置。两段式 exec 后这里已是新代码，直接调。
-    echo -e "${CYAN}清理 CLI opcache 残留...${NC}"
-    cmd_cli_opcache
-
-    # 配置数据库队列和常驻 Worker（内部会 restart 各 worker，重启后落到清理后的配置）
-    configure_queue_worker
-
-    # xray 节点 WS 长连接服务（自愈安装 + 重启；失败仅告警：agent 会降级 HTTP 通道）
-    echo -e "${CYAN}检查节点 WS 服务...${NC}"
-    if configure_node_ws; then
-        echo -e "节点 WS 服务: ${GREEN}已就绪${NC}"
-    else
-        echo -e "${YELLOW}节点 WS 服务未就绪（节点将使用 HTTP 降级通道，不影响功能）${NC}"
-        echo -e "${YELLOW}排查: systemctl status $NODE_WS_SERVICE${NC}"
-    fi
-
-    # 清除缓存
-    run_artisan config:clear 2>&1
-    run_artisan route:clear 2>&1
-    run_artisan view:clear 2>&1
-    run_artisan queue:restart 2>&1
-    systemctl restart "$QUEUE_SERVICE"
-    if ! systemctl is-active --quiet "$QUEUE_SERVICE"; then
-        echo -e "${RED}后台任务 Worker 启动失败，请运行: systemctl status $QUEUE_SERVICE${NC}"
-        _update_rollback "$SNAP"
-        return 1
-    fi
-
-    # 节点任务 Worker：上面的 configure_queue_worker 会重新生成模板单元并 enable，
-    # 所以从老版本（那时还没有这个服务）升级上来也会被装上，这里再逐个 restart + 自检。
-    # 必须自检：.env 开了 node-ops 而没有 worker 监听时，节点任务会被派进空队列，
-    # 永远不执行且不报错（面板上一直 pending），比两类任务抢队列严重得多。
-    for u in $(node_queue_units); do
-        systemctl restart "$u"
-        if ! systemctl is-active --quiet "$u"; then
-            echo -e "${RED}节点任务 Worker ($u) 启动失败，请运行: systemctl status $u${NC}"
-            _update_rollback "$SNAP"
-            return 1
-        fi
+    # 停用 PHP 相关服务（Go 已替代 php-fpm + queue worker + node-ws）。
+    # 幂等：服务不存在时静默跳过；老版本没有这些服务也安全。
+    for svc in 3xui-hub-queue 3xui-hub-queue-mail 3xui-hub-node-ws; do
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+    for link in /etc/systemd/system/multi-user.target.wants/3xui-hub-queue-node@*.service; do
+        [ -e "$link" ] || continue
+        local u
+        u="$(basename "$link")"
+        systemctl stop "$u" 2>/dev/null || true
+        systemctl disable "$u" 2>/dev/null || true
     done
 
-    # 复制前端产物（先清旧版本残留再复制，避免历次 chunk 堆积）
-    _sync_frontend_dist
-
-    # 前端缓存规则自愈：老版本 conf 缺 index.html no-cache，升级时幂等补上
+    # 前端缓存规则 + gzip 自愈
     ensure_nginx_cache_rules
-
-    # gzip 自愈：老版本 conf 的 JS/CSS 未压缩（系统 gzip_types 被注释），升级时幂等补上
     ensure_nginx_gzip
-
-    # php-fpm 并发（pm.max_children）：发行版默认 5，用户量上来就排队，是第一个卡的地方。
-    # 两段式 exec 后这里已是新代码（旧版「必须子进程绕」的坑已结构性消灭），直接调。
-    echo -e "${CYAN}检查 php-fpm 并发...${NC}"
-    if ! cmd_fpm_tune; then
-        echo -e "${YELLOW}php-fpm 并发未调整（可手动执行: cd $BACKEND_DIR && php artisan fpm:tune）${NC}"
-    fi
-
-    # agent 自升级：把面板上这份 agent 二进制推给节点（节点自己下载 → sha256 校验 → 原子替换 →
-    # 重启 agent）。离线节点也会入队，等它上线取走即执行 —— 不用登录每台 VPS。
-    # 幂等：节点已上报同版本 / 已有在途指令 → 跳过，不会每次 update 都重启节点。
-    echo -e "${CYAN}检查节点 agent 版本...${NC}"
-    if ! run_artisan node:upgrade-agent; then
-        echo -e "${YELLOW}agent 升级指令未下发（可手动执行: cd $BACKEND_DIR && php artisan node:upgrade-agent）${NC}"
-    fi
-
-    # 重启 PHP-FPM
-    systemctl reload php8.4-fpm 2>/dev/null || pkill -USR2 php-fpm 2>/dev/null || true
 
     # 更新 3hub 命令本身
     cp "$INSTALL_DIR/3hub" /usr/local/bin/3hub
     chmod +x /usr/local/bin/3hub
 
-    # 同步多域名助手（与 install.sh 的 install_domain_support 一致，覆盖更新）
+    # 同步多域名助手
     if [ -f "$INSTALL_DIR/3hub-domain" ]; then
         cp "$INSTALL_DIR/3hub-domain" /usr/local/bin/3hub-domain
         chmod +x /usr/local/bin/3hub-domain
@@ -1159,22 +660,6 @@ cmd_update_phase2() {
         cp "$INSTALL_DIR/sudoers-3xui-hub" /etc/sudoers.d/3xui-hub
         chmod 0440 /etc/sudoers.d/3xui-hub
         chown root:root /etc/sudoers.d/3xui-hub 2>/dev/null || true
-    fi
-
-    # 属主自愈：必须压在最后 —— 上面所有可能以 root 跑 artisan / composer 的步骤都跑完了
-    #（composer install 的 package:discover、run_artisan 之外的任何手工 php artisan），
-    # 这里把 storage / bootstrap/cache 的 root 属主文件收回网站运行用户名下。
-    # 顺序上不能提到 config:clear 那类步骤之前，否则还会被后续步骤重新污染。详见函数注释。
-    fix_storage_ownership
-
-    # 兜底落盘检查：两段式之后正常不会再缺；但「v1.26.x 及更老版本 → 本版本」的
-    # 第一次升级走的是旧脚本（没有 exec），新自愈当次不生效 —— 明确提示，
-    # 避免用户以为已自愈、实际还要再跑一条命令。
-    if ! nginx_node_ws_applied; then
-        echo ""
-        echo -e "${YELLOW}⚠ 检测到 nginx 缺少节点资产 location（/node-ws、/node-install.sh）。${NC}"
-        echo -e "${YELLOW}  这是老版本升级的已知情况：自愈函数要到下一次运行才可用。${NC}"
-        echo -e "${YELLOW}  请执行一次：${NC} ${GREEN}3hub fix-nginx${NC}"
     fi
 
     echo -e "${GREEN}更新完成！${NC}"
@@ -1249,38 +734,27 @@ cmd_uninstall() {
 # 修改管理员账号
 cmd_admin_user() {
     check_install
-    cd "$BACKEND_DIR"
-
-    echo -e "${CYAN}当前管理员账号:${NC}"
-    run_artisan tinker --execute="echo \App\Models\Admin::first()->username;" 2>/dev/null
-    echo ""
-    echo -e "${BLUE}输入新用户名:${NC}"
-    read -r NEW_USER
-
+    local NEW_USER="$1"
+    if [ -z "$NEW_USER" ]; then
+        echo -e "${BLUE}输入新管理员用户名:${NC}"
+        read -r NEW_USER
+    fi
     if [ -z "$NEW_USER" ]; then
         echo -e "${RED}用户名不能为空${NC}"
         return 1
     fi
-
     if [ ${#NEW_USER} -lt 3 ]; then
         echo -e "${RED}用户名至少3位${NC}"
         return 1
     fi
 
-    run_artisan tinker --execute="
-        \$admin = \App\Models\Admin::first();
-        \$admin->username = '${NEW_USER}';
-        \$admin->save();
-        echo '已修改为: ' . \$admin->username;
-    " 2>/dev/null
-
+    mysql -u root controlhub -e "UPDATE admins SET username='${NEW_USER}' WHERE id=(SELECT MIN(id) FROM admins);" 2>/dev/null
     echo -e "${GREEN}管理员账号已修改${NC}"
 }
 
 # 修改管理员密码
 cmd_admin_pass() {
     check_install
-    cd "$BACKEND_DIR"
 
     echo -e "${BLUE}输入新密码（至少6位）:${NC}"
     read -rs NEW_PASS
@@ -1291,23 +765,21 @@ cmd_admin_pass() {
         return 1
     fi
 
-    run_artisan tinker --execute="
-        \$admin = \App\Models\Admin::first();
-        \$admin->password = bcrypt('${NEW_PASS}');
-        \$admin->save();
-        echo '密码已修改';
-    " 2>/dev/null
-
+    # 用 htpasswd 生成 bcrypt（$2y$，Go 的 x/crypto/bcrypt 兼容）；无 htpasswd 时提示走面板
+    if ! command -v htpasswd &>/dev/null; then
+        echo -e "${RED}缺少 htpasswd（apache2-utils），请通过面板修改密码${NC}"
+        return 1
+    fi
+    HASH=$(htpasswd -bnBC 12 "" "$NEW_PASS" | cut -d: -f2)
+    mysql -u root controlhub -e "UPDATE admins SET password='${HASH}' WHERE id=(SELECT MIN(id) FROM admins);" 2>/dev/null
     echo -e "${GREEN}管理员密码已修改${NC}"
 }
 
 # 手动同步流量
 cmd_sync() {
     check_install
-    cd "$BACKEND_DIR"
-
-    echo -e "${CYAN}开始同步流量...${NC}"
-    run_artisan traffic:sync 2>&1
+    echo -e "${CYAN}流量同步由 Go 后端调度器定时自动执行（无需手动触发）。${NC}"
+    echo -e "  查看最近同步: ${GREEN}3hub sync-status${NC}"
 }
 
 # 查看同步状态
@@ -1317,28 +789,19 @@ cmd_sync_status() {
     echo -e "${CYAN}=== 自动同步状态 ===${NC}"
     echo ""
 
-    # 检查 cron：缺失时顺带补齐（自检路径同时是修复路径，口径改成「已自动修复」）
-    ensure_artisan_cron || true
-
-    # 检查日志中的同步记录
-    LOG_FILE="$BACKEND_DIR/storage/logs/laravel.log"
-    if [ -f "$LOG_FILE" ]; then
-        LAST_SYNC=$(grep -i "traffic:sync\|流量同步\|同步完成" "$LOG_FILE" 2>/dev/null | tail -1)
-        if [ -n "$LAST_SYNC" ]; then
-            echo ""
-            echo -e "最近同步记录:"
-            echo "  $LAST_SYNC"
-        else
-            echo ""
-            echo -e "最近同步记录: ${YELLOW}暂无${NC}"
-        fi
+    # Go 后端 scheduler 内置：流量同步 / 封禁检查 / 健康检查 / 月度重置等定时任务
+    if systemctl is-active controlhub &>/dev/null; then
+        echo -e "Go 后端:   ${GREEN}运行中${NC}（调度器随进程内置）"
+    else
+        echo -e "Go 后端:   ${RED}未运行${NC}（定时任务已停）"
     fi
 
-    # 检查 Scheduler 运行状态
+    # 最近调度日志
     echo ""
-    cd "$BACKEND_DIR"
-    echo -e "${CYAN}调度任务列表:${NC}"
-    run_artisan schedule:list 2>/dev/null | head -10
+    echo -e "${CYAN}=== 最近调度日志 ===${NC}"
+    if command -v journalctl &>/dev/null; then
+        journalctl -u controlhub --no-pager -n 20 2>/dev/null | grep -iE "schedule|sync|同步|流量" | tail -10 || echo -e "${YELLOW}暂无调度日志${NC}"
+    fi
 }
 
 # 导出备份
@@ -1350,47 +813,41 @@ cmd_sync_status() {
 # 同一个命令也被调度器每天 03:30 调用，手动与自动走完全相同的实现。
 cmd_backup() {
     check_install
-    cd "$BACKEND_DIR"
 
-    if ! run_artisan backup:run; then
-        echo -e "${RED}备份失败${NC}（常见原因：mysqldump 不可用、数据库连接失败、磁盘空间不足）"
+    local BACKUP_DIR="/var/backups/3xui-hub"
+    mkdir -p "$BACKUP_DIR"
+    local TS
+    TS=$(date +%Y%m%d%H%M%S)
+    local FILE="$BACKUP_DIR/backup-${TS}.sql.gz"
+
+    if ! command -v mysqldump &>/dev/null; then
+        echo -e "${RED}mysqldump 不可用，无法备份${NC}"
         return 1
     fi
+
+    if ! mysqldump -u root controlhub 2>/dev/null | gzip > "$FILE"; then
+        echo -e "${RED}备份失败${NC}（常见原因：数据库连接失败、磁盘空间不足）"
+        rm -f "$FILE"
+        return 1
+    fi
+
+    # 只保留最新 7 份（与 scheduler 的 backup:run 一致）
+    ls -1t "$BACKUP_DIR"/backup-*.sql.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+
+    echo -e "${GREEN}备份完成: $FILE${NC}"
 }
 
-# 查看日志
 cmd_log() {
     check_install
 
-    # 日志已按天轮转（laravel-YYYY-MM-DD.log），不再固定读 laravel.log：
-    # 取 storage/logs 下 mtime 最新的 laravel*.log（含升级时归档的 laravel-legacy-*.log）。
-    # 老版本升级上来的机器若只有 laravel.log，它同样是候选，行为向后兼容。
-    LOG_FILE=$(ls -1t "$BACKEND_DIR"/storage/logs/laravel*.log 2>/dev/null | head -1)
-
-    if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
-        echo -e "${YELLOW}暂无日志${NC}"
-        return
-    fi
-
-    echo -e "日志文件: ${LOG_FILE##*/}"
-
-    echo -e "${CYAN}=== 最近错误日志 ===${NC}"
-    grep -i "ERROR\|EXCEPTION\|CRITICAL" "$LOG_FILE" 2>/dev/null | tail -20
-
-    if [ ! -s "$LOG_FILE" ]; then
-        echo -e "${GREEN}暂无错误${NC}"
-    fi
-
-    # 队列 Worker 的单元日志：worker 被 OOM/超时杀掉后自动重启这类事只记在 journal 里，
-    # laravel.log 上看不到（Job 失败栈在 laravel.log，进程级问题在这里）
     if command -v journalctl &>/dev/null; then
-        local JOURNAL_ARGS=(-u "$QUEUE_SERVICE") u
-        for u in $(node_queue_units); do
-            JOURNAL_ARGS+=(-u "$u")
-        done
+        echo -e "${CYAN}=== Go 后端最近错误日志 ===${NC}"
+        journalctl -u controlhub --no-pager -n 100 2>/dev/null | grep -iE "ERROR|error|panic|fatal|FATAL" | tail -20 || echo -e "${GREEN}暂无错误${NC}"
         echo ""
-        echo -e "${CYAN}=== 队列 Worker 最近日志（default + node-ops） ===${NC}"
-        journalctl "${JOURNAL_ARGS[@]}" --no-pager -n 20 2>/dev/null || true
+        echo -e "${CYAN}=== Go 后端最近完整日志 ===${NC}"
+        journalctl -u controlhub --no-pager -n 30 2>/dev/null || true
+    else
+        echo -e "${YELLOW}journalctl 不可用${NC}"
     fi
 }
 
@@ -1587,42 +1044,18 @@ NGINX_HTTP
 cmd_restart() {
     echo -e "${CYAN}重启服务...${NC}"
 
-    # PHP-FPM
-    if systemctl is-active php8.4-fpm &>/dev/null; then
-        systemctl reload php8.4-fpm
-        echo -e "PHP-FPM: ${GREEN}已重启${NC}"
-    elif pgrep -f "php-fpm" &>/dev/null; then
-        pkill -USR2 php-fpm
-        echo -e "PHP-FPM: ${GREEN}已重启${NC}"
+    # Go 后端（单进程：HTTP + scheduler + WS 内置）
+    if systemctl is-active controlhub &>/dev/null; then
+        systemctl restart controlhub
+        echo -e "Go 后端: ${GREEN}已重启${NC}"
+    else
+        echo -e "Go 后端: ${YELLOW}未运行${NC}"
     fi
 
     # Nginx
     if systemctl is-active nginx &>/dev/null; then
         systemctl reload nginx
         echo -e "Nginx:   ${GREEN}已重启${NC}"
-    fi
-
-    # 队列 Worker：default（定时任务）+ node-ops（节点任务）
-    if systemctl is-active "$QUEUE_SERVICE" &>/dev/null; then
-        systemctl restart "$QUEUE_SERVICE"
-        echo -e "队列 Worker: ${GREEN}已重启${NC}（default）"
-    fi
-    if [ ! -f "$NODE_QUEUE_UNIT_FILE" ]; then
-        echo -e "节点 Worker: ${YELLOW}未安装${NC}（运行 3hub update 安装 node-ops worker）"
-    else
-        for u in $(node_queue_units); do
-            # restart 会顺带拉起已停止的实例，这正是这里想要的语义
-            systemctl restart "$u"
-            echo -e "节点 Worker: ${GREEN}已重启${NC}（$u）"
-        done
-    fi
-
-    # 节点 WS 长连接服务（xray 节点实时通道）
-    if systemctl is-active "$NODE_WS_SERVICE" &>/dev/null; then
-        systemctl restart "$NODE_WS_SERVICE"
-        echo -e "节点 WS 服务: ${GREEN}已重启${NC}（$NODE_WS_SERVICE）"
-    else
-        echo -e "节点 WS 服务: ${YELLOW}未安装或未运行${NC}（运行 3hub update 安装）"
     fi
 
     echo -e "${GREEN}服务重启完成${NC}"
@@ -1758,10 +1191,7 @@ run_cmd() {
         # 保底：v1.26.x 及更老版本的 update 会以子进程方式调用前三个内部命令，
         # 名字不能改、不能删（老脚本靠它们当次生效）；__update-phase2 由新版
         # cmd_update 第一段 exec 进入，不要手动执行（跑之前必须已 git reset）。
-        __ensure-cron) ensure_artisan_cron ;;
         __update-phase2) cmd_update_phase2 ;;
-        __fpm-tune)    shift; cmd_fpm_tune "$@" ;;
-        __cli-opcache) cmd_cli_opcache ;;
         help|--help|-h) show_help ;;
         *)
             echo -e "${RED}未知命令: $CMD${NC}"
@@ -1774,7 +1204,6 @@ run_cmd() {
 
 # 实例数在命令分发前解析一次：status / restart / update / log 都读同一个 NODE_QUEUE_INSTANCES，
 # 覆盖文件或内存一变，全部自动跟随（不再需要手工同步脚本里的常量）。
-NODE_QUEUE_INSTANCES=$(resolve_node_queue_instances)
 
 # 主逻辑
 if [ -n "$1" ]; then
