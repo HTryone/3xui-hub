@@ -38,8 +38,19 @@ func main() {
 		defer db.Close()
 	}
 
+	// collector（P6 采集层 + P8a 用户域下发的驱动构造，全局共享一个实例）
+	col, colErr := collector.New(collector.Options{
+		DB:     db,
+		AppKey: app.Cfg.AppKey,
+		Now:    time.Now,
+		Logf:   log.Printf,
+	})
+	if colErr != nil {
+		log.Fatalf("初始化 collector 失败: %v", colErr)
+	}
+
 	addr := envOr("LISTEN_ADDR", ":8080")
-	router, wsServer := newRouter(app)
+	router, wsServer := newRouter(app, col)
 	srv := &http.Server{
 		Handler:           router,
 		Addr:              addr,
@@ -54,7 +65,7 @@ func main() {
 	defer stop()
 
 	// 启动调度器（P9 常驻 goroutine，随服务启动/优雅退出一起关闭）
-	startScheduler(ctx, app, db)
+	startScheduler(ctx, app, db, col)
 
 	// 启动节点 WS 通道（轮询/心跳节拍；握手由 /node-ws 路由 ServeHTTP 处理）
 	if wsServer != nil {
@@ -96,7 +107,7 @@ func bootstrap() (*httpx.App, *sql.DB, error) {
 
 // newRouter 构建 gin 引擎并注册路由。单独拆出来便于单测/健康检查复用。
 // 返回 gin 引擎 + 节点 WS 服务（WS 的 Run 需由 main 用 ctx 启动）。
-func newRouter(app *httpx.App) (*gin.Engine, *ws.Server) {
+func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Server) {
 	if app.Cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -106,7 +117,7 @@ func newRouter(app *httpx.App) (*gin.Engine, *ws.Server) {
 
 	// 路由注册随迁移阶段逐步接入（handler/api、handler/admin）。
 	// /api/ping 由 api.Handler.Register 注册（对齐 PHP 契约）。
-	wsServer := registerRoutes(r, app)
+	wsServer := registerRoutes(r, app, col)
 
 	return r, wsServer
 }
@@ -120,21 +131,9 @@ func envOr(key, def string) string {
 
 // startScheduler 组装并启动定时调度器（P9 常驻 goroutine）。
 // 队列分离默认关闭（全部进 default 队列）。
-func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB) {
+func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector) {
 	logger := log.Default()
 	cfg := app.Cfg
-
-	// collector（P6 采集层）
-	col, colErr := collector.New(collector.Options{
-		DB:     db,
-		AppKey: cfg.AppKey,
-		Now:    time.Now,
-		Logf:   logger.Printf,
-	})
-	if colErr != nil {
-		logger.Printf("[schedule] 初始化 collector 失败: %v", colErr)
-		return
-	}
 
 	// 异步任务服务（async-task-timeout 用）
 	asyncSvc := task.NewService(db, nil)

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"controlhub-server/internal/collector"
 	"controlhub-server/internal/handler/admin"
 	"controlhub-server/internal/handler/api"
 	"controlhub-server/internal/httpx"
@@ -24,7 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func registerRoutes(r *gin.Engine, app *httpx.App) *ws.Server {
+func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) *ws.Server {
 	logger := log.Default()
 	db := app.DB
 	cfg := app.Cfg
@@ -45,6 +46,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App) *ws.Server {
 		Logf: logger.Printf,
 	})
 	registerProvisionHandler(queue, db, cfg.AppKey, logger)
+	registerDomainHandler(queue, db, logger)
 	queue.Start()
 
 	provisioner := NewQueueProvisioner(db, queue, cfg.AppKey, logger)
@@ -142,6 +144,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App) *ws.Server {
 			AppTimezone:      "UTC",
 			BusinessTimezone: "Asia/Shanghai",
 		},
+		Ops:    NewUserPanelOps(col, logger),
 		Logger: logger,
 	})
 	userDomain.Register(adminGroup)
@@ -176,6 +179,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App) *ws.Server {
 	// 域名域
 	domainDomain := admin.NewDomainsDomain(admin.DomainDeps{
 		Store:  admin.NewDomainSQLStore(db),
+		Tasks:  NewDomainTaskSubmitter(asyncSvc),
 		Logger: logger,
 	})
 	domainDomain.Register(adminGroup)

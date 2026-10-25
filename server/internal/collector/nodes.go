@@ -369,3 +369,43 @@ func parseClientEmail(email string) (int64, bool) {
 func errUnsupportedDriver(driverType string) error {
 	return fmt.Errorf("Unsupported node driver: %s", driverType)
 }
+
+// NodeDriver 是启用节点的驱动句柄（供 P8a 用户域下发复用，避免 handler 层自己构造驱动）。
+type NodeDriver struct {
+	NodeID int64
+	ThreeX *threexui.Client // 非空 = 3x-ui 节点（driver_type 空也归 3x-ui）
+	Xray   *xray.Driver     // 非空 = xray 节点
+}
+
+// NodeDrivers 返回全部启用节点的驱动句柄（3x-ui 直连客户端 / xray 指令驱动）。
+//
+// 供 cmd/server 组装 UserPanelOps（建号/重置/开关/删号遍历节点下发）复用；
+// 各驱动内部已带好解密凭据（3x-ui）与 Source/Enqueuer（xray）。
+func (c *Collector) NodeDrivers(ctx context.Context) ([]NodeDriver, error) {
+	nodes, err := c.enabledNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NodeDriver, 0, len(nodes))
+	for _, n := range nodes {
+		nd := NodeDriver{NodeID: n.ID}
+		if n.isXray() {
+			nd.Xray = c.xrayDriver(n)
+		} else {
+			client, err := c.threeXUiClient(n)
+			if err != nil {
+				return nil, fmt.Errorf("构造节点 #%d 3x-ui 客户端失败: %w", n.ID, err)
+			}
+			nd.ThreeX = client
+		}
+		out = append(out, nd)
+	}
+	return out, nil
+}
+
+// InboundIDs 返回该节点上协议匹配的 3x-ui 入站 ID（对齐 Node::inboundIdsFor）。
+//
+// 供 cmd/server 组装 UserPanelOps 时给 3x-ui 节点取 inboundIds（AddClient/AttachClient 入参）。
+func (c *Collector) InboundIDs(ctx context.Context, nodeID int64, protocol string) ([]int64, error) {
+	return c.inboundIDsFor(ctx, nodeID, protocol)
+}

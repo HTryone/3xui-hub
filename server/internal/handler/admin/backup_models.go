@@ -128,7 +128,7 @@ func NewBackupDomain(d BackupDeps) *BackupDomain {
 	}
 	post := d.Post
 	if post == nil {
-		post = noopBackupPost{}
+		post = goBackupPost{}
 	}
 	now := d.Now
 	if now == nil {
@@ -155,11 +155,16 @@ func NewBackupDomain(d BackupDeps) *BackupDomain {
 	}
 }
 
-// noopBackupPost 未注入收尾动作时的占位（报告 0 个迁移、队列未重启）。
-type noopBackupPost struct{}
+// goBackupPost 是 Go 后端的导入收尾（不是占位，是对齐 PHP 语义的 Go 版正确行为）：
+//   - RunPendingMigrations：Go 不跑 Laravel migrate（schema 由 server/schema/schema.sql
+//     全量建 + PHP 迁移最终状态导出，无增量 migration），导入备份只导数据不动 schema，
+//     因此恒返回 0（无新迁移）。
+//   - RestartQueueWorkers：Go 队列是主进程内 goroutine（task.Queue），无独立 worker 进程
+//     需要 restart，APP_KEY 由进程启动时读取，因此恒返回 nil。
+type goBackupPost struct{}
 
-func (noopBackupPost) RunPendingMigrations(context.Context) (int, error) { return 0, nil }
-func (noopBackupPost) RestartQueueWorkers(context.Context) error        { return nil }
+func (goBackupPost) RunPendingMigrations(context.Context) (int, error) { return 0, nil }
+func (goBackupPost) RestartQueueWorkers(context.Context) error        { return nil }
 
 // ---- 预览记录（backup_preview.json）----
 
