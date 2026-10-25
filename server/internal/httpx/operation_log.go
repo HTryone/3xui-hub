@@ -22,6 +22,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// OpLogErrorKey 是 gin.Context 的键：failServer 把「具体错误」（what + err）存到这里，
+// 中间件优先读它写入 operation_logs.error（比响应 body 的「服务器错误」更具体，
+// 让操作审计页面能查到真实报错，而不是前端 toast 消失后无从追溯）。
+const OpLogErrorKey = "admin.oplog_error"
+
 // operationLogActionMap 是 describeAction 的前缀映射表（逐字复制 PHP 的 $map）。
 var operationLogActionMap = []struct{ prefix, desc string }{
 	{"admin-api/login", "登录"},
@@ -136,11 +141,18 @@ func (m *OperationLogMiddleware) Handler() gin.HandlerFunc {
 			return
 		}
 
-		// 从响应 body 提取业务 error（对齐 PHP: $content['msg'] ?? $content['message']）。
-		// Go 的 writeJSON 恒返回 HTTP 200，业务错误码在 body 的 code 字段；
-		// 因此 HTTP status >= 400 或 body code >= 400 都尝试提取。
+		// 优先用 handler 通过 failServer 存的「具体错误」（what + err），
+		// 比响应 body 里的「服务器错误」笼统文案更有用——操作审计要能看到具体报错。
 		var errMsg *string
-		if rec.body.Len() > 0 {
+		if v, ok := c.Get(OpLogErrorKey); ok {
+			if s, ok2 := v.(string); ok2 && s != "" {
+				r := []rune(s)
+				if len(r) > 500 {
+					s = string(r[:500])
+				}
+				errMsg = &s
+			}
+		} else if rec.body.Len() > 0 {
 			var parsed struct {
 				Code    int    `json:"code"`
 				Msg     string `json:"msg"`

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	lcrypto "controlhub-server/internal/crypto"
+	"controlhub-server/internal/httpx"
 
 	"github.com/gin-gonic/gin"
 )
@@ -61,6 +62,7 @@ func (d *MailDomain) failValidation(c *gin.Context, summary string) { d.fail(c, 
 
 func (d *MailDomain) failServer(c *gin.Context, what string, err error) {
 	d.logger.Printf("admin %s 失败: %v", what, err)
+	c.Set(httpx.OpLogErrorKey, what+": "+err.Error())
 	d.fail(c, "服务器错误", 500)
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"controlhub-server/internal/driver/payment"
+	"controlhub-server/internal/httpx"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,6 +50,7 @@ func (d *PaymentDomain) failValidation(c *gin.Context, summary string) {
 
 func (d *PaymentDomain) failServer(c *gin.Context, what string, err error) {
 	d.logger.Printf("admin %s 失败: %v", what, err)
+	c.Set(httpx.OpLogErrorKey, what+": "+err.Error())
 	d.fail(c, "服务器错误", 500)
 }
 

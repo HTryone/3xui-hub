@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"controlhub-server/internal/httpx"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -225,6 +227,7 @@ func (h *Handler) failValidation(c *gin.Context, v *validator) {
 // failServer 记录真实错误并回通用 500 文案（不把 SQL 细节透给前端）。
 func (h *Handler) failServer(c *gin.Context, what string, err error) {
 	h.logger.Printf("admin %s 失败: %v", what, err)
+	c.Set(httpx.OpLogErrorKey, what+": "+err.Error())
 	h.fail(c, "服务器错误", 500)
 }
 
