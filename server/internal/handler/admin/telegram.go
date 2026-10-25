@@ -67,6 +67,19 @@ func (d *TelegramDomain) telegramSave(c *gin.Context) {
 		updates[k] = s
 	}
 
+	// 空值保护：token 一旦被空串写进去，通知就再也发不出去。
+	// 语义：只提交非空值视为「保持原样」；要真正清空请在数据库侧操作。
+	if updates[tgbot.KeyToken] == "" {
+		current, err := d.store.SiteConfigMany(ctxOf(c), []string{tgbot.KeyToken})
+		if err != nil {
+			d.failServer(c, "读取 TG 配置", err)
+			return
+		}
+		if current[tgbot.KeyToken] != "" {
+			delete(updates, tgbot.KeyToken)
+		}
+	}
+
 	kv := make([]KV, 0, len(updates))
 	for k, val := range updates {
 		v := val
@@ -88,7 +101,7 @@ func (d *TelegramDomain) telegramTest(c *gin.Context) {
 	}
 	chatIDStr := strings.TrimSpace(cfg[tgbot.KeyChatID])
 	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
-	if err != nil || chatID <= 0 {
+	if err != nil || chatID == 0 {
 		d.fail(c, "请先填写正确的 Chat ID", 400)
 		return
 	}

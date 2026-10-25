@@ -125,7 +125,7 @@ func (s *Sender) load(ctx context.Context) (*tgConfig, error) {
 		return nil, nil // 解密失败按未配置处理，不反复报错
 	}
 	chatID, err := strconv.ParseInt(strings.TrimSpace(chatIDStr), 10, 64)
-	if err != nil || chatID <= 0 {
+	if err != nil || chatID == 0 {
 		s.logf("TG chat_id 非法: %q", chatIDStr)
 		return nil, nil
 	}
