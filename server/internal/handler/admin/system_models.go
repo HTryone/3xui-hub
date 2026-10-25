@@ -231,5 +231,8 @@ func defaultScheduledEvents() []ScheduledEvent {
 		{Command: "third-party-fetch", Expression: "0 */2 * * *", HasMutex: true},
 		{Command: "xray-warp-rotate", Expression: "*/5 * * * *", HasMutex: true},
 		{Command: "xray-refresh-outbound-subs", Expression: "*/5 * * * *", HasMutex: true},
+		{Command: "geodata-update", Expression: "45 4 * * 1", HasMutex: true},
+		{Command: "users-reconcile-enable", Expression: "*/5 * * * *", HasMutex: true},
+		{Command: "reality-audit", Expression: "10 4 * * *", HasMutex: true},
 	}
 }
