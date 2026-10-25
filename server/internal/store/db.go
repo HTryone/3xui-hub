@@ -17,9 +17,11 @@ import (
 
 // 连接池参数。PHP-FPM 侧是"每请求一条连接"，Go 侧复用长连接，
 // 因此上限必须收紧，避免把 MySQL 的 max_connections 吃满。
+//
+// 上限由 config.DBConfig（DB_MAX_OPEN_CONNS / DB_MAX_IDLE_CONNS）控制，
+// 默认 50/20：2C2G 小机原默认 20 在并发后台请求时会排队等连接。
+// 连接复用时长保持常量（避免连接被 MySQL 单方面回收后拿到坏连接）。
 const (
-	maxOpenConns    = 20
-	maxIdleConns    = 10
 	connMaxLifetime = 30 * time.Minute
 	connMaxIdleTime = 5 * time.Minute
 )
@@ -40,8 +42,19 @@ func Open(cfg config.DBConfig) (*sql.DB, error) {
 	}
 
 	db := sql.OpenDB(connector)
-	db.SetMaxOpenConns(maxOpenConns)
-	db.SetMaxIdleConns(maxIdleConns)
+	maxOpen := cfg.MaxOpenConns
+	if maxOpen <= 0 {
+		maxOpen = 50
+	}
+	maxIdle := cfg.MaxIdleConns
+	if maxIdle <= 0 {
+		maxIdle = 20
+	}
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(connMaxLifetime)
 	db.SetConnMaxIdleTime(connMaxIdleTime)
 

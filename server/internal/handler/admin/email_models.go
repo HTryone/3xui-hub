@@ -229,3 +229,7 @@ func NewMailDomain(d MailDeps) *MailDomain {
 	m.queue = queue
 	return m
 }
+
+// MailQueue 暴露邮件队列（单 goroutine 串行），供 commandRunner 的定时通知邮件
+// （mail:notify-scan / mail:schedule-scan）复用同一队列，避免各自起 worker 并发发信。
+func (m *MailDomain) MailQueue() MailQueue { return m.queue }

@@ -36,6 +36,11 @@ type DBConfig struct {
 	Database string
 	Username string
 	Password string
+	// MaxOpenConns 连接池上限（DB_MAX_OPEN_CONNS，默认 50）。
+	// 2C2G 小机上默认 20 在并发后台请求时会排队；调大并放开给部署侧按机器配置。
+	MaxOpenConns int
+	// MaxIdleConns 空闲连接上限（DB_MAX_IDLE_CONNS，默认 20）。
+	MaxIdleConns int
 }
 
 // DSN 返回 go-sql-driver/mysql 连接串。
@@ -84,6 +89,9 @@ func Load(envPath string) (*Config, error) {
 			Database: envOr("DB_DATABASE", "controlhub"),
 			Username: envOr("DB_USERNAME", "root"),
 			Password: os.Getenv("DB_PASSWORD"),
+
+			MaxOpenConns: envInt("DB_MAX_OPEN_CONNS", 50),
+			MaxIdleConns: envInt("DB_MAX_IDLE_CONNS", 20),
 		},
 		Session: SessionConfig{
 			Driver: envOr("SESSION_DRIVER", "database"),

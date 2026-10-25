@@ -25,7 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) *ws.Server {
+func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) (*ws.Server, *admin.MailDomain) {
 	logger := log.Default()
 	db := app.DB
 	cfg := app.Cfg
@@ -226,7 +226,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector) *ws
 		writeAPI404(c)
 	})
 
-	return wsServer
+	return wsServer, mailDomain
 }
 
 // writeAPI404 输出 API 口径的 404（HTTP 200 + code 404）。

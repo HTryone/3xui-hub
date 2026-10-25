@@ -50,7 +50,7 @@ func main() {
 	}
 
 	addr := envOr("LISTEN_ADDR", ":8080")
-	router, wsServer := newRouter(app, col)
+	router, wsServer, mailDomain := newRouter(app, col)
 	srv := &http.Server{
 		Handler:           router,
 		Addr:              addr,
@@ -65,7 +65,7 @@ func main() {
 	defer stop()
 
 	// 启动调度器（P9 常驻 goroutine，随服务启动/优雅退出一起关闭）
-	startScheduler(ctx, app, db, col)
+	startScheduler(ctx, app, db, col, mailDomain)
 
 	// 启动节点 WS 通道（轮询/心跳节拍；握手由 /node-ws 路由 ServeHTTP 处理）
 	if wsServer != nil {
@@ -107,7 +107,7 @@ func bootstrap() (*httpx.App, *sql.DB, error) {
 
 // newRouter 构建 gin 引擎并注册路由。单独拆出来便于单测/健康检查复用。
 // 返回 gin 引擎 + 节点 WS 服务（WS 的 Run 需由 main 用 ctx 启动）。
-func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Server) {
+func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Server, *admin.MailDomain) {
 	if app.Cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -117,9 +117,9 @@ func newRouter(app *httpx.App, col *collector.Collector) (*gin.Engine, *ws.Serve
 
 	// 路由注册随迁移阶段逐步接入（handler/api、handler/admin）。
 	// /api/ping 由 api.Handler.Register 注册（对齐 PHP 契约）。
-	wsServer := registerRoutes(r, app, col)
+	wsServer, mailDomain := registerRoutes(r, app, col)
 
-	return r, wsServer
+	return r, wsServer, mailDomain
 }
 
 func envOr(key, def string) string {
@@ -131,7 +131,7 @@ func envOr(key, def string) string {
 
 // startScheduler 组装并启动定时调度器（P9 常驻 goroutine）。
 // 队列分离默认关闭（全部进 default 队列）。
-func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector) {
+func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector, mailDomain *admin.MailDomain) {
 	logger := log.Default()
 	cfg := app.Cfg
 
@@ -161,6 +161,7 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 
 		BumpConfigVersion: nodeStore.BumpConfigVersion,
 		Geodata:           &geodataAdapter{inner: geoService},
+		MailQueue:         &taskMailSender{q: mailDomain.MailQueue()},
 	})
 
 	// 调度器（DB 用于写 scheduled_task_runs 运行记录与 worker 心跳）
