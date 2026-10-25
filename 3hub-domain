@@ -7,7 +7,7 @@
 #   sudo -n /usr/local/bin/3hub-domain {apply|renew|remove|status} <域名>
 #
 # 设计：表驱动、幂等。加/删域名都走「读 domains 表 → 整份重写 conf → nginx -t → reload」，
-# 不会加一个丢一个。acme.sh 走 webroot（${INSTALL_DIR}/backend/public/，/.well-known 挑战）。
+# 不会加一个丢一个。acme.sh 走 webroot（${INSTALL_DIR}/frontend/dist/，/.well-known 挑战）。
 #
 # 环境：自动检测宝塔(BT)面板 / 标准 nginx，路径与 reload 命令双路径切换（见 detect_env）。
 # 我们的 conf 始终是独立自有文件 <conf目录>/3xui-hub-domains.conf，幂等整份重建；
@@ -19,7 +19,7 @@ set -euo pipefail
 
 # 与 install.sh / 3hub 的 INSTALL_DIR 保持一致
 INSTALL_DIR="${INSTALL_DIR:-/www/wwwroot/3xui-hub}"
-WEBROOT="${WEBROOT:-${INSTALL_DIR}/backend/public}"
+WEBROOT="${WEBROOT:-${INSTALL_DIR}/frontend/dist}"
 ENV_FILE="${ENV_FILE:-${INSTALL_DIR}/backend/.env}"
 ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 ACME_BIN="${ACME_BIN:-${ACME_HOME}/acme.sh}"
@@ -400,7 +400,7 @@ server {
     ssl_session_cache shared:SSL:10m;
 
     root ${WEBROOT};
-    index index.html index.php;
+    index index.html;
 
     # 文本资源 gzip：系统 nginx.conf 的 gzip_types 常被注释掉（默认只压 text/html），
     # JS/CSS/JSON 会原样传输；放 server 段内不受系统配置影响（实测省 60~75% 体积）。
@@ -416,7 +416,7 @@ server {
 
     # 节点通道（agent WS 长连接 + 安装脚本/资产）——缺了节点机拿不到脚本、连不上 WS
     location /node-ws {
-        proxy_pass http://127.0.0.1:8091;
+        proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -427,11 +427,19 @@ server {
     }
 
     location ~ ^/(node-install\.sh|node-agent\.sh|node-bin/) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     location ~ ^/(api|admin-api) {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # 带内容哈希的构建产物：内容变了文件名必变，可放心长缓存。
@@ -449,12 +457,6 @@ server {
 
     location / {
         try_files \$uri \$uri/ /index.html;
-    }
-
-    location ~ \.php\$ {
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_pass ${PHP_FPM_PASS};
     }
 }
 

@@ -135,8 +135,16 @@ PY
 # proxy_pass，但老 PHP 版 conf 的 root 还指 backend/public、api 还是 try_files
 # index.php —— 升级后 PHP 源码已删，前端和 API 会 404，面板整个打不开。
 ensure_nginx_go_proxy() {
-    local CONF=""
-    CONF="$(nginx_conf_path)"
+    local main_conf
+    main_conf="$(nginx_conf_path)"
+    _go_proxy_patch_file "$main_conf"
+    _go_proxy_patch_file "$(dirname "$main_conf")/3xui-hub-domains.conf"
+    return 0
+}
+
+# 对单个 conf 切 PHP→Go 反代（幂等；文件不存在 / 已切则跳过）
+_go_proxy_patch_file() {
+    local CONF="$1"
     [ -f "$CONF" ] || return 0
 
     # 已切 Go 的特征：root 指 frontend/dist 且全文无 index.php 反代
@@ -186,7 +194,7 @@ PY
         fi
     else
         rm -f "${CONF}.bak-goproxy"
-        echo "Nginx 反代: 切 Go 失败，请手工确认 $(nginx_conf_path)"
+        echo "Nginx 反代: 切 Go 失败，请手工确认 $CONF"
     fi
 }
 
@@ -707,6 +715,36 @@ cmd_update_phase2() {
     if ! fetch_backend_binary; then
         _update_rollback "$SNAP"
         return 1
+    fi
+
+    # 幂等确保 controlhub.service 存在（老 PHP 机器升级时该 unit 缺失，restart 会找不到）。
+    # 已存在则不覆盖（保留用户可能改过的 RestartSec 等）。
+    if [ ! -f /etc/systemd/system/controlhub.service ]; then
+        echo -e "${CYAN}创建 controlhub.service（老机器升级缺失）...${NC}"
+        cat > /etc/systemd/system/controlhub.service << EOF
+[Unit]
+Description=ControlHub Go 后端（面板 API + 定时调度 + 节点 WS 通道）
+After=network.target mysqld.service mariadb.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${INSTALL_DIR}/server
+Environment=CONFIG_ENV=${INSTALL_DIR}/backend/.env
+Environment=LISTEN_ADDR=:8080
+ExecStart=${INSTALL_DIR}/server/controlhub-server
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable controlhub 2>/dev/null || true
     fi
 
     # 重启 Go 后端服务（单进程：HTTP + scheduler + WS 内置）
