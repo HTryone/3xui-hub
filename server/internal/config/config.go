@@ -43,7 +43,7 @@ type DBConfig struct {
 // 契约（contracts/data-contract.md §4）：Laravel timezone = UTC，所有 datetime 按 UTC 存；
 // 因此必须 parseTime=true&loc=UTC，禁止混用本地时区。
 func (d DBConfig) DSN() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true&loc=UTC",
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true&loc=UTC&clientFoundRows=true",
 		d.Username, d.Password, d.Host, d.Port, d.Database)
 }
 
