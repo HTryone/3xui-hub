@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -129,6 +130,20 @@ func envOr(key, def string) string {
 	return def
 }
 
+// backupTimeoutMinutes 读 BACKUP_TIMEOUT_MINUTES（默认 30 分钟）。
+// 非法值或 <=0 回落到默认，避免一次手滑把备份超时设成 0 秒。
+func backupTimeoutMinutes() time.Duration {
+	v := os.Getenv("BACKUP_TIMEOUT_MINUTES")
+	if v == "" {
+		return 30 * time.Minute
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(n) * time.Minute
+}
+
 // startScheduler 组装并启动定时调度器（P9 常驻 goroutine）。
 // 队列分离默认关闭（全部进 default 队列）。
 func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collector.Collector, mailDomain *admin.MailDomain) {
@@ -153,6 +168,7 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		BackupBin:  envOr("BACKUP_MYSQLDUMP_BIN", "mysqldump"),
 		BackupDir:  envOr("BACKUP_DIR", "/var/backups/3xui-hub"),
 		BackupKeep: 7,
+		BackupTimeout: backupTimeoutMinutes(),
 		DBHost:     cfg.DB.Host,
 		DBPort:     cfg.DB.Port,
 		DBName:     cfg.DB.Database,

@@ -83,6 +83,9 @@ type CommandDeps struct {
 	BackupDir string
 	// BackupKeep 保留份数（默认 7）。
 	BackupKeep int
+	// BackupTimeout 单次备份的超时（0 = 默认 30 分钟）。mysqldump 卡住会永久
+	// 占用 withoutOverlapping 标志，导致后续每天备份被跳过，超时兜底掐断。
+	BackupTimeout time.Duration
 	// DBHost/DBPort/DBName/DBUser/DBPassword 备份连接参数。
 	DBHost     string
 	DBPort     string
@@ -406,6 +409,15 @@ func randomCodeBody(alphabet string, length int) string {
 // runBackupRun 对齐 BackupRun::handle()。
 // mysqldump stdout 流式写 gzip，失败删半截文件，成功后按时间戳保留最新 keep 份。
 func (r *commandRunner) runBackupRun(ctx context.Context) error {
+	// 超时兜底：mysqldump 卡住（大库/磁盘慢/进程挂起）会永久占用 withoutOverlapping
+	// 标志，后续每天备份都被跳过且无报错。30 分钟足够导出大库，超时自动掐断。
+	timeout := r.deps.BackupTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	bin := r.deps.BackupBin
 	if bin == "" {
 		bin = "mysqldump"
