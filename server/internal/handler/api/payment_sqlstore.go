@@ -398,7 +398,7 @@ func (s *PaymentSQLStore) AddResetTraffic(ctx context.Context, userID uint64, ad
 // ---- discount_codes ----
 
 const discountCodeColumns = `id, code, source, user_id, discount, max_uses, used_count,
-	max_uses_per_user, expires_at, status, plan_id, source_order_id`
+	max_uses_per_user, expires_at, status, plan_id, source_order_id, note`
 
 func scanDiscountCode(row interface{ Scan(...any) error }) (*DiscountCode, error) {
 	var (
@@ -411,7 +411,7 @@ func scanDiscountCode(row interface{ Scan(...any) error }) (*DiscountCode, error
 		perUser   sql.NullInt64
 	)
 	err := row.Scan(&d.ID, &d.Code, &source, &d.UserID, &discount, &maxUses, &usedCount,
-		&perUser, &d.ExpiresAt, &status, &d.PlanID, &d.SourceOrderID)
+		&perUser, &d.ExpiresAt, &status, &d.PlanID, &d.SourceOrderID, &d.Note)
 	if err != nil {
 		return nil, err
 	}

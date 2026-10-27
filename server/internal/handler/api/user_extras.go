@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"net/http"
 	"time"
 
 	"controlhub-server/internal/task"
@@ -17,17 +18,20 @@ import (
 
 // UserExtras 持有补充端点的依赖。
 type UserExtras struct {
-	handler *Handler
-	db      *sql.DB
-	async   *task.Service
+	handler  *Handler
+	db       *sql.DB
+	async    *task.Service
+	payStore PaymentStore
+	paySvc   *PaymentService
 }
 
 // NewUserExtras 构造补充端点 handler。
 //
 // async 已挂 task.Queue：POST /api/sync-traffic 走 FindOrCreateTrafficSync
 // （subject=user 去重 + 拆 async_task_items + 派发 SyncNodeTrafficJob）。
-func NewUserExtras(h *Handler, db *sql.DB, async *task.Service) *UserExtras {
-	return &UserExtras{handler: h, db: db, async: async}
+// payStore/paySvc 供 /api/discount/check 复用 PaymentService 的完整校验（对齐 PHP）。
+func NewUserExtras(h *Handler, db *sql.DB, async *task.Service, payStore PaymentStore, paySvc *PaymentService) *UserExtras {
+	return &UserExtras{handler: h, db: db, async: async, payStore: payStore, paySvc: paySvc}
 }
 
 // Register 挂补充路由（需在 api.auth 中间件内）。
@@ -156,9 +160,15 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 }
 
 // handleDiscountCheck 对齐 ApiDiscountController::check。
+//
+// 复用 PaymentService.validateAndApply 做完整校验（含套餐绑定、每用户次数、
+// 折后价不足 1 元、邀请/兑换码来源），并返回 discount/final_amount/note，让 App
+// 端「验证」时就能展示折后价。此前只回 {valid, code}，App 拿不到 final_amount，
+// 金额不变，用户误以为码没用。
 func (e *UserExtras) handleDiscountCheck(c *gin.Context) {
 	var body struct {
-		Code string `json:"code"`
+		Code   string `json:"code"`
+		PlanID int64  `json:"plan_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		fail(c, "参数错误", 400)
@@ -170,38 +180,60 @@ func (e *UserExtras) handleDiscountCheck(c *gin.Context) {
 		return
 	}
 
-	var (
-		status    string
-		usedCount int64
-		maxUses   sql.NullInt64
-		expiresAt sql.NullTime
-	)
-	err := e.db.QueryRowContext(c.Request.Context(),
-		"SELECT status, used_count, max_uses, expires_at FROM discount_codes WHERE code = ?",
-		body.Code).Scan(&status, &usedCount, &maxUses, &expiresAt)
-	if err == sql.ErrNoRows {
-		fail(c, "优惠码无效或不可用", 400)
+	user := currentUser(c)
+	ctx := c.Request.Context()
+	uid := int64(user.ID)
+	ip := clientIP(c)
+
+	// 限流（对齐 PHP：入口先查 blocked，排在查库之前；放行即记一次请求）。
+	// 与下单共用同一套计数：两个都是能拿码试错的入口。
+	blocked, berr := e.paySvc.discountCheckBlocked(ctx, uid, ip)
+	if berr != nil {
+		e.paySvc.logf("discount/check 限流查询失败: %v", berr)
+	} else if blocked {
+		failStatus(c, rateTooOftenMsg, 429, http.StatusTooManyRequests)
 		return
 	}
-	if err != nil {
-		fail(c, "服务器错误", 500)
+	if rerr := e.paySvc.recordDiscountRequest(ctx, uid); rerr != nil {
+		e.paySvc.logf("discount/check 记录请求失败: %v", rerr)
+	}
+
+	plan, err := e.payStore.PlanForPayment(ctx, uint64(body.PlanID))
+	if err != nil || plan == nil {
+		fail(c, "套餐不存在", 400)
 		return
 	}
 
-	if status != "active" {
-		fail(c, "优惠码无效或不可用", 400)
-		return
-	}
-	if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
-		fail(c, "优惠码无效或不可用", 400)
-		return
-	}
-	if maxUses.Valid && usedCount >= maxUses.Int64 {
-		fail(c, "优惠码无效或不可用", 400)
+	result, verr := e.paySvc.validateAndApply(ctx, user, body.Code, plan, plan.PriceMoney())
+	if verr != nil {
+		// 失败记账（与下单共用计数；记数失败不阻断返回）。
+		_ = e.paySvc.recordDiscountFailure(ctx, uid, ip)
+		// 失败：对齐 PHP 的 catch InvalidArgumentException —— 成功响应里带 usable=false。
+		success(c, jo(
+			"usable", false,
+			"discount", nil,
+			"final_amount", nil,
+			"note", nil,
+			"message", verr.Error(),
+		))
 		return
 	}
 
-	success(c, jo("valid", true, "code", body.Code))
+	if cerr := e.paySvc.clearDiscountFailures(ctx, uid); cerr != nil {
+		e.paySvc.logf("discount/check 清理失败计数失败: %v", cerr)
+	}
+
+	var note any
+	if result.Code.Note.Valid {
+		note = result.Code.Note.String
+	}
+	success(c, jo(
+		"usable", true,
+		"discount", result.Discount.PHPFloat(),
+		"final_amount", result.Final.PHPFloat(),
+		"note", note,
+		"message", "优惠码可用",
+	))
 }
 
 // handleProxyProducts 对齐 ApiProxyStoreController::products。

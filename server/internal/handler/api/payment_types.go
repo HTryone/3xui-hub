@@ -121,6 +121,7 @@ type DiscountCode struct {
 	Status         string
 	PlanID         sql.NullInt64
 	SourceOrderID  sql.NullInt64
+	Note           sql.NullString // 自定义说明（展示给用户，可空）
 }
 
 // Usable 对齐 DiscountCode::isUsable()（状态 / 次数 / 有效期）。

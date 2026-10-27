@@ -73,13 +73,15 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Panel:       NewPaymentPanelSyncer(col, admin.NewAdminUserSQLStore(db), logger),
 		ProxyOrders: api.NewProxyCompleter(db, logger),
 		TGSender:    tgSender,
+		SiteConfigs: apiStore,
+		RateGuard:   api.NewDiscountRateGuard(apiCache, apiStore),
 	}, logger)
 	payHandlers := api.NewPaymentHandlers(apiHandler, payStore, paySvc)
 	payHandlers.RegisterPayment(r)
 
 	// 用户端补充端点（sync-traffic / invite / discount / proxy-store）
 	// sync-traffic 同样接 asyncSvc：用户端也会建 traffic_sync 任务，手搓 INSERT 一样永远 pending。
-	userExtras := api.NewUserExtras(apiHandler, db, asyncSvc)
+	userExtras := api.NewUserExtras(apiHandler, db, asyncSvc, payStore, paySvc)
 	extrasAuth := r.Group("", apiHandler.AuthMiddleware())
 	userExtras.Register(extrasAuth)
 

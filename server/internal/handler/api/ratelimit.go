@@ -254,3 +254,135 @@ func (h *Handler) recordRegister(ctx context.Context, ip string, l rateLimits) e
 	}
 	return h.limiter.hit(ctx, keyRegister(ip), time.Hour)
 }
+
+// ---- 优惠码限流（PaymentService 的 DiscountRateGuard 接缝，对齐 RateGuardService 折扣段）----
+//
+// /api/discount/check 与 /api/payment/create 共用同一套计数：两个都是能拿码试错的入口，
+// 被限流/锁定时直接拦在查库之前，一个字节的库都不查，也就没有枚举反馈。
+
+// discount 阈值默认值：逐字取 config/panel.php 的 ratelimit 段。
+const (
+	defaultDiscountPerMinute   = 10
+	defaultDiscountFailPerDay   = 50
+	defaultDiscountIPFailHourly = 100
+	defaultDiscountMaxAttempts  = 10
+	defaultDiscountLockSeconds  = 900
+)
+
+// siteConfigDiscountRateKeys 是 RateGuardService::CONFIG_KEYS 里优惠码的 5 项。
+var siteConfigDiscountRateKeys = []string{
+	"rate_discount_per_minute", "rate_discount_max_attempts", "rate_discount_lock_seconds",
+	"rate_discount_fail_per_day", "rate_discount_ip_fail_hourly",
+}
+
+func keyDiscountMin(uid int64) string     { return ratePrefix + "discount_min:" + strconv.FormatInt(uid, 10) }
+func keyDiscountAttempt(uid int64) string { return ratePrefix + "discount_attempt:" + strconv.FormatInt(uid, 10) }
+func keyDiscountFail(uid int64) string    { return ratePrefix + "discount_fail:" + strconv.FormatInt(uid, 10) }
+func keyDiscountIPFail(ip string) string  { return ratePrefix + "discount_ip_fail:" + ip }
+
+// discountRateGuard 实现 DiscountRateGuard 接口（PaymentService 注入）。
+type discountRateGuard struct {
+	limiter *rateLimiter
+	sites   SiteConfigReader
+}
+
+// NewDiscountRateGuard 构造生产版折扣码限流（routes 注入 PaymentService）。
+// sites 为空时不读覆盖值、只用默认阈值。
+func NewDiscountRateGuard(cache Cache, sites SiteConfigReader) *discountRateGuard {
+	return &discountRateGuard{limiter: newRateLimiter(cache), sites: sites}
+}
+
+// limits 取 5 项阈值：site_configs 非空值覆盖，否则回退 config/panel.php 默认值。
+// 阈值 <= 0 表示该项不限。
+func (g *discountRateGuard) limits(ctx context.Context) (perMin, maxAttempts, lockSec, failPerDay, ipFailHourly int) {
+	perMin, maxAttempts, lockSec = defaultDiscountPerMinute, defaultDiscountMaxAttempts, defaultDiscountLockSeconds
+	failPerDay, ipFailHourly = defaultDiscountFailPerDay, defaultDiscountIPFailHourly
+	if g.sites == nil {
+		return
+	}
+	values, err := g.sites.SiteConfigMany(ctx, siteConfigDiscountRateKeys)
+	if err != nil {
+		return
+	}
+	pick := func(key string, def int) int {
+		raw, ok := values[key]
+		if !ok || raw == "" {
+			return def
+		}
+		n, cerr := strconv.Atoi(raw)
+		if cerr != nil {
+			return def
+		}
+		return n
+	}
+	perMin = pick("rate_discount_per_minute", perMin)
+	maxAttempts = pick("rate_discount_max_attempts", maxAttempts)
+	lockSec = pick("rate_discount_lock_seconds", lockSec)
+	failPerDay = pick("rate_discount_fail_per_day", failPerDay)
+	ipFailHourly = pick("rate_discount_ip_fail_hourly", ipFailHourly)
+	return
+}
+
+// CheckBlocked 对齐 discountCheckBlocked：每分钟请求 / 连续失败锁定 / 每日失败 / 同 IP 每小时失败。
+func (g *discountRateGuard) CheckBlocked(ctx context.Context, userID int64, ip string) (bool, error) {
+	perMin, maxAttempts, _, failPerDay, ipFailHourly := g.limits(ctx)
+	if perMin > 0 {
+		if b, err := g.limiter.tooManyAttempts(ctx, keyDiscountMin(userID), perMin); err != nil || b {
+			return b, err
+		}
+	}
+	if maxAttempts > 0 {
+		if b, err := g.limiter.tooManyAttempts(ctx, keyDiscountAttempt(userID), maxAttempts); err != nil || b {
+			return b, err
+		}
+	}
+	if failPerDay > 0 {
+		if b, err := g.limiter.tooManyAttempts(ctx, keyDiscountFail(userID), failPerDay); err != nil || b {
+			return b, err
+		}
+	}
+	if ipFailHourly > 0 {
+		if b, err := g.limiter.tooManyAttempts(ctx, keyDiscountIPFail(ip), ipFailHourly); err != nil || b {
+			return b, err
+		}
+	}
+	return false, nil
+}
+
+// RecordRequest 记一次请求（所有请求都计，成功失败都算）。
+func (g *discountRateGuard) RecordRequest(ctx context.Context, userID int64) error {
+	perMin, _, _, _, _ := g.limits(ctx)
+	if perMin <= 0 {
+		return nil
+	}
+	return g.limiter.hit(ctx, keyDiscountMin(userID), time.Minute)
+}
+
+// RecordFailure 记一次失败：连续失败（锁定时长窗口）+ 每日 + IP 每小时。
+func (g *discountRateGuard) RecordFailure(ctx context.Context, userID int64, ip string) error {
+	_, maxAttempts, lockSec, failPerDay, ipFailHourly := g.limits(ctx)
+	if maxAttempts > 0 && lockSec > 0 {
+		if err := g.limiter.hit(ctx, keyDiscountAttempt(userID), time.Duration(lockSec)*time.Second); err != nil {
+			return err
+		}
+	}
+	if failPerDay > 0 {
+		if err := g.limiter.hit(ctx, keyDiscountFail(userID), 24*time.Hour); err != nil {
+			return err
+		}
+	}
+	if ipFailHourly > 0 {
+		if err := g.limiter.hit(ctx, keyDiscountIPFail(ip), time.Hour); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ClearFailures 校验成功后清用户维度失败计数（刻意不清 IP 维度与每分钟请求）。
+func (g *discountRateGuard) ClearFailures(ctx context.Context, userID int64) error {
+	if err := g.limiter.clear(ctx, keyDiscountAttempt(userID)); err != nil {
+		return err
+	}
+	return g.limiter.clear(ctx, keyDiscountFail(userID))
+}
