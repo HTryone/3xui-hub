@@ -5,22 +5,32 @@ package admin
 // Monitor summary / series 的完整实现见 monitor.go（对齐 MonitorService）。
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"time"
+
+	"controlhub-server/internal/task"
 
 	"github.com/gin-gonic/gin"
 )
 
 // AdminExtras 持有补充端点的依赖。
 type AdminExtras struct {
-	db  *sql.DB
-	now func() time.Time
+	db    *sql.DB
+	async *task.Service
+	now   func() time.Time
 }
 
 // NewAdminExtras 构造补充端点 handler。
-func NewAdminExtras(db *sql.DB) *AdminExtras {
-	return &AdminExtras{db: db, now: time.Now}
+//
+// async 已挂 task.Queue（cmd/server/routes.go 用 NewQueue 构造后传入）：
+// POST /sync-traffic 必须走 FindOrCreateTrafficSync —— 只有它会拆 async_task_items
+// 并派发 SyncNodeTrafficJob。手搓 INSERT async_tasks 只会落一条 total=0 的 pending
+// 壳，任务永远不会被执行，最后被 async-task-timeout 标失败。
+func NewAdminExtras(db *sql.DB, async *task.Service) *AdminExtras {
+	return &AdminExtras{db: db, async: async, now: time.Now}
 }
 
 // Register 挂补充路由（在 admin-api 分组内）。
@@ -35,16 +45,41 @@ func (h *AdminExtras) Register(r gin.IRouter) {
 	// 异步任务
 	r.GET("/async-tasks", h.AsyncTaskIndex)
 	r.POST("/async-tasks/:asyncTask/retry", h.AsyncTaskRetry)
+
+	// App 版本分布
+	r.GET("/app-versions", h.AppVersions)
 }
 
-// SyncTraffic 对齐 POST /admin-api/sync-traffic。
+// SyncTraffic 对齐 POST /admin-api/sync-traffic（SyncTrafficController::sync）。
+//
+// 复用 task.Service.FindOrCreateTrafficSync：同 scope 在途任务去重 → Create 拆
+// async_task_items → Dispatch 把 SyncNodeTrafficJob 派进队列。手搓 INSERT 只会
+// 落一条 total=0/attempts=0 的 pending 壳，永远不会被执行。
 func (h *AdminExtras) SyncTraffic(c *gin.Context) {
-	// 查启用的节点
-	rows, err := h.db.QueryContext(c.Request.Context(),
-		"SELECT id FROM nodes WHERE enabled = 1")
+	nodeIDs, err := h.enabledNodeIDs(c.Request.Context())
 	if err != nil {
 		h.fail(c, "服务器错误", 500)
 		return
+	}
+
+	t, created, err := h.async.FindOrCreateTrafficSync(c.Request.Context(), nodeIDs, nil, nil, nil)
+	if err != nil {
+		h.fail(c, "服务器错误", 500)
+		return
+	}
+	msg := "同步任务已提交"
+	if !created {
+		msg = "已有同步任务正在执行"
+	}
+	writeJSON(c, phpEncode(jo("code", 0, "msg", msg, "data",
+		jo("task_id", t.ID, "status", t.Status, "queued_nodes", len(nodeIDs), "already_running", !created))))
+}
+
+// enabledNodeIDs 取启用的节点 id（PHP Node::where('enabled', true)->pluck('id')）。
+func (h *AdminExtras) enabledNodeIDs(ctx context.Context) ([]int64, error) {
+	rows, err := h.db.QueryContext(ctx, "SELECT id FROM nodes WHERE enabled = 1")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -55,16 +90,7 @@ func (h *AdminExtras) SyncTraffic(c *gin.Context) {
 			nodeIDs = append(nodeIDs, id)
 		}
 	}
-
-	// 创建异步任务
-	taskID, err := h.createTrafficSyncTask(c, nodeIDs)
-	if err != nil {
-		h.fail(c, "服务器错误", 500)
-		return
-	}
-
-	writeJSON(c, phpEncode(jo("code", 0, "msg", "同步任务已提交", "data",
-		jo("task_id", taskID, "status", "pending", "queued_nodes", len(nodeIDs), "already_running", false))))
+	return nodeIDs, rows.Err()
 }
 
 // AsyncTaskIndex 对齐 GET /admin-api/async-tasks。
@@ -152,22 +178,63 @@ func (h *AdminExtras) AsyncTaskRetry(c *gin.Context) {
 	writeJSON(c, phpEncode(jo("code", 0, "msg", "任务已重新派发", "data", nil)))
 }
 
-// createTrafficSyncTask 创建流量同步异步任务。
-func (h *AdminExtras) createTrafficSyncTask(c *gin.Context, nodeIDs []int64) (int64, error) {
-	// 对齐 PHP AsyncTaskService::dispatch：meta = ['node_ids' => $nodeIds]
-	meta, err := json.Marshal(map[string]any{"node_ids": nodeIDs})
+// AppVersions 对齐 GET /admin-api/app-versions：返回版本分布（含「未上报」的 null 行）。
+// percent 由后端算好（保留一位小数），null 行表示从未上报过版本。
+func (h *AdminExtras) AppVersions(c *gin.Context) {
+	rows, err := h.db.QueryContext(c.Request.Context(),
+		`SELECT app_version_code, app_version_name, COUNT(*) AS cnt
+		 FROM users
+		 GROUP BY app_version_code, app_version_name
+		 ORDER BY app_version_code DESC`)
 	if err != nil {
-		return 0, err
+		h.fail(c, "服务器错误", 500)
+		return
 	}
-	result, err := h.db.ExecContext(c.Request.Context(),
-		`INSERT INTO async_tasks (type, status, meta, created_at, updated_at)
-		 VALUES ('traffic_sync', 'pending', ?, ?, ?)`,
-		string(meta), h.now().UTC(), h.now().UTC())
-	if err != nil {
-		return 0, err
+	defer rows.Close()
+
+	type versionRow struct {
+		code sql.NullInt64
+		name sql.NullString
+		cnt  int64
 	}
-	id, _ := result.LastInsertId()
-	return id, nil
+	var list []versionRow
+	var total int64
+	for rows.Next() {
+		var r versionRow
+		if err := rows.Scan(&r.code, &r.name, &r.cnt); err != nil {
+			continue
+		}
+		list = append(list, r)
+		total += r.cnt
+	}
+	if err := rows.Err(); err != nil {
+		h.fail(c, "服务器错误", 500)
+		return
+	}
+
+	items := make(jsArr, 0, len(list))
+	for _, r := range list {
+		var code any
+		var name any
+		if r.code.Valid {
+			code = r.code.Int64
+		}
+		if r.name.Valid {
+			name = r.name.String
+		}
+		var percent float64
+		if total > 0 {
+			percent = math.Round(float64(r.cnt)/float64(total)*1000) / 10
+		}
+		items = append(items, jo(
+			"version_code", code,
+			"version_name", name,
+			"count", r.cnt,
+			"percent", percent,
+		))
+	}
+
+	writeJSON(c, phpEncode(jo("code", 0, "msg", "ok", "data", items)))
 }
 
 // fail 输出 PHP ApiResponse::error 口径。

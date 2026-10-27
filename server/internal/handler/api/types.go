@@ -35,6 +35,11 @@ type User struct {
 	NextTrafficResetAt sql.NullTime
 	ExpiredAt          sql.NullTime
 	Enabled            bool
+
+	// AppVersionCode / AppVersionName 记录客户端最近一次版本上报（app-version 接口副作用；
+	// scanUser 不读取这两列，仅 memStore 测试夹具用它们断言上报是否落库）。
+	AppVersionCode sql.NullInt64
+	AppVersionName sql.NullString
 }
 
 // ClientEmail 与 3x-ui client 主键同源（users.id → ch_user_{id}）。
@@ -153,6 +158,8 @@ type Store interface {
 	CreateUser(ctx context.Context, in CreateUserInput) (*User, error)
 	UpdateUserPassword(ctx context.Context, id uint64, hash string) error
 	UpdateUserProtocol(ctx context.Context, id uint64, protocol string) error
+	// UpdateUserAppVersion 记录客户端最近一次版本上报（app_version_code/name/reported_at）。
+	UpdateUserAppVersion(ctx context.Context, id uint64, code int64, name string) error
 
 	PlanByID(ctx context.Context, id uint64) (*Plan, error)
 	ActivePlans(ctx context.Context) ([]Plan, error)

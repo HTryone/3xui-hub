@@ -61,6 +61,9 @@ type Collector struct {
 	logf   func(format string, args ...any)
 	tg     *tgbot.Sender
 	logger sync.Mutex // 只用于序列化 Logf 调用，避免业务日志交错
+	// inbounds 是节点级 inbounds/list 共享快照（TTL + singleflight，见 inbound_cache.go）：
+	// traffic-sync 与 reconcile 共用，避免同一份大 JSON 每 5 分钟被拉两遍。
+	inbounds inboundSnapshotCache
 }
 
 // New 构造采集器。
@@ -72,11 +75,12 @@ func New(opts Options) (*Collector, error) {
 		return nil, fmt.Errorf("collector: AppKey 必须是 32 字节（APP_KEY 解出的 AES-256 密钥）")
 	}
 	c := &Collector{
-		db:    opts.DB,
-		key:   opts.AppKey,
-		nowFn: opts.Now,
-		logf:  opts.Logf,
-		tg:    opts.TGSender,
+		db:       opts.DB,
+		key:      opts.AppKey,
+		nowFn:    opts.Now,
+		logf:     opts.Logf,
+		tg:       opts.TGSender,
+		inbounds: inboundSnapshotCache{ttl: defaultInboundSnapshotTTL},
 	}
 	if c.nowFn == nil {
 		c.nowFn = func() time.Time { return time.Now().UTC() }

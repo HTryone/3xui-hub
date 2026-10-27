@@ -42,6 +42,8 @@ func (d *MailDomain) Register(r gin.IRouter) {
 	r.GET("/email/schedule-mail", d.mailScheduleConfig)
 	r.PUT("/email/schedule-mail", d.mailSaveScheduleConfig)
 	r.GET("/email/logs", d.mailLogs)
+	// 多 SMTP 账号池（列表/新增/修改/删除/状态切换）
+	d.registerSMTPAccountRoutes(r)
 }
 
 // ---- 响应封装 ----
@@ -130,6 +132,7 @@ func (d *MailDomain) mailSave(c *gin.Context) {
 	v.field("register_email_verify", "nullable", "boolean")
 	v.field("mail_rate_limit_enabled", "nullable", "boolean")
 	v.field("mail_rate_per_minute", "nullable", "integer", "min:1", "max:600")
+	v.field("mail_send_interval_ms", "nullable", "integer", "min:0")
 	v.field("rate_code_interval", "nullable", "integer", "min:0")
 	v.field("rate_code_per_day", "nullable", "integer", "min:0")
 	v.field("rate_code_ip_hourly", "nullable", "integer", "min:0")
@@ -599,6 +602,23 @@ func (d *MailDomain) rateLimitConfig(ctx context.Context) (bool, int) {
 		}
 	}
 	return cfg["mail_rate_limit_enabled"] == "1", perMinute
+}
+
+// mailSendInterval 读 mail_send_interval_ms（毫秒）——串行 worker 两封之间的间隔。
+//
+// 缺失键/坏值/负数一律按 0（不等），保持既有行为；配置在每封发完后重读，
+// 改配置后下一封立即生效。
+func (d *MailDomain) mailSendInterval() time.Duration {
+	cfg, err := d.store.MailConfigMany(context.Background(), []string{"mail_send_interval_ms"})
+	if err != nil {
+		d.logger.Printf("admin 读发信间隔配置失败: %v", err)
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(cfg["mail_send_interval_ms"]))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Millisecond
 }
 
 // renderForUser 对齐 MailBatchService::renderForUser。

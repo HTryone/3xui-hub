@@ -256,6 +256,50 @@ func (h *Handler) updateSubscriptionSettings(c *gin.Context) {
 	h.saveKeyValues(c, subscriptionSettingKeys, "保存订阅格式配置")
 }
 
+// ---- App 版本分发（系统设置 → App 版本）----
+
+// appVersionSettingKeys 是「App 版本」页的 4 个字段（顺序即输出顺序）。
+// 与用户端 GET /api/app-version 读的是同一批键。
+var appVersionSettingKeys = []string{
+	"app_latest_version_name", "app_update_notes",
+	"app_download_url", "app_force_update",
+}
+
+// showAppVersionSettings 对齐 GET /admin-api/app-version-settings（缺失键补空串）。
+func (h *Handler) showAppVersionSettings(c *gin.Context) {
+	h.showKeyValues(c, appVersionSettingKeys, "读取 App 版本配置")
+}
+
+// updateAppVersionSettings 对齐 PUT /admin-api/app-version-settings：只认白名单字段，
+// app_force_update 是开关统一存 '1'/'0'，其余按字符串存。
+func (h *Handler) updateAppVersionSettings(c *gin.Context) {
+	input := jsonInput(c)
+
+	kvs := make([]KV, 0, len(appVersionSettingKeys))
+	for _, k := range appVersionSettingKeys {
+		val, ok := input[k]
+		if !ok {
+			continue
+		}
+		s := phpScalarString(val)
+		if k == "app_force_update" {
+			if inputBool(val) {
+				s = "1"
+			} else {
+				s = "0"
+			}
+		}
+		kvs = append(kvs, KV{Key: k, Value: &s})
+	}
+	if len(kvs) > 0 {
+		if err := h.store.SiteConfigSetMany(ctxOf(c), kvs); err != nil {
+			h.failServer(c, "保存 App 版本配置", err)
+			return
+		}
+	}
+	h.success(c, nil, "保存成功")
+}
+
 // showKeyValues 输出指定键的当前值（键序即声明顺序，缺失补空串）。
 func (h *Handler) showKeyValues(c *gin.Context, keys []string, what string) {
 	values, err := h.store.SiteConfigMany(ctxOf(c), keys)

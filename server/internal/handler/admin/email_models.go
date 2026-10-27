@@ -25,6 +25,7 @@ var emailConfigKeys = []string{
 	"register_email_verify",
 	"mail_rate_limit_enabled",
 	"mail_rate_per_minute",
+	"mail_send_interval_ms", // 串行 worker 两封之间的间隔（毫秒，默认 0 = 不等）
 	"rate_code_interval",
 	"rate_code_per_day",
 	"rate_code_ip_hourly",
@@ -136,6 +137,9 @@ type MailStore interface {
 	// 发信日志
 	MailLogPage(ctx context.Context, f MailLogFilter, page, perPage int64) ([]MailLogRow, int64, error)
 	CreateMailLog(ctx context.Context, row MailLogRow) error
+
+	// SMTP 账号池
+	SMTPAccountStore
 }
 
 // SMTPSettings 是一次发信要使用的 SMTP 配置（密码已解密）。
@@ -196,7 +200,8 @@ type MailDomain struct {
 
 // NewMailDomain 组装邮件域。Transport / Queue 为空时用真实实现（不是 noop 假成功）：
 //   - Transport 空 → NewSMTPTransport（net/smtp 真实发信）；
-//   - Queue 空 → newMailQueue（单 goroutine 串行 + DelaySeconds，执行体是 m.deliver）。
+//   - Queue 空 → newMailQueue（单 goroutine 串行 + DelaySeconds + mail_send_interval_ms 封间隔，
+//     执行体是 m.deliver）。
 //
 // 测试可注入 mock 覆盖两者；nil 不再退化为「记日志后假装成功」。
 func NewMailDomain(d MailDeps) *MailDomain {
@@ -224,7 +229,7 @@ func NewMailDomain(d MailDeps) *MailDomain {
 	}
 	queue := d.Queue
 	if queue == nil {
-		queue = newMailQueue(m.deliver, logger)
+		queue = newMailQueue(m.deliver, logger, m.mailSendInterval)
 	}
 	m.queue = queue
 	return m

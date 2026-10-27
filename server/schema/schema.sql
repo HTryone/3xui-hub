@@ -581,6 +581,29 @@ CREATE TABLE `site_configs` (
   UNIQUE KEY `site_configs_key_unique` (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Table: smtp_accounts
+CREATE TABLE `smtp_accounts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `host` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `port` int NOT NULL DEFAULT '587',
+  `username` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `password_enc` text COLLATE utf8mb4_unicode_ci,
+  `encryption` varchar(8) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'tls',
+  `from_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `weight` int NOT NULL DEFAULT '1',
+  `daily_limit` int NOT NULL DEFAULT '0',
+  `sent_today` int NOT NULL DEFAULT '0',
+  `last_used_at` timestamp NULL DEFAULT NULL,
+  `reset_at` timestamp NULL DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
+  `cooldown_until` timestamp NULL DEFAULT NULL,
+  `error_count` int NOT NULL DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `smtp_accounts_status_index` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Table: third_party_subs
 CREATE TABLE `third_party_subs` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,

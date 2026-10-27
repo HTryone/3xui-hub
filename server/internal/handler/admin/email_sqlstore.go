@@ -14,12 +14,21 @@ import (
 )
 
 // NewMailSQLStore 用已有连接池构造邮件域的 MailStore。
+//
+// appKey 用于 smtp_accounts.password_enc（与站点配置的 smtp_password 同口径）；
+// 不传时账号池只能以空密码发信（存量调用点保持旧签名可用，见 NewMailSQLStoreWithKey）。
 func NewMailSQLStore(db *sql.DB) MailStore {
 	return &mailSQLStore{db: db}
 }
 
+// NewMailSQLStoreWithKey 带 APP_KEY 构造（smtp_accounts 密码加解密需要）。
+func NewMailSQLStoreWithKey(db *sql.DB, appKey []byte) MailStore {
+	return &mailSQLStore{db: db, appKey: appKey}
+}
+
 type mailSQLStore struct {
-	db *sql.DB
+	db     *sql.DB
+	appKey []byte
 }
 
 func (s *mailSQLStore) MailConfigMany(ctx context.Context, keys []string) (map[string]string, error) {

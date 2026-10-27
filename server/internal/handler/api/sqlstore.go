@@ -92,6 +92,13 @@ func (s *sqlStore) UpdateUserProtocol(ctx context.Context, id uint64, protocol s
 	return err
 }
 
+func (s *sqlStore) UpdateUserAppVersion(ctx context.Context, id uint64, code int64, name string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET app_version_code = ?, app_version_name = ?, app_version_reported_at = ? WHERE id = ?`,
+		code, name, time.Now().UTC().Truncate(time.Second), id)
+	return err
+}
+
 const planColumns = `id, name, type, months, monthly_traffic, period_traffic, total_traffic,
 	price, reset_price, include_local, third_party_sub_ids`
 

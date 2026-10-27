@@ -103,6 +103,7 @@ func (h *Handler) Register(r gin.IRouter) {
 	r.GET("/api/plans", h.handlePlans)
 	r.GET("/api/tutorials", h.handleTutorials)
 	r.GET("/api/tutorials/:id", h.handleTutorialDetail)
+	r.GET("/api/app-version", h.handleAppVersion)
 
 	// 认证（无需 Bearer）
 	r.GET("/api/captcha", h.handleCaptcha)

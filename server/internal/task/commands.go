@@ -120,13 +120,31 @@ type CommandDeps struct {
 
 // ReconcileSummary 是对账命令需要的最小统计（刻意不引用 collector 的类型，避免包耦合）。
 type ReconcileSummary struct {
-	Nodes, Users, Probed       int
+	Nodes, Users, Probed int
+	// ProbeFailed 是探测本身失败（超时/5xx/登录态失效）的条数，与 Unknown（探测到了但读不全）分开。
+	ProbeFailed                int
 	Registered, Fixed, Drift   int
+	DriftSafe, DriftEarlyCut   int
+	DriftLoose                 int
 	Opened, Closed, Unchanged  int
 	Unknown, Deferred, Foreign int
 	ForeignNames, OfflineNodes []string
 	SnapshotBy                 string
 	ElapsedMs                  int64
+}
+
+// DriftEarlyCutWarning 是「有用户正被节点提前掐」的告警判定（drift_early_cut>0）。
+//
+// 单独抽成函数是为了让「日志升级 WARN」这件事可被测试断言 —— 否则只能靠 grep 日志，
+// 而日志格式一改测试就静默通过。
+func (s ReconcileSummary) DriftEarlyCutWarning() bool { return s.DriftEarlyCut > 0 }
+
+// ProbeStalled 是「整轮什么都没探到」的空转判定：候选非空、却一条都没探测成功。
+//
+// 这是旧实现 checked=0 空转 143 轮的复现条件 —— probed=0 本身也可能是「全员一致」，
+// 所以必须要求 probe_failed>0 才判空转（没探测失败、也没探测成功 = 面板没有可比对的候选）。
+func (s ReconcileSummary) ProbeStalled() bool {
+	return s.Probed == 0 && s.Users > 0 && s.ProbeFailed > 0
 }
 
 // commandRunner 是 CommandRunner 的真实实现。
@@ -1599,9 +1617,13 @@ func (r *commandRunner) fetchOutboundSub(ctx context.Context, url string) ([]map
 // ── 11. geodata:update ─────────────────────────────────────────────
 
 // runGeodataUpdate 对齐 GeodataUpdateCommand::handle()。
+//
+// 输出口径与对账命令一致：末尾必有一行固定键名的结构化计数 ——
+// 「无更新」「所有节点都在途」这类正常空转也要看得见规模，而不是只打印一句「无更新」。
 func (r *commandRunner) runGeodataUpdate(ctx context.Context, args map[string]string) error {
+	start := time.Now()
 	if r.deps.Geodata == nil {
-		r.logf("Geodata 服务未配置，跳过")
+		r.logf("[WARN] geodata:update 跳过：Geodata 服务未配置 nodes=0 updated=0 failed=0 queued=0 skipped=0 ms=0")
 		return nil
 	}
 
@@ -1610,16 +1632,21 @@ func (r *commandRunner) runGeodataUpdate(ctx context.Context, args map[string]st
 		return fmt.Errorf("geo 数据更新失败: %w", err)
 	}
 
-	updated := 0
+	updated, failed := 0, 0
 	for name, res := range results {
 		detail := res.Message
 		if detail == "" {
 			detail = fmt.Sprintf("%d 字节", res.Size)
 		}
-		if res.Status == "updated" {
+		switch res.Status {
+		case "updated":
 			updated++
 			r.logf("%s：已更新（%s）", name, detail)
-		} else {
+		case "failed":
+			// 失败必须单独计数并 WARN：文件级失败会让节点上的 geo 数据悄悄过期。
+			failed++
+			r.logf("[WARN] %s：更新失败（%s）", name, detail)
+		default:
 			r.logf("%s：%s（%s）", name, res.Status, detail)
 		}
 	}
@@ -1627,22 +1654,32 @@ func (r *commandRunner) runGeodataUpdate(ctx context.Context, args map[string]st
 	forceDispatch := args["--force-dispatch"] == "1"
 	shouldDispatch := forceDispatch || (args["--dispatch"] == "1" && updated > 0)
 
+	queued, skipped, missingDispatch := 0, 0, false
 	if shouldDispatch {
-		queued, skipped, missing, err := r.deps.Geodata.DispatchToNodes(ctx)
-		if err != nil {
-			return fmt.Errorf("分发 geo 数据失败: %w", err)
+		var derr error
+		queued, skipped, missingDispatch, derr = r.deps.Geodata.DispatchToNodes(ctx)
+		if derr != nil {
+			return fmt.Errorf("分发 geo 数据失败: %w", derr)
 		}
-		if missing {
+		if missingDispatch {
 			r.logf("面板上没有 geo 文件，跳过分发。")
-			return nil
-		}
-		r.logf("已分发到 %d 个节点（跳过 %d 个已有在途任务的节点）。", queued, skipped)
-	} else {
-		if updated > 0 {
-			r.logf("（未分发；如需推送节点请加 --dispatch）")
 		} else {
-			r.logf("无更新。")
+			r.logf("已分发到 %d 个节点（跳过 %d 个已有在途任务的节点）。", queued, skipped)
 		}
+	} else if updated > 0 {
+		r.logf("（未分发；如需推送节点请加 --dispatch）")
+	} else {
+		r.logf("无更新。")
+	}
+
+	// files 是 geo 文件总数（updated/unchanged/failed 之和）；nodes 是分发目标（queued+skipped）。
+	r.logf("nodes=%d files=%d updated=%d unchanged=%d failed=%d queued=%d skipped=%d missing=%v ms=%d",
+		queued+skipped, len(results), updated, len(results)-updated-failed, failed,
+		queued, skipped, missingDispatch, time.Since(start).Milliseconds())
+
+	// 一条文件都没更新成功、却又有失败项 → 最高风险组合，喊出来。
+	if failed > 0 && updated == 0 {
+		r.logf("[WARN] geodata:update 本轮无任何文件更新成功（failed=%d），节点 geo 数据保持旧版本", failed)
 	}
 	return nil
 }
@@ -1689,9 +1726,23 @@ func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[st
 	if dry {
 		prefix = "[dry-run] "
 	}
-	r.logf("%snodes=%d users=%d probed=%d registered=%d fixed=%d drift=%d opened=%d closed=%d unchanged=%d unknown=%d deferred=%d foreign=%d snap=%s ms=%d",
-		prefix, sum.Nodes, sum.Users, sum.Probed, sum.Registered, sum.Fixed, sum.Drift, sum.Opened,
-		sum.Closed, sum.Unchanged, sum.Unknown, sum.Deferred, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs)
+	// 结构化计数（一行、固定键名，便于日志检索与面板解析）：
+	//   nodes/users 规模 · probed 有结论数 · probe_failed 探测失败 · fixed/skipped(deferred) 动作
+	//   unknown 未知 · drift 三档（safe/early_cut/loose）· ms 墙钟。
+	r.logf("%snodes=%d users=%d probed=%d probe_failed=%d registered=%d fixed=%d skipped=%d "+
+		"unknown=%d drift=%d drift_safe=%d drift_early_cut=%d drift_loose=%d "+
+		"opened=%d closed=%d unchanged=%d foreign=%d snap=%s ms=%d",
+		prefix, sum.Nodes, sum.Users, sum.Probed, sum.ProbeFailed, sum.Registered, sum.Fixed,
+		sum.Deferred, sum.Unknown, sum.Drift, sum.DriftSafe, sum.DriftEarlyCut, sum.DriftLoose,
+		sum.Opened, sum.Closed, sum.Unchanged, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs)
+	if sum.DriftEarlyCutWarning() {
+		r.logf("[WARN] 对账：%d 条漂移会让用户被节点提前掐（节点限额/期限比面板更紧），需人工确认",
+			sum.DriftEarlyCut)
+	}
+	if sum.ProbeStalled() {
+		r.logf("[WARN] 对账空转：本轮 probed=0（probe_failed=%d users=%d），节点侧一条都没读到",
+			sum.ProbeFailed, sum.Users)
+	}
 	if len(sum.ForeignNames) > 0 {
 		r.logf("  非本站 client（只报告，未动手）: %s", strings.Join(sum.ForeignNames, ", "))
 	}

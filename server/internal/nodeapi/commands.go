@@ -29,8 +29,23 @@ const (
 	ActionUpgradeAgent = "upgrade"
 	ActionRealityScan  = "reality_scan"
 	ActionGeodataSync  = "geodata_sync"
+	// ActionOutboundTest 是「出站连通性延时测试」（面板侧路由规则表的「延时」列）。
+	//
+	// 协议（面板 → agent）：
+	//
+	//	action  = "outbound_test"
+	//	payload = {"targets":[{"tag":"hk-1","server":"1.2.3.4","port":443}, ...]}
+	//
+	// agent 逐个对 server:port 做 TCP 握手，回执 success 时 result 是 JSON 数组：
+	//
+	//	[{"tag":"hk-1","ok":true,"latency_ms":12,"error":""}, ...]
+	//
+	// 内置 direct/blocked、负载均衡 tag、UDP 出站（wireguard/warp）由面板侧过滤，
+	// 不会出现在 payload 里。agent 侧实现不在本仓（本任务只定义协议）。
+	ActionOutboundTest = "outbound_test"
 	// 以上与 app/Models/NodeApiCommand.php 的常量逐字一致；本模块只用
-	// ActionRealityScan（决定回执截断上限），其余导出供后续 P9（WS 通道）复用。
+	// ActionRealityScan / ActionOutboundTest（决定回执截断上限），其余导出供后续
+	// P9（WS 通道）复用。
 )
 
 const (
@@ -43,6 +58,9 @@ const (
 	// outputLimitDefault / outputLimitRealityScan 是回执落库截断长度（按 action 放宽）。
 	outputLimitDefault     = 2000
 	outputLimitRealityScan = 30000
+	// outputLimitOutboundTest 是出站延时回执的截断长度：回执是每条出站一个对象的
+	// JSON 数组（约 60 字节/条），默认 2000 只够 ~30 条，批量测试会截断成非法 JSON。
+	outputLimitOutboundTest = 30000
 )
 
 // Command 是下发给 agent 的一条指令。
@@ -156,10 +174,7 @@ func (r *Repo) applyAck(ctx context.Context, nodeID int64, row AckResult) (bool,
 		return false, fmt.Errorf("查询指令 #%d 失败: %w", row.ID, err)
 	}
 
-	limit := outputLimitDefault
-	if action == ActionRealityScan {
-		limit = outputLimitRealityScan
-	}
+	limit := outputLimitFor(action)
 	// PHP：isset($row['output']) ? mb_substr(...) : null；空串会写成 ""（不是 null）。
 	var result any
 	if row.Output != "" || row.OutputSet {
@@ -177,6 +192,21 @@ func (r *Repo) applyAck(ctx context.Context, nodeID int64, row AckResult) (bool,
 		return false, fmt.Errorf("写入指令 #%d 回执失败: %w", row.ID, err)
 	}
 	return true, nil
+}
+
+// outputLimitFor 返回某 action 回执的落库截断长度。
+//
+// 默认 2000 字符是给 xray 命令输出用的；reality_scan 与 outbound_test 的回执是
+// JSON（逐目标一个对象），批量时会远超默认上限，必须单独放宽，否则落库即截断成
+// 非法 JSON，面板侧只能报「回执解析失败」。
+func outputLimitFor(action string) int {
+	switch action {
+	case ActionRealityScan:
+		return outputLimitRealityScan
+	case ActionOutboundTest:
+		return outputLimitOutboundTest
+	}
+	return outputLimitDefault
 }
 
 // pruneExpired 复刻 pruneExpired()：只删 success/failed 且「上次写入超过保留期」的行。

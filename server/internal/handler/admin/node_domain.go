@@ -136,6 +136,8 @@ func (d *NodeDomain) Register(r gin.IRouter) {
 	r.GET("/nodes/:node/xray-routing", d.routingIndex)
 	r.POST("/nodes/:node/xray-routing", d.routingStore)
 	r.POST("/nodes/:node/xray-routing/test", d.routingTest)
+	// 出站连通性延时测试（路由规则表「延时」列）。静态段必须排在 :rule 之前。
+	r.POST("/nodes/:node/xray-routing/outbound-test", d.routingOutboundTest)
 	r.POST("/nodes/:node/xray-routing/balancers", d.balancerStore)
 	r.PUT("/nodes/:node/xray-routing/balancers/:balancer", d.balancerUpdate)
 	r.DELETE("/nodes/:node/xray-routing/balancers/:balancer", d.balancerDestroy)

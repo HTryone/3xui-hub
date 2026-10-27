@@ -9,11 +9,15 @@ package admin
 // - 路由测试器：输入域名或 IP，按渲染口径逐条模拟匹配
 
 import (
+	"errors"
 	"net"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"controlhub-server/internal/driver/xray"
+	"controlhub-server/internal/nodeapi"
 
 	"github.com/gin-gonic/gin"
 )
@@ -409,6 +413,402 @@ func (d *NodeDomain) routingTest(c *gin.Context) {
 		"default_outbound", defaultOutbound,
 		"rules_checked", int64(len(rules)),
 	))
+}
+
+// routingOutboundTest 对齐「路由规则表 → 延时列」：下发 outbound_test 指令给节点，
+// 节点对每个出站的目标 server:port 做真实 TCP 握手，面板同步等回执后回填每行。
+//
+// 与 routingTest（纯面板模拟匹配、不碰节点）是两条独立链路，互不影响。
+//
+// 入参：{"node_id":1,"targets":[{"tag":"hk-1","server":"1.2.3.4","port":443}]}
+//
+//   - node_id：可选。请求体没带就用 URL 里的 {node}（前端总是带 URL 的那个）。
+//   - targets：可选。空 = 测本节点全部可测出站；只传 tag 也可以，server/port 由面板补齐。
+//
+// 返回：{"results":[{tag,ok,latency_ms,error}],"pending":bool,"message":...}
+func (d *NodeDomain) routingOutboundTest(c *gin.Context) {
+	node, ok := d.loadXrayNode(c)
+	if !ok {
+		return
+	}
+	input := jsonInput(c)
+
+	// node_id 只是把「哪台节点」显式写进请求体；与 URL 不一致时以后者为准，
+	// 避免把一条指令下发到错误节点上（越权风险）。
+	if raw, present := input["node_id"]; present && raw != nil {
+		// 用 inputInt 而不是 jsonInt：jsonInput 把 JSON 数字转成 jsonNumber（保留字面量），
+		// jsonInt 不认这个类型，会恒得 0 把校验悄悄放过。
+		if id := inputInt(raw); id > 0 && uint64(id) != node.ID {
+			d.fail(c, "node_id 与 URL 中的节点不一致", 400)
+			return
+		}
+	}
+
+	v := newNodeValidator(ctxOf(c), input)
+	v.field("targets", "nullable", "array", "max:2000")
+	v.field("targets.*.tag", "nullable", "string", "max:64")
+	v.field("targets.*.server", "nullable", "string", "max:255")
+	v.field("targets.*.port", "nullable", "integer", "between:1,65535")
+	if !v.passes() {
+		d.failNodeValidation(c, v)
+		return
+	}
+
+	candidates, err := d.outboundTestCandidates(c, node)
+	if err != nil {
+		return
+	}
+
+	requested := requestedTestTags(input["targets"])
+	targets := jsArr{}  // 真正下发给节点的 [{tag,server,port}]
+	skipped := jsArr{}  // 不测的 [{tag,reason}]，顺序跟候选一致（不随 map 抖）
+	for _, cand := range candidates {
+		if len(requested) > 0 && !requested[cand.Tag] {
+			continue
+		}
+		if cand.Skip != "" {
+			skipped = append(skipped, jo("tag", cand.Tag, "reason", cand.Skip))
+			continue
+		}
+		targets = append(targets, jo("tag", cand.Tag, "server", cand.Server, "port", cand.Port))
+	}
+
+	// 点名了但本节点没有的 tag：回填「不存在」，前端不必空着等。
+	missing := make([]string, 0, len(requested))
+	for tag := range requested {
+		if !candidateHasTag(candidates, tag) {
+			missing = append(missing, tag)
+		}
+	}
+	sort.Strings(missing) // map 迭代无序，排一下让回执稳定
+	for _, tag := range missing {
+		// 候选只取启用中的出站（内核里真实存在的），所以这里两种原因都可能。
+		skipped = append(skipped, jo("tag", tag, "reason", "该出站不存在或未启用"))
+	}
+
+	if len(targets) == 0 {
+		// 没有可测目标（全是内置/UDP/没有目标地址）→ 不打扰节点，直接回报。
+		d.success(c, jo("results", skippedToResults(skipped), "pending", false))
+		return
+	}
+
+	command, err := d.store.CreateCommand(ctxOf(c), node.ID, nodeapi.ActionOutboundTest,
+		jo("targets", targets))
+	if err != nil {
+		d.failServer(c, "入队出站延时测试", err)
+		return
+	}
+
+	wait := d.cfg.OutboundTestWait
+	deadline := d.now().Add(timeDurationSeconds(wait))
+	for d.now().Before(deadline) {
+		fresh, err := d.store.CommandByID(ctxOf(c), command.ID)
+		if err != nil {
+			d.failServer(c, "回读指令状态", err)
+			return
+		}
+		switch fresh.Status {
+		case "failed":
+			output := ""
+			if fresh.Result != nil {
+				output = *fresh.Result
+			}
+			if strings.Contains(output, "unknown action") {
+				output = "该节点的 agent 版本过旧（不支持出站延时测试），请先在「节点」页升级 agent 后重试"
+			} else if output == "" {
+				output = "节点执行失败"
+			}
+			d.success(c, jo(
+				"results", unresponsiveResults(targets, skipped),
+				"error", output,
+			))
+			return
+		case "success":
+			raw := ""
+			if fresh.Result != nil {
+				raw = *fresh.Result
+			}
+			results, err := mergeOutboundTestResults(raw, targets, skipped)
+			if err != nil {
+				d.success(c, jo(
+					"results", unresponsiveResults(targets, skipped),
+					"error", "节点回执解析失败",
+				))
+				return
+			}
+			d.success(c, jo("results", results, "pending", false))
+			return
+		}
+		d.sleep(d.pollInterval)
+	}
+
+	d.success(c, jo(
+		"results", unresponsiveResults(targets, skipped),
+		"pending", true,
+		"message", "节点未在 "+strconv.Itoa(wait)+" 秒内回执（可能离线），稍后可重试",
+	))
+}
+
+// ---- 出站延时：候选与回执整理 ----
+
+// errOutboundTestBadResult 表示 agent 回执不是预期的 JSON 数组（回执坏了）。
+var errOutboundTestBadResult = errors.New("admin: outbound_test 回执不是数组")
+
+// outboundTestCandidate 是「本节点某个出站能不能测、测哪个地址」的中间结果。
+type outboundTestCandidate struct {
+	Tag    string
+	Server string
+	Port   int64
+	// Skip 非空表示不测：UDP 出站 / 负载均衡 / 没有目标地址（前端显示「—」+ 原因）。
+	Skip string
+}
+
+// outboundTestCandidates 列出本节点全部「路由目标」的测试口径。
+//
+// 内置 direct/blocked 不出现（不测也不提示）；UDP 出站（wireguard/WARP）与
+// 负载均衡 tag 以 Skip 形式出现——它们的握手语义不是 TCP 握手，硬测只会给出
+// 误导性的绿点。
+func (d *NodeDomain) outboundTestCandidates(c *gin.Context, node *NodeRecord) ([]outboundTestCandidate, error) {
+	outbounds, err := d.store.XrayOutboundsByNode(ctxOf(c), node.ID, true)
+	if err != nil {
+		d.failServer(c, "查询出站", err)
+		return nil, err
+	}
+
+	out := make([]outboundTestCandidate, 0, len(outbounds))
+	seen := map[string]bool{}
+	add := func(tag, server string, port int64, skip string) {
+		if tag == "" || seen[tag] || tag == "direct" || tag == "blocked" || tag == "api" {
+			return
+		}
+		seen[tag] = true
+		out = append(out, outboundTestCandidate{Tag: tag, Server: server, Port: port, Skip: skip})
+	}
+
+	for i := range outbounds {
+		ob := &outbounds[i]
+		if ob.Tag == "direct" || ob.Tag == "blocked" || ob.Tag == "api" {
+			continue
+		}
+		if ob.Protocol == "wireguard" || ob.Tag == "warp" {
+			add(ob.Tag, "", 0, "UDP 出站（wireguard/WARP）不支持延时测试")
+			continue
+		}
+		server, port := outboundTarget(ob)
+		if server == "" || port <= 0 {
+			add(ob.Tag, "", 0, "该出站没有可测试的目标地址")
+			continue
+		}
+		add(ob.Tag, server, port, "")
+	}
+
+	// 订阅出站（服务器池）同样是合法路由目标，目标地址从 fetched 缓存的 settings 取。
+	subs, err := d.store.OutboundSubsByNode(ctxOf(c), node.ID)
+	if err != nil {
+		d.failServer(c, "查询出站订阅", err)
+		return nil, err
+	}
+	for _, sub := range subs {
+		if !sub.Enabled || sub.Fetched == nil || strings.TrimSpace(*sub.Fetched) == "" {
+			continue
+		}
+		parsed, err := parseOrderedJS([]byte(*sub.Fetched))
+		if err != nil {
+			continue // 坏缓存视作空（与渲染层 activeOutboundsSplit 同口径）
+		}
+		arr, isArr := parsed.(jsArr)
+		if !isArr {
+			continue
+		}
+		for _, item := range arr {
+			obj, isObj := item.(*jsObj)
+			if !isObj {
+				continue
+			}
+			tag := jsonGetString(obj, "tag")
+			if tag == "" {
+				continue
+			}
+			if jsonGetString(obj, "protocol") == "wireguard" {
+				add(tag, "", 0, "UDP 出站（wireguard/WARP）不支持延时测试")
+				continue
+			}
+			server, port := outboundTargetOfSettings(jsonGet(obj, "settings"))
+			if server == "" || port <= 0 {
+				add(tag, "", 0, "该出站没有可测试的目标地址")
+				continue
+			}
+			add(tag, server, port, "")
+		}
+	}
+
+	// 负载均衡不是真实出站：成员出站本身就是候选，测 balancer tag 没有意义。
+	balancers, err := d.store.BalancersByNode(ctxOf(c), node.ID, true)
+	if err != nil {
+		d.failServer(c, "查询负载均衡器", err)
+		return nil, err
+	}
+	for _, b := range balancers {
+		add(b.Tag, "", 0, "负载均衡不是真实出站，请分别测试其成员出站")
+	}
+
+	return out, nil
+}
+
+// outboundTargetOfSettings 从已解析的出站 settings 取 address/port
+// （与 outboundTarget 同口径，输入换成已解析的结构）。
+func outboundTargetOfSettings(settings any) (string, int64) {
+	for _, key := range []string{"vnext", "servers"} {
+		addr := jsonGetString(settings, key, "0", "address")
+		if addr != "" {
+			port := jsonInt(jsonGet(settings, key, "0", "port"))
+			if port == 0 {
+				port = 443
+			}
+			return addr, port
+		}
+	}
+	endpoint := jsonGetString(settings, "peers", "0", "endpoint")
+	if idx := strings.LastIndex(endpoint, ":"); idx > 0 {
+		return endpoint[:idx], jsonInt(endpoint[idx+1:])
+	}
+	return "", 0
+}
+
+// requestedTestTags 取请求里显式点名的 tag 集合（空 = 全部）。两种写法都收：
+// [{"tag":"hk-1"}, ...] 与 ["hk-1", ...]。
+func requestedTestTags(raw any) map[string]bool {
+	out := map[string]bool{}
+	for _, item := range phpArrayCast(raw) {
+		if tag := testTargetTag(item); tag != "" {
+			out[tag] = true
+		}
+	}
+	return out
+}
+
+// testTargetTag 从 targets 的一项里取 tag（对象或裸字符串）。
+func testTargetTag(item any) string {
+	switch t := item.(type) {
+	case map[string]any:
+		return strings.TrimSpace(nodeScalarString(t["tag"]))
+	case *jsObj:
+		return strings.TrimSpace(jsonGetString(t, "tag"))
+	default:
+		return strings.TrimSpace(nodeScalarString(item))
+	}
+}
+
+// candidateHasTag 判断 tag 是否出现在候选清单里（区分「不存在」与「测不了」）。
+func candidateHasTag(candidates []outboundTestCandidate, tag string) bool {
+	for _, c := range candidates {
+		if c.Tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeOutboundTestResults 把 agent 回执（JSON 数组）整理成面板口径的结果列表。
+//
+// agent 只回执它真正测过的 tag；这里按「下发顺序」补齐（缺的按失败），再追加跳过项，
+// 前端才能一次把整列渲染完。
+func mergeOutboundTestResults(raw string, targets jsArr, skipped jsArr) (jsArr, error) {
+	parsed, err := parseOrderedJS([]byte(raw))
+	if err != nil {
+		return nil, err
+	}
+	arr, isArr := parsed.(jsArr)
+	if !isArr {
+		return nil, errOutboundTestBadResult
+	}
+
+	byTag := map[string]*jsObj{}
+	for _, item := range arr {
+		obj, isObj := item.(*jsObj)
+		if !isObj {
+			continue
+		}
+		if tag := jsonGetString(obj, "tag"); tag != "" {
+			byTag[tag] = obj
+		}
+	}
+
+	out := jsArr{}
+	for _, item := range targets {
+		tag := jsonGetString(item, "tag")
+		if got, present := byTag[tag]; present {
+			out = append(out, normalizeOutboundTestResult(tag, got))
+			continue
+		}
+		out = append(out, jo(
+			"tag", tag,
+			"ok", false,
+			"skipped", false,
+			"latency_ms", nil,
+			"error", "节点未返回该出站的测试结果",
+		))
+	}
+	return append(out, skippedToResults(skipped)...), nil
+}
+
+// unresponsiveResults 是节点没给出可用回执时（失败 / 超时 / 回执坏）的结果：
+// 下发的每条都按失败回填，再补上跳过项。
+func unresponsiveResults(targets jsArr, skipped jsArr) jsArr {
+	out := jsArr{}
+	for _, item := range targets {
+		out = append(out, jo(
+			"tag", jsonGetString(item, "tag"),
+			"ok", false,
+			"skipped", false,
+			"latency_ms", nil,
+			"error", "节点无回执",
+		))
+	}
+	return append(out, skippedToResults(skipped)...)
+}
+
+// skippedToResults 把「不测」项转成结果行。
+//
+// skipped=true 是给前端的关键信号：这类行既不是「绿」也不是「超时」，要显示「—」
+// （UDP 出站 / 负载均衡 / 没有目标地址）。ok 仍为 false，保持结果字段形状一致。
+func skippedToResults(skipped jsArr) jsArr {
+	out := make(jsArr, 0, len(skipped))
+	for _, item := range skipped {
+		out = append(out, jo(
+			"tag", jsonGetString(item, "tag"),
+			"ok", false,
+			"skipped", true,
+			"latency_ms", nil,
+			"error", jsonGetString(item, "reason"),
+		))
+	}
+	return out
+}
+
+// normalizeOutboundTestResult 统一 agent 回执字段，保证失败一定带原因。
+func normalizeOutboundTestResult(tag string, obj *jsObj) *jsObj {
+	ok := nodeTruthy(jsonGet(obj, "ok"))
+	latency := jsonInt(jsonGet(obj, "latency_ms"))
+	errText := jsonGetString(obj, "error")
+	if ok && latency <= 0 {
+		// 0ms 在 TCP 握手里几乎不可能（本机回环也要几百微秒）→ 视作回执异常，别给绿点。
+		ok = false
+	}
+	if !ok && errText == "" {
+		errText = "不可达"
+	}
+	var latencyVal any
+	if ok {
+		latencyVal = latency
+	}
+	return jo(
+		"tag", tag,
+		"ok", ok,
+		"skipped", false,
+		"latency_ms", latencyVal,
+		"error", errText,
+	)
 }
 
 // ---- 内部 ----

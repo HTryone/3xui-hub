@@ -6,8 +6,11 @@ package api
 // 这些端点直接用 *sql.DB 查询（Store 接口不暴露 DB()，且不改 P0-P9 已有接口）。
 
 import (
+	"context"
 	"database/sql"
 	"time"
+
+	"controlhub-server/internal/task"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,11 +19,15 @@ import (
 type UserExtras struct {
 	handler *Handler
 	db      *sql.DB
+	async   *task.Service
 }
 
 // NewUserExtras 构造补充端点 handler。
-func NewUserExtras(h *Handler, db *sql.DB) *UserExtras {
-	return &UserExtras{handler: h, db: db}
+//
+// async 已挂 task.Queue：POST /api/sync-traffic 走 FindOrCreateTrafficSync
+// （subject=user 去重 + 拆 async_task_items + 派发 SyncNodeTrafficJob）。
+func NewUserExtras(h *Handler, db *sql.DB, async *task.Service) *UserExtras {
+	return &UserExtras{handler: h, db: db, async: async}
 }
 
 // Register 挂补充路由（需在 api.auth 中间件内）。
@@ -36,14 +43,39 @@ func (e *UserExtras) Register(r gin.IRouter) {
 }
 
 // handleSyncTraffic 对齐 ApiUserController::syncTraffic。
+//
+// 走 task.Service.FindOrCreateTrafficSync(nodeIDs, "user", uid, uid)：按用户去重在途
+// 任务，Create 拆 items 后 Dispatch 派发 SyncNodeTrafficJob（meta.user_id 只同步本用户）。
 func (e *UserExtras) handleSyncTraffic(c *gin.Context) {
 	u := currentUser(c)
 
-	rows, err := e.db.QueryContext(c.Request.Context(),
-		"SELECT id FROM nodes WHERE enabled = 1")
+	nodeIDs, err := e.enabledNodeIDs(c.Request.Context())
 	if err != nil {
 		fail(c, "服务器错误", 500)
 		return
+	}
+
+	uid := int64(u.ID)
+	subjectType := "user"
+	t, created, err := e.async.FindOrCreateTrafficSync(c.Request.Context(), nodeIDs,
+		&subjectType, &uid, &uid)
+	if err != nil {
+		fail(c, "服务器错误", 500)
+		return
+	}
+	msg := "同步任务已提交"
+	if !created {
+		msg = "已有同步任务正在执行"
+	}
+	success(c, jo("task_id", t.ID, "status", t.Status,
+		"queued_nodes", len(nodeIDs), "already_running", !created), msg)
+}
+
+// enabledNodeIDs 取启用的节点 id（PHP Node::where('enabled', true)->pluck('id')）。
+func (e *UserExtras) enabledNodeIDs(ctx context.Context) ([]int64, error) {
+	rows, err := e.db.QueryContext(ctx, "SELECT id FROM nodes WHERE enabled = 1")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -54,15 +86,7 @@ func (e *UserExtras) handleSyncTraffic(c *gin.Context) {
 			nodeIDs = append(nodeIDs, id)
 		}
 	}
-
-	taskID, err := e.createAsyncTask(c, "traffic_sync", u.ID)
-	if err != nil {
-		fail(c, "服务器错误", 500)
-		return
-	}
-
-	success(c, jo("task_id", taskID, "status", "pending",
-		"queued_nodes", len(nodeIDs), "already_running", false), "同步任务已提交")
+	return nodeIDs, rows.Err()
 }
 
 // handleSyncTrafficStatus 对齐 ApiUserController::syncTaskStatus。
@@ -335,16 +359,4 @@ func (e *UserExtras) proxyStoreEnabled(c *gin.Context) bool {
 		return false
 	}
 	return val == "1"
-}
-
-// createAsyncTask 创建异步任务。
-func (e *UserExtras) createAsyncTask(c *gin.Context, taskType string, userID uint64) (int64, error) {
-	result, err := e.db.ExecContext(c.Request.Context(),
-		"INSERT INTO async_tasks (type, status, subject_type, subject_id, created_at, updated_at) VALUES (?, 'pending', 'user', ?, ?, ?)",
-		taskType, userID, time.Now().UTC(), time.Now().UTC())
-	if err != nil {
-		return 0, err
-	}
-	id, _ := result.LastInsertId()
-	return id, nil
 }

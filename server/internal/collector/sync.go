@@ -61,20 +61,7 @@ func (c *Collector) RunTrafficSync(ctx context.Context) (TrafficSyncResult, erro
 		out.Nodes++
 
 		res, err := c.SyncNode(ctx, node.ID, func(ctx context.Context) (map[string]ClientStat, error) {
-			client, err := c.threeXUiClient(node)
-			if err != nil {
-				return nil, err
-			}
-			// 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）。
-			stats, err := client.GetClientStatsByEmail(ctx)
-			if err != nil {
-				return nil, err
-			}
-			conv := make(map[string]ClientStat, len(stats))
-			for email, s := range stats {
-				conv[email] = ClientStat{Up: s.Up, Down: s.Down, Enable: s.Enable}
-			}
-			return conv, nil
+			return c.syncStatsFromNode(ctx, node)
 		})
 		if err != nil {
 			out.FailedNodes = append(out.FailedNodes, node.ID)
@@ -129,6 +116,23 @@ func (c *Collector) RunTrafficSync(ctx context.Context) (TrafficSyncResult, erro
 	return out, nil
 }
 
+// syncStatsFromNode 取一台 3x-ui 节点的 client 累计流量（sync 视图）。
+//
+// 走节点级共享快照（inbound_cache.go）：TTL 内与 reconcile 的 inbounds 读法共用同一次
+// `GET /panel/api/inbounds/list` —— 两个任务每 5 分钟同频，以前各拉一遍同一份大 JSON。
+func (c *Collector) syncStatsFromNode(ctx context.Context, node nodeRow) (map[string]ClientStat, error) {
+	client, err := c.threeXUiClient(node)
+	if err != nil {
+		return nil, err
+	}
+	// 数据层已按 email 去重（同 email 跨入站只取首值，避免 N 倍计费）。
+	snap, err := c.cachedInbounds(ctx, node.ID, client)
+	if err != nil {
+		return nil, err
+	}
+	return snap.Stats, nil
+}
+
 // SyncSingleUserNode 复刻 SyncNodeTrafficJob 的单用户分支（syncUserNodeFromSource）：
 // 在节点锁内取该用户在本节点的流量并落账。
 //
@@ -149,17 +153,13 @@ func (c *Collector) SyncSingleUserNode(ctx context.Context, userID, nodeID int64
 		if node.isXray() {
 			return nil, nil // xray 不走面板侧轮询
 		}
-		client, err := c.threeXUiClient(*node)
-		if err != nil {
-			return nil, err
-		}
-		stats, err := client.GetClientStatsByEmail(ctx)
+		stats, err := c.syncStatsFromNode(ctx, *node)
 		if err != nil {
 			return nil, err
 		}
 		out := map[string]ClientStat{}
 		if s, ok := stats[email]; ok {
-			out[email] = ClientStat{Up: s.Up, Down: s.Down, Enable: s.Enable}
+			out[email] = s
 		}
 		return out, nil
 	})

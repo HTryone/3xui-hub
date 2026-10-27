@@ -1,0 +1,248 @@
+package admin
+
+// 多 SMTP 账号池的管理端 API（只做后端端点，前端列表另做）。
+//
+// 路由（挂在 /admin-api 下，邮件域 Register）：
+//
+//	GET    /email/smtp-accounts             列表
+//	POST   /email/smtp-accounts             新增
+//	PUT    /email/smtp-accounts/:account    修改
+//	DELETE /email/smtp-accounts/:account    删除
+//	PUT    /email/smtp-accounts/:account/status  状态切换（active/disabled）
+//
+// 密码只进不出：列表/详情一律回 has_password，不回明文或密文。
+
+import (
+	"database/sql"
+
+	"github.com/gin-gonic/gin"
+)
+
+// registerSMTPAccountRoutes 由 MailDomain.Register 调用。
+func (d *MailDomain) registerSMTPAccountRoutes(r gin.IRouter) {
+	r.GET("/email/smtp-accounts", d.listSMTPAccounts)
+	r.POST("/email/smtp-accounts", d.createSMTPAccount)
+	r.PUT("/email/smtp-accounts/:account", d.updateSMTPAccount)
+	r.DELETE("/email/smtp-accounts/:account", d.deleteSMTPAccount)
+	r.PUT("/email/smtp-accounts/:account/status", d.setSMTPAccountStatus)
+}
+
+// paramID / notFoundRoute 与 Handler 同口径（邮件域是独立 Domain，不复用 *Handler）。
+func (d *MailDomain) paramID(c *gin.Context, name string) (uint64, bool) {
+	return parseUint(c.Param(name))
+}
+
+func (d *MailDomain) notFoundRoute(c *gin.Context) { d.fail(c, "接口不存在", 404) }
+
+// presentSMTPAccount 是列表/详情的输出形态（不输密码）。
+func presentSMTPAccount(a *SMTPAccount) *jsObj {
+	return jo(
+		"id", a.ID,
+		"host", a.Host,
+		"port", a.Port,
+		"username", a.Username,
+		"encryption", a.Encryption,
+		"from_name", nullableStr(a.FromName),
+		"weight", a.Weight,
+		"daily_limit", a.DailyLimit,
+		"sent_today", a.SentToday,
+		"last_used_at", nullableISO(a.LastUsedAt),
+		"reset_at", nullableISO(a.ResetAt),
+		"status", a.Status,
+		"cooldown_until", nullableISO(a.CooldownUntil),
+		"error_count", a.ErrorCount,
+		"has_password", a.Password != "",
+		"created_at", nullableISO(a.CreatedAt),
+		"updated_at", nullableISO(a.UpdatedAt),
+	)
+}
+
+// smtpAccountRules 是新增用的校验规则；修改时全部降级成 sometimes（见 update）。
+func applySMTPAccountRules(v *validator, sometimes bool) {
+	prefix := func(rules ...string) []string {
+		if sometimes {
+			return append([]string{"sometimes"}, rules...)
+		}
+		return rules
+	}
+	v.field("host", prefix("required", "string", "max:255")...)
+	v.field("port", prefix("nullable", "integer", "min:1", "max:65535")...)
+	v.field("username", prefix("nullable", "string", "max:255")...)
+	v.field("password", prefix("nullable", "string", "max:255")...)
+	v.field("encryption", prefix("nullable", "in:tls,ssl,none")...)
+	v.field("from_name", prefix("nullable", "string", "max:100")...)
+	v.field("weight", prefix("nullable", "integer", "min:0", "max:1000")...)
+	v.field("daily_limit", prefix("nullable", "integer", "min:0")...)
+}
+
+// smtpAccountInput 把已校验的输入转成入参（nil = 没提交该字段）。
+func smtpAccountInput(v *validator) SMTPAccountInput {
+	var in SMTPAccountInput
+	if val, ok := v.valueOf("host"); ok && val != nil {
+		s, _ := inputString(val)
+		in.Host = &s
+	}
+	if val, ok := v.valueOf("port"); ok && val != nil {
+		n := int(inputInt(val))
+		in.Port = &n
+	}
+	if val, ok := v.valueOf("username"); ok {
+		in.Username = ptrStringOrNil(val)
+	}
+	if val, ok := v.valueOf("password"); ok {
+		// 空 = 不修改（编辑表单不回显密码，空值代表「保持原密码」）。
+		if s, isStr := inputString(val); isStr && s != "" {
+			in.Password = &s
+		}
+	}
+	if val, ok := v.valueOf("encryption"); ok && val != nil {
+		s, _ := inputString(val)
+		in.Encryption = &s
+	}
+	if val, ok := v.valueOf("from_name"); ok {
+		in.FromName = ptrStringOrNil(val)
+	}
+	if val, ok := v.valueOf("weight"); ok && val != nil {
+		n := int(inputInt(val))
+		in.Weight = &n
+	}
+	if val, ok := v.valueOf("daily_limit"); ok && val != nil {
+		n := int(inputInt(val))
+		in.DailyLimit = &n
+	}
+	return in
+}
+
+func (d *MailDomain) listSMTPAccounts(c *gin.Context) {
+	list, err := d.store.SMTPAccounts(ctxOf(c))
+	if err != nil {
+		d.failServer(c, "查询 SMTP 账号池", err)
+		return
+	}
+	items := make(jsArr, 0, len(list))
+	for i := range list {
+		items = append(items, presentSMTPAccount(&list[i]))
+	}
+	d.success(c, jo("items", items))
+}
+
+func (d *MailDomain) createSMTPAccount(c *gin.Context) {
+	data := jsonInput(c)
+	v := newValidator(ctxOf(c), data)
+	applySMTPAccountRules(v, false)
+	if !v.passes() {
+		if err := v.storeFailure(); err != nil {
+			d.failServer(c, "校验 SMTP 账号", err)
+			return
+		}
+		d.failValidation(c, v.summary())
+		return
+	}
+
+	acc, err := d.store.CreateSMTPAccount(ctxOf(c), smtpAccountInput(v), d.now().UTC())
+	if err != nil {
+		d.failServer(c, "新增 SMTP 账号", err)
+		return
+	}
+	d.success(c, presentSMTPAccount(acc), "已添加")
+}
+
+func (d *MailDomain) updateSMTPAccount(c *gin.Context) {
+	id, ok := d.paramID(c, "account")
+	if !ok {
+		d.notFoundRoute(c)
+		return
+	}
+	if _, err := d.store.SMTPAccountByID(ctxOf(c), id); err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+
+	data := jsonInput(c)
+	v := newValidator(ctxOf(c), data)
+	applySMTPAccountRules(v, true)
+	if !v.passes() {
+		if err := v.storeFailure(); err != nil {
+			d.failServer(c, "校验 SMTP 账号", err)
+			return
+		}
+		d.failValidation(c, v.summary())
+		return
+	}
+
+	acc, err := d.store.UpdateSMTPAccount(ctxOf(c), id, smtpAccountInput(v), d.now().UTC())
+	if err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "保存 SMTP 账号", err)
+		return
+	}
+	d.success(c, presentSMTPAccount(acc), "已保存")
+}
+
+func (d *MailDomain) deleteSMTPAccount(c *gin.Context) {
+	id, ok := d.paramID(c, "account")
+	if !ok {
+		d.notFoundRoute(c)
+		return
+	}
+	if _, err := d.store.SMTPAccountByID(ctxOf(c), id); err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+	if err := d.store.DeleteSMTPAccount(ctxOf(c), id); err != nil {
+		d.failServer(c, "删除 SMTP 账号", err)
+		return
+	}
+	d.success(c, nil, "已删除")
+}
+
+// setSMTPAccountStatus 状态切换：只允许 active / disabled（cooling 由失败分类自动进入）。
+func (d *MailDomain) setSMTPAccountStatus(c *gin.Context) {
+	id, ok := d.paramID(c, "account")
+	if !ok {
+		d.notFoundRoute(c)
+		return
+	}
+	data := jsonInput(c)
+	v := newValidator(ctxOf(c), data)
+	v.field("status", "required", "in:active,disabled")
+	if !v.passes() {
+		if err := v.storeFailure(); err != nil {
+			d.failServer(c, "校验账号状态", err)
+			return
+		}
+		d.failValidation(c, v.summary())
+		return
+	}
+	status, _ := inputString(data["status"])
+
+	if _, err := d.store.SMTPAccountByID(ctxOf(c), id); err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+	if err := d.store.SetSMTPAccountStatus(ctxOf(c), id, status, d.now().UTC()); err != nil {
+		d.failServer(c, "切换 SMTP 账号状态", err)
+		return
+	}
+	acc, err := d.store.SMTPAccountByID(ctxOf(c), id)
+	if err != nil {
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+	d.success(c, presentSMTPAccount(acc), "状态已更新")
+}

@@ -16,6 +16,11 @@ package collector
 //   - 实测反例：`clients/list` 在本版节点上只回少量非本站 email（自建用户），我们自己的
 //     client 一条都拿不到 → probed=0、130 秒空转。所以它不作为主路径。
 //
+// 报告口径：Drift 是「只看不写」的字段漂移总数，并按**方向**分三档计数 ——
+// DriftSafe / DriftEarlyCut / DriftLoose（三者之和恒等于 Drift）。只有 DriftEarlyCut>0
+// 表示「节点比面板更紧、有人正被提前掐」，调用方据此把日志升到 WARN。
+// ProbeFailed 单独计数：它既不进 Probed 也不进 Unknown，是「本轮什么都没看到」的唯一信号。
+//
 // 修法（用户定稿）：
 //   - 节点上没有这个人 + 面板判「该可用」→ **补注册**（AddClient，uuid 由节点生成）；
 //   - 字段对不上（含残留旧记录）→ **先 UpdateClient 保留 uuid**（重建会换 uuid：
@@ -44,23 +49,37 @@ import (
 
 // ReconcileReport 是一轮全量比对的统计（日志口径，字段名固定，改动要同步调用方）。
 type ReconcileReport struct {
-	Nodes        int      // 参与比对的启用节点数
-	Users        int      // 参与比对的面板用户数
-	Probed       int      // 有明确结论的 (节点,用户) 数
-	Registered   int      // 节点缺人 → 补注册
-	Fixed        int      // 开关方向被纠正（该开被关→开 / 该关还开→关）
-	Drift        int      // total/expiry 漂移 → **只报告不写**（改错代价大于收益）
-	Rebuilt      int      // 预留：修正后仍不符时的删除重建（默认不启用，需人工确认）
-	Opened       int      // 该开被关 → 打开
-	Closed       int      // 该关还开 → 关闭
-	Unchanged    int      // 一致，零写入
-	Unknown      int      // 未知（超时/业务错/字段读不全）→ 本轮不动
-	Deferred     int      // 本轮没探测（预算外）或命中写入上限 → 下轮
-	Foreign      int      // 节点上**不是我们建的** client → 只报告
-	ForeignNames []string // 上面这些 email 的样本（最多 10 个）
-	SnapshotBy   string   // 本轮快照来源：inbounds / probe / mixed / none
-	OfflineNodes []string // 快照读失败的节点（不判失败，下轮再来）
-	ElapsedMs    int64
+	Nodes      int // 参与比对的启用节点数
+	Users      int // 参与比对的面板用户数
+	Probed     int // 有明确结论的 (节点,用户) 数
+	Registered int // 节点缺人 → 补注册
+	Fixed      int // 开关方向被纠正（该开被关→开 / 该关还开→关）
+	Drift      int // total/expiry 漂移 → **只报告不写**（改错代价大于收益）
+	// DriftSafe / DriftEarlyCut / DriftLoose 是 Drift 的方向分档（三者之和 == Drift）：
+	//   Safe     = 节点不设限，或比面板更宽松（靠面板兜底，用户无感）
+	//   EarlyCut = 节点配额/期限比面板更紧 → **用户会被节点提前掐**（唯一需要人工处理的方向）
+	//   Loose    = 其余「节点比面板更宽松」的形态（与 Safe 的差别只在节点是否设了限）
+	// 为什么单列三档：总数相同、方向不同，处置完全不同 —— 只有 EarlyCut>0 才有人受影响，
+	// 混在一个 Drift 里会让「4 条漂移」看起来严重、实际全是安全方向（或反过来）。
+	DriftSafe     int
+	DriftEarlyCut int
+	DriftLoose    int
+	Rebuilt       int      // 预留：修正后仍不符时的删除重建（默认不启用，需人工确认）
+	Opened        int      // 该开被关 → 打开
+	Closed        int      // 该关还开 → 关闭
+	Unchanged     int      // 一致，零写入
+	Unknown       int      // 未知（超时/业务错/字段读不全）→ 本轮不动
+	Deferred      int      // 本轮没探测（预算外）或命中写入上限 → 下轮
+	Foreign       int      // 节点上**不是我们建的** client → 只报告
+	ForeignNames  []string // 上面这些 email 的样本（最多 10 个）
+	SnapshotBy    string   // 本轮快照来源：inbounds / probe / mixed / none
+	OfflineNodes  []string // 快照读失败的节点（不判失败，下轮再来）
+	// ProbeFailed 是退化探测路径里「探测本身失败」（超时/5xx/登录态失效）的条数。
+	// 它们既不进 Probed 也不进 Unknown（Unknown 记的是「探测到了但字段读不全」），
+	// 所以必须单独计数：否则整轮全是探测失败时，快照看起来「干净」，实际一个人都没看到
+	// （旧的 checked=0 空转 143 轮就是这么来的）。
+	ProbeFailed int
+	ElapsedMs   int64
 }
 
 // reconcileUser 是比对用的最小用户视图（一次查库取齐，避免每用户单查）。
@@ -91,8 +110,10 @@ type nodeSnapshotEntry struct {
 type nodeSnapshot struct {
 	Entries map[string]nodeSnapshotEntry
 	Probed  map[string]bool
-	Foreign []string
-	Source  string // inbounds / probe
+	// ProbeFailed 是退化路径里「探测本身失败」的条数（既不进 Entries 也不进 Probed）。
+	ProbeFailed int
+	Foreign     []string
+	Source      string // inbounds / probe
 	// SampleKeys 是「字段读不全」样本对象的键名（每种读法最多留一条）：
 	// 3x-ui 各版本 client 字段命名不一致（total/totalGB、expiry_time/expiryTime），
 	// 读不全时必须把真实键名打出来，否则又会像旧的 checked=0 一样静默空转。
@@ -216,6 +237,10 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		rep.Registered += out.Registered
 		rep.Fixed += out.Fixed
 		rep.Drift += out.Drift
+		rep.DriftSafe += out.DriftSafe
+		rep.DriftEarlyCut += out.DriftEarlyCut
+		rep.DriftLoose += out.DriftLoose
+		rep.ProbeFailed += out.ProbeFailed
 		rep.Opened += out.Opened
 		rep.Closed += out.Closed
 		rep.Unchanged += out.Unchanged
@@ -246,6 +271,10 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		rep.SnapshotBy = "mixed"
 	}
 
+	// 本轮结论都在 ReconcileReport 里（含方向分档与探测失败数）。
+	// 「日志升级 WARN」由调用方按报告判定并只打一次（task.runUsersReconcileEnable）——
+	// 这里再喊一遍会让同一件事每 5 分钟刷两条 WARN。
+
 	// xray 侧 + users.traffic_disabled_at 的记账：统一交给 ToggleClient（全部节点确认才算）。
 	if !dry {
 		for id := range needOpen {
@@ -260,27 +289,96 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		}
 	}
 
+	// ToggleClient 在全部 enabled 节点上重写 enable（含本轮没在节点循环里动过的节点）：
+	// 只要本轮到过这一支，缓存里任何节点的 enable 都可能过期 → 整体作废，绝不顺着旧快照
+	// 再判下一轮。
+	if !dry && (len(needOpen) > 0 || len(needClose) > 0) {
+		c.clearInboundSnapshots()
+	}
+
 	rep.ElapsedMs = time.Since(start).Milliseconds()
 	return rep, nil
 }
 
 // nodeOutcome 是单台节点一轮比对的产出（并发执行，各节点独立统计，最后由主 goroutine 合并）。
 type nodeOutcome struct {
-	Source       string
-	SampleKeys   []string
-	Probed       int
-	Registered   int
-	Fixed        int
-	Drift        int
-	Opened       int
-	Closed       int
-	Unchanged    int
-	Unknown      int
-	Deferred     int
-	Foreign      int
-	ForeignNames []string
-	NeedOpen     []int64
-	NeedClose    []int64
+	Source        string
+	SampleKeys    []string
+	Probed        int
+	ProbeFailed   int
+	Registered    int
+	Fixed         int
+	Drift         int
+	DriftSafe     int
+	DriftEarlyCut int
+	DriftLoose    int
+	Opened        int
+	Closed        int
+	Unchanged     int
+	Unknown       int
+	Deferred      int
+	Foreign       int
+	ForeignNames  []string
+	NeedOpen      []int64
+	NeedClose     []int64
+}
+
+// driftClass 是 total/expiry 漂移的方向分档（只影响计数与日志级别，不影响读法/修法）。
+type driftClass int
+
+const (
+	// driftSafe：节点不设限（total==0）—— 节点放得比面板开，靠面板封禁兜底，用户无感。
+	driftSafe driftClass = iota
+	// driftEarlyCut：节点配额/期限比面板更紧 —— **用户会被节点提前掐**，必须人工确认。
+	driftEarlyCut
+	// driftLoose：节点设了限但比面板更宽松（安全方向）。
+	driftLoose
+)
+
+// label 是日志里的中文口径（与旧版逐字一致，便于对线上历史日志）。
+func (d driftClass) label() string {
+	switch d {
+	case driftEarlyCut:
+		return "节点<面板(会提前掐人,需人工确认)"
+	case driftLoose:
+		return "节点更宽松(安全)"
+	default:
+		return "节点不限(靠面板兜底,安全)"
+	}
+}
+
+// classifyDrift 判定一条漂移的方向分档（纯函数，只读三个字段）。
+//
+// 3x-ui 语义（实测）：total==0 = **不限流量**（不是"限额 0"）；expiry==0 = 不过期。
+// 判定顺序（期限优先 —— 期限提前到期是最硬的"提前掐人"）：
+//  1. 两边都有期限、节点更早 → EarlyCut；
+//  2. 面板有限额、节点限额更小 → EarlyCut（0 < 节点 < 面板）；
+//  3. 面板有限额、节点不设限 → Safe；
+//  4. 其余 → Loose（节点比面板宽松）。
+func classifyDrift(entry nodeSnapshotEntry, u reconcileUser) driftClass {
+	if u.ExpiryMs > 0 && entry.ExpiryMs > 0 && entry.ExpiryMs < u.ExpiryMs {
+		return driftEarlyCut
+	}
+	if entry.TotalGB > 0 && entry.TotalGB < u.Limit {
+		return driftEarlyCut
+	}
+	if entry.TotalGB == 0 && u.Limit > 0 {
+		return driftSafe
+	}
+	return driftLoose
+}
+
+// recordDrift 记一条漂移并累加对应方向分档（三档之和恒等于 Drift）。
+func (o *nodeOutcome) recordDrift(d driftClass) {
+	o.Drift++
+	switch d {
+	case driftEarlyCut:
+		o.DriftEarlyCut++
+	case driftLoose:
+		o.DriftLoose++
+	default:
+		o.DriftSafe++
+	}
 }
 
 // reconcileOnNode 处理单台 3x-ui 节点：取快照 → 逐用户按面板意图比对 → 只修开关方向。
@@ -295,12 +393,13 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 		return out, fmt.Errorf("构造失败: %w", err)
 	}
 
-	snap, err := c.nodeSnapshot(ctx, client, users, probeBudget, round)
+	snap, err := c.nodeSnapshot(ctx, node.ID, client, users, probeBudget, round)
 	if err != nil {
 		return out, err
 	}
 	out.Source = snap.Source
 	out.SampleKeys = snap.SampleKeys
+	out.ProbeFailed = snap.ProbeFailed
 	for _, email := range snap.Foreign {
 		out.Foreign++
 		if len(out.ForeignNames) < 10 {
@@ -391,27 +490,27 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 			continue
 		}
 
-		// enable 一致、只有 total/expiry 对不上 → 只报告，带方向。
+		// enable 一致、只有 total/expiry 对不上 → 只报告，带方向分档（classifyDrift）。
 		// 3x-ui 的语义：total==0 = **不限流量**（不是"限额 0"），所以
 		//   node_total==0          → 节点不设限、靠面板封禁兜底（安全方向）
 		//   0 < node_total < panel → 节点会比面板更早掐人（唯一需人工处理的方向）
 		//   node_total > panel     → 节点更宽松（安全方向）
 		if entry.TotalGB != u.Limit || entry.ExpiryMs != u.ExpiryMs {
-			out.Drift++
+			dir := classifyDrift(entry, u)
+			out.recordDrift(dir)
 			if out.Drift <= 3 {
-				dir := "节点更宽松(安全)"
-				switch {
-				case entry.TotalGB == 0 && u.Limit > 0:
-					dir = "节点不限(靠面板兜底,安全)"
-				case entry.TotalGB > 0 && entry.TotalGB < u.Limit:
-					dir = "节点<面板(会提前掐人,需人工确认)"
-				}
 				c.logf_("[reconcile] 字段漂移（只报告）node=%s user=%d total %d/%d expiry %d/%d %s",
-					node.Name, u.ID, entry.TotalGB, u.Limit, entry.ExpiryMs, u.ExpiryMs, dir)
+					node.Name, u.ID, entry.TotalGB, u.Limit, entry.ExpiryMs, u.ExpiryMs, dir.label())
 			}
 			continue
 		}
 		out.Unchanged++
+	}
+
+	// 写入后作废该节点的共享快照：本轮读到的 entry 已是「写入前」的，
+	// 若留着 TTL，紧接着跑的 traffic-sync 会把刚修好的人误报成漂移（drift 记录）。
+	if !dry && writes > 0 {
+		c.invalidateInboundSnapshot(node.ID)
 	}
 	return out, nil
 }
@@ -424,15 +523,18 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 //   - **ping 不到（连不上/拒绝/无路由/DNS 失败）→ 直接放弃**，不重试（重试也是白等）；
 //   - **超时 → 兜底重试一次**（多数是瞬时抖动），再超时才放弃；
 //   - 放弃的节点本轮记 OfflineNodes + Unknown，绝不当成「节点上没有这个人」而误注册/误清标记。
-func (c *Collector) nodeSnapshot(ctx context.Context, client *threexui.Client, users []reconcileUser,
+//
+// 重试语义与缓存的关系：失败的拉取不进缓存（见 cachedInbounds），所以「超时再试一次」
+// 仍然是一次真实的新请求，不会被上一轮的错误结果短路掉。
+func (c *Collector) nodeSnapshot(ctx context.Context, nodeID int64, client *threexui.Client, users []reconcileUser,
 	budget, round int) (nodeSnapshot, error) {
 
-	snap, err := c.nodeSnapshotOnce(ctx, client, users, budget, round)
+	snap, err := c.nodeSnapshotOnce(ctx, nodeID, client, users, budget, round)
 	if err == nil || ctx.Err() != nil || !isTimeoutErr(err) {
 		return snap, err
 	}
 	c.logf_("[reconcile] 拉取超时，兜底重试一次: %v", err)
-	return c.nodeSnapshotOnce(ctx, client, users, budget, round)
+	return c.nodeSnapshotOnce(ctx, nodeID, client, users, budget, round)
 }
 
 // isTimeoutErr 判定是否「超时类」错误（只有这类才值得重试一次）。
@@ -451,10 +553,10 @@ func isTimeoutErr(err error) bool {
 }
 
 // nodeSnapshotOnce 是单次拉取（不含重试）。
-func (c *Collector) nodeSnapshotOnce(ctx context.Context, client *threexui.Client, users []reconcileUser,
+func (c *Collector) nodeSnapshotOnce(ctx context.Context, nodeID int64, client *threexui.Client, users []reconcileUser,
 	budget, round int) (nodeSnapshot, error) {
 
-	if entries, keysSample, err := c.snapshotFromInbounds(ctx, client); err == nil && len(entries) > 0 {
+	if entries, keysSample, err := c.snapshotFromInbounds(ctx, nodeID, client); err == nil && len(entries) > 0 {
 		snap := nodeSnapshot{Entries: entries, Probed: map[string]bool{}, Source: "inbounds", SampleKeys: keysSample}
 		ourSet := make(map[string]bool, len(users))
 		for _, u := range users {
@@ -488,34 +590,15 @@ func (c *Collector) nodeSnapshotOnce(ctx context.Context, client *threexui.Clien
 //     `email` / `enable` / `total`（限额字节）/ `expiry_time`（毫秒）；
 //   - `settings` 可能是 JSON 字符串，也可能已经是解析好的对象，里面 `clients[]` 用 camelCase
 //     （`totalGB` / `expiryTime`）。两种形态都要吃，取不到的字段标 Incomplete 并留键名样本。
-func (c *Collector) snapshotFromInbounds(ctx context.Context, client *threexui.Client) (map[string]nodeSnapshotEntry, []string, error) {
-	inbounds, err := client.ListInbounds(ctx)
+//
+// 读的是节点级共享快照（TTL + singleflight，见 inbound_cache.go）：与 traffic-sync 的
+// Stats 出自同一次 inbounds/list，两个任务不再各拉一遍。解析逻辑在 parseInboundSnapshot。
+func (c *Collector) snapshotFromInbounds(ctx context.Context, nodeID int64, client *threexui.Client) (map[string]nodeSnapshotEntry, []string, error) {
+	snap, err := c.cachedInbounds(ctx, nodeID, client)
 	if err != nil {
 		return nil, nil, err
 	}
-	out := make(map[string]nodeSnapshotEntry)
-	var keysSample []string
-	for _, ib := range inbounds {
-		for _, obj := range clientsOfInbound(ib) {
-			email := strings.TrimSpace(stringOf(obj["email"]))
-			if email == "" {
-				continue
-			}
-			e := entryFromClientObject(obj)
-			if e.Incomplete && keysSample == nil {
-				keysSample = objKeyNames(obj)
-			}
-			// 同 email 跨入站：任一入站能读全就算有结论；全都不全则保持 Incomplete
-			if prev, ok := out[email]; ok && !prev.Incomplete {
-				continue
-			}
-			if prev, ok := out[email]; ok && prev.Incomplete && e.Incomplete {
-				continue
-			}
-			out[email] = e
-		}
-	}
-	return out, keysSample, nil
+	return snap.Entries, snap.KeysSample, nil
 }
 
 // clientsOfInbound 从入站对象里取出它的 client 列表（clientStats 优先，settings 兜底）。
@@ -585,7 +668,10 @@ func (c *Collector) snapshotFromProbe(ctx context.Context, client *threexui.Clie
 				done++
 				continue
 			}
-			continue // 未知：不算探测过，下轮再来
+			// 探测本身失败（超时/5xx/登录态失效）：不算探测过，下轮再来 ——
+			// 但必须单独计数，否则整轮全失败时快照看起来「干净」而实际一个人都没看到。
+			snap.ProbeFailed++
+			continue
 		}
 		if obj == nil {
 			snap.Probed[email] = true
@@ -629,6 +715,10 @@ func entryFromClientObject(obj map[string]any) nodeSnapshotEntry {
 }
 
 // truthyField 取布尔/数值/字符串的可真值字段。
+//
+// ⚠️ 必须吃 json.Number：驱动层的 Decode 用 UseNumber（大整数保原文），
+// 节点回来的 `enable: true` 是 bool、但 `enable: 1` 会是 json.Number("1")。
+// 只认 float64/int64 会让真实节点上的 enable 全部「读不到」→ 整条判 Incomplete → 全轮 Unknown。
 func truthyField(obj map[string]any, key string) (bool, bool) {
 	v, ok := obj[key]
 	if !ok || v == nil {
@@ -641,6 +731,13 @@ func truthyField(obj map[string]any, key string) (bool, bool) {
 		return t != 0, true
 	case int64:
 		return t != 0, true
+	case int:
+		return t != 0, true
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f != 0, true
+		}
+		return false, false
 	case string:
 		s := strings.TrimSpace(strings.ToLower(t))
 		return s == "true" || s == "1", true
@@ -797,10 +894,23 @@ func (c *Collector) reconcileUsers(ctx context.Context) ([]reconcileUser, error)
 
 // ── 小工具 ───────────────────────────────────────────────────
 
-// asInt64 兼容 JSON 数字（float64）与字符串两种形态。
+// asInt64 兼容 JSON 数字与字符串两种形态。
+//
+// ⚠️ json.Number 是主路径（驱动用 UseNumber 解码，保大整数原文）：
+// 流量限额/期限是 int64 量级，走 float64 中转会把大数截断成相邻可表示值；
+// 原先只认 float64 时，真实节点上的 total/expiryTime 一律读成 0 → 字段漂移全部漏报。
 func asInt64(v any) (int64, bool) {
 	switch n := v.(type) {
 	case nil:
+		return 0, false
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i, true
+		}
+		// 面板偶尔把整数编码成 "9.0"/1e3 形态：退一步按浮点截断。
+		if f, err := n.Float64(); err == nil {
+			return int64(f), true
+		}
 		return 0, false
 	case float64:
 		return int64(n), true

@@ -213,7 +213,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Task, error) {
 	res, err := tx.ExecContext(ctx,
 		"INSERT INTO async_tasks (type, status, subject_type, subject_id, total, completed, failed, "+
 			"attempts, max_attempts, meta, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)",
+			"VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?)",
 		in.Type, StatusPending, in.SubjectType, in.SubjectID, in.MaxAttempts, metaVal, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("创建异步任务失败: %w", err)

@@ -108,6 +108,11 @@ func bootstrap() (*httpx.App, *sql.DB, error) {
 		return nil, nil, err
 	}
 
+	// 增量建表：老用户升级时 install.sh 跳过 schema.sql，这里幂等补齐新增表。
+	if err := ensureSchema(db); err != nil {
+		return nil, nil, err
+	}
+
 	return httpx.NewApp(db, cfg), db, nil
 }
 

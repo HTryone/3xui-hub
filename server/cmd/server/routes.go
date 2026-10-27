@@ -48,6 +48,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	registerProvisionHandler(queue, db, cfg.AppKey, logger)
 	registerDomainHandler(queue, db, logger)
+	// 流量同步 item 的执行体。不注册的话 /sync-traffic 派出的 SyncNodeTrafficJob
+	// 会被队列按「不支持的任务类型」直接 failItem，按钮等于白点。
+	task.RegisterTrafficSync(queue, asyncSvc,
+		task.NewCollectorSyncer(col, db, cfg.AppKey), &task.SQLNodeGate{DB: db})
 	queue.Start()
 
 	provisioner := NewQueueProvisioner(db, queue, cfg.AppKey, logger)
@@ -74,7 +78,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	payHandlers.RegisterPayment(r)
 
 	// 用户端补充端点（sync-traffic / invite / discount / proxy-store）
-	userExtras := api.NewUserExtras(apiHandler, db)
+	// sync-traffic 同样接 asyncSvc：用户端也会建 traffic_sync 任务，手搓 INSERT 一样永远 pending。
+	userExtras := api.NewUserExtras(apiHandler, db, asyncSvc)
 	extrasAuth := r.Group("", apiHandler.AuthMiddleware())
 	userExtras.Register(extrasAuth)
 
@@ -173,7 +178,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 
 	// 邮件域
 	mailDomain := admin.NewMailDomain(admin.MailDeps{
-		Store:  admin.NewMailSQLStore(db),
+		Store:  admin.NewMailSQLStoreWithKey(db, cfg.AppKey),
 		AppKey: cfg.AppKey,
 		Logger: logger,
 	})
@@ -226,7 +231,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	systemDomain.RegisterGeodata(adminGroup)
 
 	// 管理端补充端点（monitor / sync-traffic / async-tasks）
-	adminExtras := admin.NewAdminExtras(db)
+	// sync-traffic 必须接 asyncSvc（已挂 queue）：只有 FindOrCreateTrafficSync 会拆 items
+	// 并派发 SyncNodeTrafficJob，手搓 INSERT 的任务永远 pending。
+	adminExtras := admin.NewAdminExtras(db, asyncSvc)
 	adminExtras.Register(adminGroup)
 
 	// 管理端 404 兜底（PHP bootstrap/app.php 口径）
