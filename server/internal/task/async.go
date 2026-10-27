@@ -854,6 +854,11 @@ func (s *Service) batchSize() int {
 	return defaultNodeSyncBatch
 }
 
+// PendingItemKeys 是 pendingItemKeys 的导出形态（节点类 Job 需要用它在扫描时做 diff）。
+func (s *Service) PendingItemKeys(ctx context.Context, taskID int64) ([]string, error) {
+	return s.pendingItemKeys(ctx, taskID)
+}
+
 func (s *Service) pendingItemKeys(ctx context.Context, taskID int64) ([]string, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		"SELECT item_key FROM async_task_items WHERE task_id = ? AND status = ? ORDER BY id",

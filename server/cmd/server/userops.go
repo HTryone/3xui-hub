@@ -116,44 +116,102 @@ func (o *userPanelOps) DeleteUserClients(ctx context.Context, user *admin.UserRo
 	return nil
 }
 
-// SwitchProtocol 遍历节点切协议（3x-ui 新协议 attach + 旧协议 detach；xray 协议在
-// users 表由 agent 渲染时读，无 attach/detach 概念，跳过）。
+// SwitchProtocol 遍历节点切协议，对齐 ProtocolSwitchService::switch 的顺序与保护：
+//
+//  1. **该节点没有新协议入站 → 整个跳过**（什么都不动）。旧实现在这里仍然 detach 旧入站，
+//     结果是「用户切到一个这台机器不支持的协议 → 这台节点上彻底没有挂载 → 直接断连」。
+//  2. **先 attach 新协议入站，成功后才 detach 旧协议**（排除与新协议重合的 id）。
+//     反过做的人会有一个「新旧都不在」的窗口；attach 失败时旧挂载也已经没了。
+//  3. attach 任一节点失败 → **回滚已改的节点**（detach 新的、重新 attach 旧的）并返回 error，
+//     让调用方不要落库 users.protocol —— 否则面板上的协议与节点实际挂载不一致。
+//  4. 旧入站 detach 失败不致命：用户已经能用新协议，回滚反而更糟，只记日志。
+//
+// xray 节点跳过：协议在 users 表，agent 渲染时按协议取客户端，没有 attach/detach 概念。
 func (o *userPanelOps) SwitchProtocol(ctx context.Context, user *admin.UserRow, newProtocol string) error {
 	oldProtocol := user.Protocol
 	if oldProtocol == newProtocol {
 		return nil
+	}
+	if newProtocol != "vless" && newProtocol != "trojan" {
+		return fmt.Errorf("不支持的协议: %s", newProtocol)
 	}
 	drivers, err := o.col.NodeDrivers(ctx)
 	if err != nil {
 		return err
 	}
 	email := user.ClientEmail()
+
+	type attachRecord struct {
+		nodeID int64
+		client *threexui.Client
+		newIDs []int64
+		oldIDs []int64
+	}
+	var done []attachRecord
+
+	rollback := func() {
+		for _, rec := range done {
+			if err := rec.client.DetachClient(ctx, email, rec.newIDs); err != nil {
+				o.logger.Printf("[userops] 协议切换回滚 detach 失败 node=%d user=%d: %v", rec.nodeID, user.ID, err)
+			}
+			if len(rec.oldIDs) > 0 {
+				if err := rec.client.AttachClient(ctx, email, rec.oldIDs); err != nil {
+					o.logger.Printf("[userops] 协议切换回滚 attach 旧入站失败 node=%d user=%d: %v", rec.nodeID, user.ID, err)
+				}
+			}
+		}
+	}
+
 	for _, nd := range drivers {
 		if nd.ThreeX == nil {
 			continue
 		}
-		oldIDs, err := o.col.InboundIDs(ctx, nd.NodeID, oldProtocol)
-		if err != nil {
-			o.logger.Printf("[userops] switch 读旧入站失败 node=%d: %v", nd.NodeID, err)
-			continue
-		}
 		newIDs, err := o.col.InboundIDs(ctx, nd.NodeID, newProtocol)
 		if err != nil {
-			o.logger.Printf("[userops] switch 读新入站失败 node=%d: %v", nd.NodeID, err)
-			continue
+			rollback()
+			return fmt.Errorf("节点 #%d 读新协议入站失败: %w", nd.NodeID, err)
 		}
-		if len(oldIDs) > 0 {
-			if err := nd.ThreeX.DetachClient(ctx, email, oldIDs); err != nil {
-				o.logger.Printf("[userops] detach 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
-			}
+		if len(newIDs) == 0 {
+			continue // 该节点没有新协议入站：保留旧挂载，不动
 		}
-		if len(newIDs) > 0 {
-			if err := nd.ThreeX.AttachClient(ctx, email, newIDs); err != nil {
-				o.logger.Printf("[userops] attach 失败 user=%d node=%d: %v", user.ID, nd.NodeID, err)
+		oldIDs, err := o.col.InboundIDs(ctx, nd.NodeID, oldProtocol)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("节点 #%d 读旧协议入站失败: %w", nd.NodeID, err)
+		}
+
+		if err := nd.ThreeX.AttachClient(ctx, email, newIDs); err != nil {
+			rollback()
+			return fmt.Errorf("节点 #%d 挂载新协议入站失败: %w", nd.NodeID, err)
+		}
+		done = append(done, attachRecord{nodeID: nd.NodeID, client: nd.ThreeX, newIDs: newIDs, oldIDs: oldIDs})
+
+		if toDetach := idsExcept(oldIDs, newIDs); len(toDetach) > 0 {
+			if err := nd.ThreeX.DetachClient(ctx, email, toDetach); err != nil {
+				o.logger.Printf("[userops] 旧协议 detach 失败（新协议已可用，不回滚）user=%d node=%d ids=%v: %v",
+					user.ID, nd.NodeID, toDetach, err)
 			}
 		}
 	}
 	return nil
+}
+
+// idsExcept 返回 all 里不在 exclude 中的 id（保序）。
+func idsExcept(all, exclude []int64) []int64 {
+	if len(all) == 0 {
+		return nil
+	}
+	drop := make(map[int64]bool, len(exclude))
+	for _, id := range exclude {
+		drop[id] = true
+	}
+	out := make([]int64, 0, len(all))
+	for _, id := range all {
+		if !drop[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // provisionThreeX 给 3x-ui 节点建 client（对齐 PHP prepareClientData + 存在则更新）。
@@ -202,6 +260,13 @@ func (o *userPanelOps) provisionThreeX(ctx context.Context, client *threexui.Cli
 	payload["limitIp"] = 0
 	if err := client.UpdateClient(ctx, email, payload, nil); err != nil {
 		return fmt.Errorf("UpdateClient: %w", err)
+	}
+	// 3x-ui 的 update 只改 client 定义，**不会把 client 挂到它还没挂的入站上**：
+	// 节点后加了入站、或上次入站同步失败时，光更新会让用户一直在新入站上连不上
+	// （续费/重置看起来成功、实际只有一个入站可用）。attach 幂等（同一批 id
+	// 重复挂结果不变），这里顺手补齐。
+	if err := client.AttachClient(ctx, email, inboundIDs); err != nil {
+		return fmt.Errorf("AttachClient 补齐入站: %w", err)
 	}
 	return nil
 }

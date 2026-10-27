@@ -247,13 +247,31 @@ func (c *Collector) toggleClient(ctx context.Context, userID int64, enable, book
 		return out, nil
 	}
 
-	// 关闭确认：写 traffic_disabled_at（+ 通知由 P10 的邮件通道负责，本层不做）。
+	// 关闭确认：写 traffic_disabled_at。
 	if _, err := c.db.ExecContext(ctx,
 		"UPDATE users SET traffic_disabled_at = ?, updated_at = ? WHERE id = ?",
 		dbDateTime(c.now()), dbDateTime(c.now()), userID); err != nil {
 		return out, fmt.Errorf("写入 traffic_disabled_at 失败: %w", err)
 	}
+
+	// 流量用尽通知（对齐 BanService::notifyTrafficExhausted）：挂在「关闭成功」这个动作上。
+	//
+	// 这里不是天然的单次触发点 —— 超时用户每 ban.recheck_after_hours 小时会被重关一次，
+	// 防重靠 mail_notify:{scene}:{who} 标记（同一收件人同一场景只发一封）；
+	// 重置/续费/改套餐后由 restoreReminders 解锁，下次用尽再发。
+	c.notifyTrafficExhausted(ctx, userID)
 	return out, nil
+}
+
+// notifyTrafficExhausted 关闭流量后发「流量已用尽」通知（开关未开 / 已发过时静默跳过）。
+func (c *Collector) notifyTrafficExhausted(ctx context.Context, userID int64) {
+	if c.notifier == nil {
+		return
+	}
+	if err := c.notifier.NotifyScene(ctx, "traffic_exhausted", userID); err != nil {
+		// 发信失败绝不能影响封禁结果（标记已写、节点已关），只记日志。
+		c.logf_("流量用尽通知发送失败（user=%d）: %v", userID, err)
+	}
 }
 
 // forgetDisabledState 复刻 BanService::forgetDisabledState()。

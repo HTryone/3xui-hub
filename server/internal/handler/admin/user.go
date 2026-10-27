@@ -567,8 +567,10 @@ func (d *UserDomain) userSwitchProtocol(c *gin.Context) {
 // applyPlan 对齐 UserAdminService::applyPlan：重算流量限额与到期时间。
 // 无套餐 → 清零限额、永不过期；周期套餐 → 30 天后重置；总量套餐 → 只给总量。
 func (d *UserDomain) applyPlan(c *gin.Context, userID uint64) error {
-	// MailNotifyService::restoreReminders 属于邮件域（P8c），这里通过 ops 之外的空实现跳过：
-	// PHP 侧也只是清防重标记，不影响本次接口的落库结果。
+	// 购买/续费/管理员改套餐 → 恢复该用户全部自动通知（PHP applyPlan 第一行同款）。
+	// 不解除防重标记，该用户同一场景一辈子只会收到第一封提醒。
+	d.restoreAlerts(ctxOf(c), userID)
+
 	u, err := d.users.UserByID(ctxOf(c), userID)
 	if err != nil {
 		return err
@@ -651,6 +653,8 @@ func (d *UserDomain) applyPlan(c *gin.Context, userID uint64) error {
 // resetTraffic 对齐 UserAdminService::resetTraffic：只清零已用流量。
 // 周期套餐：monthly_traffic_used 清零 + traffic_limit 加月流量额度；总量套餐：traffic_used 清零。
 func (d *UserDomain) resetTraffic(c *gin.Context, u *UserRow) error {
+	// 重置流量 → 恢复该用户全部自动通知（PHP resetTraffic 第一行同款）。
+	d.restoreAlerts(ctxOf(c), u.ID)
 	now := d.now()
 	patch := UserPatch{Now: now}
 	if u.IsPeriodPlan() {
@@ -686,6 +690,8 @@ func (d *UserDomain) resetTraffic(c *gin.Context, u *UserRow) error {
 
 // renew 对齐 UserAdminService::renew：重置总流量 + 重新启用。
 func (d *UserDomain) renew(c *gin.Context, u *UserRow) error {
+	// 续费 → 恢复该用户全部自动通知（PHP renew 第一行同款）。
+	d.restoreAlerts(ctxOf(c), u.ID)
 	now := d.now()
 	zero := int64(0)
 	en := true
@@ -711,6 +717,20 @@ func (d *UserDomain) renew(c *gin.Context, u *UserRow) error {
 	// 重置计数不等于重新启用：统一再走一次开关（issue #51）。
 	_ = d.ops.SetClientEnabled(ctxOf(c), fresh, true)
 	return nil
+}
+
+// restoreAlerts 解锁该用户的自动通知防重标记（对齐 MailNotifyService::restoreReminders）。
+//
+// 购买 / 续费 / 重置流量 / 管理员改套餐后调用：标记不解除的话，同一场景（流量用尽、
+// 即将用尽、即将到期、已到期）的提醒该用户永远只会收到第一次。
+func (d *UserDomain) restoreAlerts(ctx context.Context, userID uint64) {
+	if d.alerts == nil || userID == 0 {
+		return
+	}
+	if err := d.alerts.Restore(ctx, userID); err != nil {
+		// 清标记失败不影响主流程（PHP 侧同样只是清缓存键）。
+		d.logger.Printf("admin 解锁邮件提醒标记失败 user=%d: %v", userID, err)
+	}
 }
 
 // ---- 小工具 ----

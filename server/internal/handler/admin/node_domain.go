@@ -15,6 +15,7 @@ package admin
 // 校验器），但持有自己的依赖（NodeStore / NodeOps），互不影响。
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
@@ -35,6 +36,10 @@ type NodeDomain struct {
 	ops   NodeOps
 	cfg   NodeConfig
 
+	// tasks 把「建好的 async_tasks」派进队列。为空时只落库不执行（仅供测试/无队列场景）。
+	// 节点类任务（初始化 / 入站同步 / 删除清理）必须经它派发，否则任务永远是 pending。
+	tasks NodeTaskDispatcher
+
 	// now 供测试注入固定时钟（PHP 侧全部用 now()，时区 UTC）。
 	now func() time.Time
 
@@ -45,12 +50,27 @@ type NodeDomain struct {
 	pollInterval time.Duration
 }
 
+// NodeTaskDispatcher 把异步任务派进执行队列（对齐 PHP 的 dispatchAfterCommit）。
+//
+// 独立成小接口：admin 包不能 import internal/task（会与 task 反向依赖），
+// 真实实现在 cmd/server（nodeTaskDispatcher）。
+type NodeTaskDispatcher interface {
+	// Dispatch 按 pending item 逐批派发（node_init → NodeInitUserJob、
+	// cleanup_clients → NodeClientsCleanupJob、sync_inbounds → NodeInboundSyncJob）。
+	Dispatch(ctx context.Context, taskID uint64) error
+	// DispatchInboundScan 派发「入站同步扫描」Job（一台节点一个，不占 item）：
+	// 先拉一次客户端清单做 diff，只有缺挂载的才逐个 attach。
+	DispatchInboundScan(ctx context.Context, taskID uint64, nodeID uint64) error
+}
+
 // NodeDeps 是 NodeDomain 的依赖清单（显式传参，避免测试构造半吊子实例）。
 type NodeDeps struct {
 	Store NodeStore
 	Ops   NodeOps
+	// Tasks 为空时创建的任务不会被执行（生产必须注入）。
+	Tasks  NodeTaskDispatcher
 	Config NodeConfig
-	Now   func() time.Time
+	Now    func() time.Time
 	Logger *log.Logger
 }
 
@@ -70,6 +90,7 @@ func NewNodeDomain(d NodeDeps) *NodeDomain {
 	return &NodeDomain{
 		store:        d.Store,
 		ops:          d.Ops,
+		tasks:        d.Tasks,
 		cfg:          nodeConfigDefaults(d.Config),
 		now:          now,
 		logger:       logger,

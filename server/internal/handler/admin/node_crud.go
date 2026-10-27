@@ -357,6 +357,10 @@ func (d *NodeDomain) nodeDestroy(c *gin.Context) {
 		return
 	}
 
+	// 节点行已删，远端清理靠 meta 里的连接快照 —— 必须派发，否则任务永远 pending、
+	// 节点上的 ch_user_* 会一直留在面板里。
+	d.dispatchNodeTask(ctxOf(c), task.ID)
+
 	message := "已删除，正在后台清理远端客户端（日志页可看进度）"
 	d.success(c, jo("cleanup_task_id", task.ID, "message", message), message)
 }

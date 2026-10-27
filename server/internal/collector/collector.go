@@ -64,6 +64,21 @@ type Collector struct {
 	// inbounds 是节点级 inbounds/list 共享快照（TTL + singleflight，见 inbound_cache.go）：
 	// traffic-sync 与 reconcile 共用，避免同一份大 JSON 每 5 分钟被拉两遍。
 	inbounds inboundSnapshotCache
+	// notifier 是流量用尽通知的接缝（nil = 不发通知）。启动时注入，之后只读。
+	notifier MailNotifier
+}
+
+// MailNotifier 是「按场景给用户发一封通知邮件」的接缝。
+//
+// 实现见 internal/task.SceneNotifier（渲染 + 防重 + 邮件队列都在那边），
+// 由 cmd/server 组装时注入 —— collector 不 import task（task 已 import collector）。
+type MailNotifier interface {
+	NotifyScene(ctx context.Context, scene string, userID int64) error
+}
+
+// SetMailNotifier 注入通知器（对齐 PHP 里 BanService 直接调 MailNotifyService）。
+func (c *Collector) SetMailNotifier(n MailNotifier) {
+	c.notifier = n
 }
 
 // New 构造采集器。

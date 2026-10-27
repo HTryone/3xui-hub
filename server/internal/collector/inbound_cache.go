@@ -181,7 +181,9 @@ func parseInboundSnapshot(inbounds []map[string]any) *inboundSnapshot {
 	// ── reconcile 视图：与 snapshotFromInbounds 原逻辑逐字一致 ──
 	// clientStats 优先、settings.clients 兜底；enable 读不到才标 Incomplete
 	// （total/expiry 缺失按 0 = 不限/不过期，是合法值）。
+	// 同 email 跨入站出现时，**入站归属取并集**（对账要用它判断新入站有没有挂上）。
 	for _, ib := range inbounds {
+		ibID := inboundIDOf(ib)
 		for _, obj := range clientsOfInbound(ib) {
 			email := strings.TrimSpace(stringOf(obj["email"]))
 			if email == "" {
@@ -191,17 +193,76 @@ func parseInboundSnapshot(inbounds []map[string]any) *inboundSnapshot {
 			if e.Incomplete && snap.KeysSample == nil {
 				snap.KeysSample = objKeyNames(obj)
 			}
-			// 同 email 跨入站：任一入站能读全就算有结论；全都不全则保持 Incomplete
-			if prev, ok := snap.Entries[email]; ok && !prev.Incomplete {
+			if prev, ok := snap.Entries[email]; ok {
+				prev.Inbounds = appendUniqueID(prev.Inbounds, ibID)
+				switch {
+				case !prev.Incomplete && !e.Incomplete:
+					// 已经读全：只并入站归属，字段保持首条（同 email 是同一份全局定义）
+					snap.Entries[email] = prev
+				case prev.Incomplete && e.Incomplete:
+					snap.Entries[email] = prev
+				default:
+					// prev 不全、本条读全 → 用本条的字段覆盖，但保留合并后的入站归属
+					e.Inbounds = prev.Inbounds
+					snap.Entries[email] = e
+				}
 				continue
 			}
-			if prev, ok := snap.Entries[email]; ok && prev.Incomplete && e.Incomplete {
-				continue
-			}
+			e.Inbounds = appendUniqueID(nil, ibID)
 			snap.Entries[email] = e
 		}
 	}
 	return snap
+}
+
+// inboundIDOf 读入站对象的 id（个别版本给数字字符串；读不到返回 0）。
+func inboundIDOf(ib map[string]any) int64 {
+	if v, ok := asInt64(ib["id"]); ok {
+		return v
+	}
+	return 0
+}
+
+// appendUniqueID 追加一个入站 id（去重、忽略非正数、保持升序）。
+func appendUniqueID(ids []int64, id int64) []int64 {
+	if id <= 0 {
+		return ids
+	}
+	for _, have := range ids {
+		if have == id {
+			return ids
+		}
+	}
+	ids = append(ids, id)
+	sortIDs(ids)
+	return ids
+}
+
+// sortIDs 就地升序（入站数量个位数，插入排序足够）。
+func sortIDs(ids []int64) {
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j] < ids[j-1]; j-- {
+			ids[j], ids[j-1] = ids[j-1], ids[j]
+		}
+	}
+}
+
+// missingInbounds 返回 want 里 have 没有的入站 id（升序）。
+func missingInbounds(want, have []int64) []int64 {
+	if len(want) == 0 {
+		return nil
+	}
+	set := make(map[int64]bool, len(have))
+	for _, id := range have {
+		set[id] = true
+	}
+	var out []int64
+	for _, id := range want {
+		if !set[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // inboundClientStats 取入站的 clientStats 数组（本版 3x-ui 实测存在，snake_case）。

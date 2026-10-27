@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"math"
+	"strconv"
 	"time"
 
 	"controlhub-server/internal/task"
@@ -147,31 +148,31 @@ func (h *AdminExtras) AsyncTaskIndex(c *gin.Context) {
 }
 
 // AsyncTaskRetry 对齐 POST /admin-api/async-tasks/{asyncTask}/retry。
+//
+// 必须走 task.Service.Retry：它会把失败子项重置为 pending 并按任务类型重新派发
+// （入站同步走扫描、其余按批派发）。以前这里只手写 UPDATE ... status='pending'，
+// 状态改回 pending 却没人执行 —— 按钮点了等于没点。
 func (h *AdminExtras) AsyncTaskRetry(c *gin.Context) {
-	taskID := c.Param("asyncTask")
-
-	// 检查任务存在且状态为 failed
-	var status string
-	err := h.db.QueryRowContext(c.Request.Context(),
-		"SELECT status FROM async_tasks WHERE id = ?", taskID).Scan(&status)
-	if err == sql.ErrNoRows {
+	taskID, err := strconv.ParseInt(c.Param("asyncTask"), 10, 64)
+	if err != nil {
 		h.fail(c, "接口不存在", 404)
 		return
 	}
+
+	ctx := c.Request.Context()
+	t, err := h.async.Get(ctx, taskID)
 	if err != nil {
 		h.fail(c, "服务器错误", 500)
 		return
 	}
-
-	if status != "failed" {
-		h.fail(c, "任务当前状态不允许重试", 400)
+	if t == nil {
+		h.fail(c, "接口不存在", 404)
 		return
 	}
 
-	_, err = h.db.ExecContext(c.Request.Context(),
-		"UPDATE async_tasks SET status = 'pending', error = NULL WHERE id = ?", taskID)
-	if err != nil {
-		h.fail(c, "服务器错误", 500)
+	if _, err := h.async.Retry(ctx, taskID); err != nil {
+		// 「仅失败任务可以重试 / 任务已达到最大尝试次数 / 没有可重试的失败项」
+		h.fail(c, err.Error(), 400)
 		return
 	}
 

@@ -15,6 +15,7 @@ package admin
 // OrderStore / StatsStore / TrafficStore），互不牵连。
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -39,12 +40,24 @@ type UserDomain struct {
 	stats   StatsStore
 	traffic TrafficStore
 
+	// alerts 解锁该用户的自动通知防重标记（购买/续费/重置/改套餐后调用）。
+	// 为空时跳过（只在测试/无邮件场景出现）。
+	alerts AlertRestorer
+
 	cfg UserConfig
 
 	// now 供测试注入固定时钟（PHP 侧全部用 now()，时间字面量口径见 data-contract §4）。
 	now func() time.Time
 
 	logger loggerLike
+}
+
+// AlertRestorer 解锁用户的通知防重标记，对齐 MailNotifyService::restoreReminders。
+//
+// 独立成小接口的原因同 UserPanelOps：admin 包不 import internal/task，
+// 真实实现是 internal/task.SceneNotifier，由 cmd/server 注入。
+type AlertRestorer interface {
+	Restore(ctx context.Context, userID uint64) error
 }
 
 // NewUserDomain 组装用户/套餐/订单/统计域。
@@ -75,6 +88,7 @@ func NewUserDomain(d UserDeps) *UserDomain {
 	return &UserDomain{
 		users:   users,
 		ops:     ops,
+		alerts:  d.Alerts,
 		plans:   d.Plans,
 		orders:  d.Orders,
 		stats:   d.Stats,

@@ -67,6 +67,9 @@ type ReconcileReport struct {
 	Rebuilt       int      // 预留：修正后仍不符时的删除重建（默认不启用，需人工确认）
 	Opened        int      // 该开被关 → 打开
 	Closed        int      // 该关还开 → 关闭
+	// Attached 是「节点上已有这个 client，但没挂到该协议的全部入站」→ 补挂的数量
+	// （节点后加了入站、或上次入站同步失败留下的缺口）。attach 幂等，重复修无副作用。
+	Attached      int
 	Unchanged     int      // 一致，零写入
 	Unknown       int      // 未知（超时/业务错/字段读不全）→ 本轮不动
 	Deferred      int      // 本轮没探测（预算外）或命中写入上限 → 下轮
@@ -101,6 +104,9 @@ type nodeSnapshotEntry struct {
 	TotalGB    int64
 	ExpiryMs   int64
 	Incomplete bool // 三个关键字段没读全 → 不许据此改写
+	// Inbounds 是这条 client 在节点上**实际挂着的**入站 id（inbounds/list 按入站归属解析，
+	// 同 email 跨入站取并集）。用来发现「节点后加了入站、老用户没挂上」这类漂移。
+	Inbounds []int64
 }
 
 // nodeSnapshot 是一次节点读取的结果：结论集 + 本轮确实探测过的 email 集合。
@@ -243,6 +249,7 @@ func (c *Collector) ReconcileNodes(ctx context.Context, dry bool, maxWritesPerNo
 		rep.ProbeFailed += out.ProbeFailed
 		rep.Opened += out.Opened
 		rep.Closed += out.Closed
+		rep.Attached += out.Attached
 		rep.Unchanged += out.Unchanged
 		rep.Unknown += out.Unknown
 		rep.Deferred += out.Deferred
@@ -314,6 +321,7 @@ type nodeOutcome struct {
 	DriftLoose    int
 	Opened        int
 	Closed        int
+	Attached      int
 	Unchanged     int
 	Unknown       int
 	Deferred      int
@@ -397,6 +405,12 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 	if err != nil {
 		return out, err
 	}
+	// 该节点各协议的入站集合：用来判「这个人有没有挂到本协议的全部入站」。
+	// 一次查询覆盖全部用户（按协议分组），避免逐用户查库。
+	protoInbounds, err := c.nodeInboundIDsByProtocol(ctx, node.ID)
+	if err != nil {
+		return out, err
+	}
 	out.Source = snap.Source
 	out.SampleKeys = snap.SampleKeys
 	out.ProbeFailed = snap.ProbeFailed
@@ -449,6 +463,33 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 		if entry.Incomplete {
 			out.Unknown++ // 字段读不全 → 不许据此改写
 			continue
+		}
+
+		// 入站维度：节点后加了入站、或上次入站同步失败 → 这个人的 client 缺挂载，
+		// 新入站上连不上（续费/重置也不会补：3x-ui 的 update 只改 client 定义）。
+		// 只对「有套餐」的人补（无套餐本来就不该在节点上有 client）；
+		// entry.Inbounds 为空表示解析不到归属 → 不猜，留给入站同步任务。
+		if want := protoInbounds[u.Protocol]; len(want) > 0 && len(entry.Inbounds) > 0 && u.PlanIDValid {
+			if missing := missingInbounds(want, entry.Inbounds); len(missing) > 0 {
+				if writes >= maxWritesPerNode {
+					out.Deferred++
+					continue
+				}
+				writes++
+				if dry {
+					out.Attached++
+				} else if err := client.AttachClient(ctx, email, missing); err != nil {
+					c.logf_("[reconcile] 补挂入站失败 node=%s user=%d missing=%v: %v",
+						node.Name, u.ID, missing, err)
+					out.Unknown++
+					continue
+				} else {
+					out.Attached++
+					if out.Attached <= 3 {
+						c.logf_("[reconcile] 补挂入站 node=%s user=%d inbounds=%v", node.Name, u.ID, missing)
+					}
+				}
+			}
 		}
 
 		// 只对**开关方向**动手：该开被关→开、该关还开→关。
@@ -516,6 +557,34 @@ func (c *Collector) reconcileOnNode(ctx context.Context, node nodeRow, users []r
 }
 
 // ── 读快照 ───────────────────────────────────────────────────
+
+// nodeInboundIDsByProtocol 一次查出该节点各协议的入站 id（升序去重）。
+//
+// 入站维度对账用：判「用户的 client 有没有挂到本协议的全部入站」。一次查询覆盖整轮，
+// 不逐用户查库。
+func (c *Collector) nodeInboundIDsByProtocol(ctx context.Context, nodeID int64) (map[string][]int64, error) {
+	if c.db == nil {
+		// 无库场景（纯渲染/单测）：没有入站维度可对账，按「不知道」处理（不补挂）。
+		return map[string][]int64{}, nil
+	}
+	rows, err := c.db.QueryContext(ctx,
+		"SELECT protocol, inbound_id FROM node_inbounds WHERE node_id = ?", nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("查询节点入站失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string][]int64{}
+	for rows.Next() {
+		var proto string
+		var id int64
+		if err := rows.Scan(&proto, &id); err != nil {
+			return nil, fmt.Errorf("读取节点入站失败: %w", err)
+		}
+		out[proto] = appendUniqueID(out[proto], id)
+	}
+	return out, rows.Err()
+}
 
 // nodeSnapshot 读一次节点：先试 inbounds/list 全量解析，拿不到就退化逐用户探测（带预算）。
 //

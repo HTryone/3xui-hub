@@ -636,6 +636,32 @@ func selectedInboundIDs(inbounds map[string][]int64) []int64 {
 
 // ---- 任务派发 ----
 
+// dispatchNodeTask 把刚建好的 async_task 派进队列（对齐 PHP 的 dispatchAfterCommit）。
+//
+// 不派发的后果是任务永远停在 pending：item 不会执行、日志页看着在「处理中」、节点也永远
+// 不会被 FinalizeInitTask 启用。派发失败只记日志并保留任务行 —— 管理员可在日志页点重试
+// （重试接口走 task.Service.Retry，会重新派发）。
+//
+// 为什么在后台 goroutine 里派发：Service.Dispatch 会把 pending item 逐批 Enqueue，
+// 而队列的 channel 只有 256 缓冲 —— node_init 的 item 是「全部用户」（批 2），
+// 用户上千时同步派发会把 HTTP 请求线程卡在 Enqueue 上直到 worker 腾出空位，
+// 前端等到超时。任务行已经落库，派发只是通知 worker，异步化不影响正确性
+// （真正没派出去的，日志页重试能补）。
+func (d *NodeDomain) dispatchNodeTask(ctx context.Context, taskID uint64) {
+	if taskID == 0 || d.tasks == nil {
+		return
+	}
+	tasks := d.tasks
+	logger := d.logger
+	// 不能挂在请求 ctx 上：请求返回即取消，派发会半路断掉。
+	bg := context.WithoutCancel(ctx)
+	go func() {
+		if err := tasks.Dispatch(bg, taskID); err != nil {
+			logger.Printf("admin 派发节点任务失败 task=%d: %v", taskID, err)
+		}
+	}()
+}
+
 // submitNodeInit 对齐 NodeInitService::submit：按用户逐条建 item。
 func (d *NodeDomain) submitNodeInit(c *gin.Context, n *NodeRecord, shouldEnable bool) (*NodeTaskRecord, error) {
 	userIDs, err := d.store.AllUserIDs(ctxOf(c))
@@ -669,7 +695,11 @@ func (d *NodeDomain) submitNodeInit(c *gin.Context, n *NodeRecord, shouldEnable 
 		if err := d.store.FinalizeInitTask(ctxOf(c), n.ID, task.ID); err != nil {
 			return nil, err
 		}
+		return task, nil
 	}
+
+	// 有用户：必须派发执行体（NodeInitUserJob），否则任务永远停在 pending、节点永远不会启用。
+	d.dispatchNodeTask(ctxOf(c), task.ID)
 	return task, nil
 }
 
@@ -707,7 +737,7 @@ func (d *NodeDomain) submitInboundSync(c *gin.Context, n *NodeRecord, changed ma
 		itemKeys = append(itemKeys, "user:"+strconv.FormatUint(id, 10))
 	}
 
-	return d.store.CreateTask(ctxOf(c), TaskCreateInput{
+	task, err := d.store.CreateTask(ctxOf(c), TaskCreateInput{
 		Type:        "node_action",
 		SubjectType: "node",
 		SubjectID:   n.ID,
@@ -715,6 +745,23 @@ func (d *NodeDomain) submitInboundSync(c *gin.Context, n *NodeRecord, changed ma
 		MaxAttempts: 3,
 		ItemKeys:    itemKeys,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// 只派扫描（不是逐 item 派发）：请求内零面板请求，扫描时一次清单拿全量。
+	d.dispatchInboundSync(ctxOf(c), task.ID, n.ID)
+	return task, nil
+}
+
+// dispatchInboundSync 派发「入站同步扫描」：先拉一次清单做 diff，只有缺挂载的才 attach。
+// 不派发 = 用户永远不会出现在新入站上（保存节点时只落了一条 pending 任务）。
+func (d *NodeDomain) dispatchInboundSync(ctx context.Context, taskID, nodeID uint64) {
+	if taskID == 0 || d.tasks == nil {
+		return
+	}
+	if err := d.tasks.DispatchInboundScan(ctx, taskID, nodeID); err != nil {
+		d.logger.Printf("admin 派发入站同步扫描失败 task=%d node=%d: %v", taskID, nodeID, err)
+	}
 }
 
 // 编译期断言：本地引用的 xray 常量与包内实现保持一致（防止将来包重构时静默漂移）。

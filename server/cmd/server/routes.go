@@ -48,6 +48,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	registerProvisionHandler(queue, db, cfg.AppKey, logger)
 	registerDomainHandler(queue, db, logger)
+	// 节点类 Job（初始化 / 入站同步 / 扫描 / 删除清理）。不注册的话节点域派出的
+	// async_tasks 会被队列按「不支持的任务类型」丢掉，任务永远 pending。
+	registerNodeJobs(queue, db, cfg.AppKey, asyncSvc, logger)
 	// 流量同步 item 的执行体。不注册的话 /sync-traffic 派出的 SyncNodeTrafficJob
 	// 会被队列按「不支持的任务类型」直接 failItem，按钮等于白点。
 	task.RegisterTrafficSync(queue, asyncSvc,
@@ -142,6 +145,25 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	})
 	adminHandler.Register(adminGroup)
 
+	// 邮件域：必须在用户域之前构造 —— 续费/重置流量要用它解锁自动通知的防重标记，
+	// collector 的流量用尽通知也要走同一个邮件队列。
+	mailDomain := admin.NewMailDomain(admin.MailDeps{
+		Store:  admin.NewMailSQLStoreWithKey(db, cfg.AppKey),
+		AppKey: cfg.AppKey,
+		Logger: logger,
+	})
+	mailDomain.Register(adminGroup)
+
+	// 单用户通知（流量用尽通知 + 解锁防重标记）：collector 与用户域共用一份实现。
+	sceneNotifier := task.NewSceneNotifier(task.CommandDeps{
+		DB:        db,
+		Logf:      logger.Printf,
+		MailQueue: &taskMailSender{q: mailDomain.MailQueue()},
+	})
+	if col != nil {
+		col.SetMailNotifier(sceneNotifier)
+	}
+
 	// 用户/套餐/订单/统计域（P8a）
 	userDomain := admin.NewUserDomain(admin.UserDeps{
 		Users:   admin.NewAdminUserSQLStore(db),
@@ -155,6 +177,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			BusinessTimezone: "Asia/Shanghai",
 		},
 		Ops:    NewUserPanelOps(col, logger),
+		Alerts: alertRestorer{notifier: sceneNotifier},
 		Logger: logger,
 	})
 	userDomain.Register(adminGroup)
@@ -164,6 +187,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	nodeDomain := admin.NewNodeDomain(admin.NodeDeps{
 		Store: nodeStore,
 		Ops:   admin.NewRealNodeOps(admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")}, nodeStore, logger),
+		// 节点任务（初始化 / 入站同步 / 删除清理）必须派发，否则永远 pending。
+		Tasks: newNodeTaskDispatcher(asyncSvc, queue),
 		Config: admin.NodeConfig{
 			AppKey:   cfg.AppKey,
 			PanelURL: os.Getenv("APP_URL"),
@@ -177,14 +202,6 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Store: admin.NewPaymentSQLStore(db),
 	})
 	paymentDomain.Register(adminGroup)
-
-	// 邮件域
-	mailDomain := admin.NewMailDomain(admin.MailDeps{
-		Store:  admin.NewMailSQLStoreWithKey(db, cfg.AppKey),
-		AppKey: cfg.AppKey,
-		Logger: logger,
-	})
-	mailDomain.Register(adminGroup)
 
 	// Telegram 机器人（通知渠道：节点离线/支付到账/备份推送）
 	telegramDomain := admin.NewTelegramDomain(admin.TelegramDeps{

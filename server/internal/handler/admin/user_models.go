@@ -184,6 +184,8 @@ type UserDeps struct {
 	Store   AdminUserStore
 	Users   AdminUserStore
 	Ops     UserPanelOps
+	// Alerts 解锁邮件提醒防重标记（可空：为空则续费/重置后不再提醒）。
+	Alerts  AlertRestorer
 	Plans   PlanStore
 	Orders  OrderStore
 	Stats   StatsStore

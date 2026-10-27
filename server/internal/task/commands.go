@@ -127,6 +127,8 @@ type ReconcileSummary struct {
 	DriftSafe, DriftEarlyCut   int
 	DriftLoose                 int
 	Opened, Closed, Unchanged  int
+	// Attached 是「client 已存在但没挂到该协议全部入站」→ 补挂的条数（入站维度对账）。
+	Attached                   int
 	Unknown, Deferred, Foreign int
 	ForeignNames, OfflineNodes []string
 	SnapshotBy                 string
@@ -1729,10 +1731,10 @@ func (r *commandRunner) runUsersReconcileEnable(ctx context.Context, args map[st
 	// 结构化计数（一行、固定键名，便于日志检索与面板解析）：
 	//   nodes/users 规模 · probed 有结论数 · probe_failed 探测失败 · fixed/skipped(deferred) 动作
 	//   unknown 未知 · drift 三档（safe/early_cut/loose）· ms 墙钟。
-	r.logf("%snodes=%d users=%d probed=%d probe_failed=%d registered=%d fixed=%d skipped=%d "+
+	r.logf("%snodes=%d users=%d probed=%d probe_failed=%d registered=%d fixed=%d attached=%d skipped=%d "+
 		"unknown=%d drift=%d drift_safe=%d drift_early_cut=%d drift_loose=%d "+
 		"opened=%d closed=%d unchanged=%d foreign=%d snap=%s ms=%d",
-		prefix, sum.Nodes, sum.Users, sum.Probed, sum.ProbeFailed, sum.Registered, sum.Fixed,
+		prefix, sum.Nodes, sum.Users, sum.Probed, sum.ProbeFailed, sum.Registered, sum.Fixed, sum.Attached,
 		sum.Deferred, sum.Unknown, sum.Drift, sum.DriftSafe, sum.DriftEarlyCut, sum.DriftLoose,
 		sum.Opened, sum.Closed, sum.Unchanged, sum.Foreign, sum.SnapshotBy, sum.ElapsedMs)
 	if sum.DriftEarlyCutWarning() {
