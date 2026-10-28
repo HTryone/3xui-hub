@@ -690,18 +690,22 @@ func (d *NodeDomain) guardServerNames(c *gin.Context, node *NodeRecord, input ma
 	}
 
 	names := usableServerNames(stringListInput(input["server_names"], nil))
-	suspect := []string{}
-	for _, name := range names {
-		if !xray.SameSite(name, host) {
-			suspect = append(suspect, name)
-		}
-	}
+	suspect, evidence := xray.ServerNameSuspects(dest, names)
 
 	if len(suspect) == 0 || inputBool(input["confirm_server_names"]) {
 		return true
 	}
 
-	d.abort422(c, "这些 serverNames 与 dest（"+host+"）不是同一站点的域名："+
+	if evidence == xray.CertEvidenceSameSite {
+		// 证书取不到 → 退回旧的注册域猜测，文案说明依据是「猜的」。
+		d.abort422(c, "这些 serverNames 与 dest（"+host+"）不是同一站点的域名："+
+			strings.Join(suspect, "、")+
+			"。REALITY 会按客户端 SNI 向 dest 取证书，dest 给不出证书的域名会让被分到的用户全部连不上。"+
+			"未能取到 dest 的真实证书，以上按注册域推测；若确认这些域名由 dest 的同一张证书覆盖（CDN 多 SAN），请确认后再保存。")
+		return false
+	}
+
+	d.abort422(c, "这些 serverNames 不在 dest（"+host+"）出示的证书里："+
 		strings.Join(suspect, "、")+
 		"。REALITY 会按客户端 SNI 向 dest 取证书，dest 给不出证书的域名会让被分到的用户全部连不上。"+
 		"若确认这些域名由 dest 的同一张证书覆盖（CDN 多 SAN），请确认后再保存。")
