@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -207,9 +208,11 @@ func parseIDList(raw sql.NullString) []int64 {
 func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) ([]Node, error) {
 	// api_key 必须一起取：它决定该节点走「并发组」还是「串行组」，
 	// 而 PHP 是先把并发组全部铺完、再跑串行组 —— 分组错了，链接顺序就会变。
+	// driver_config 必须一起取：host_v6 存在里面（nodes 表没有该列，老库也不做 ALTER），
+	// 订阅按入站地址族选地址时要用。
 	const query = `
 		SELECT n.id, n.name, n.host, n.port, n.enabled, n.driver_type, n.traffic_multiplier,
-		       n.api_key, n.password, n.scheme, n.web_base_path, n.username, n.verify_ssl
+		       n.api_key, n.password, n.scheme, n.web_base_path, n.username, n.verify_ssl, n.driver_config
 		FROM nodes n
 		WHERE n.enabled = 1 AND n.status = 'online'
 		  AND (
@@ -239,9 +242,10 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) 
 			basePath sql.NullString
 			username sql.NullString
 			verify   sql.NullBool
+			driverCf sql.NullString
 		)
 		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Port, &node.Enabled, &driverTy,
-			&traffic, &apiKey, &password, &scheme, &basePath, &username, &verify); err != nil {
+			&traffic, &apiKey, &password, &scheme, &basePath, &username, &verify, &driverCf); err != nil {
 			return nil, fmt.Errorf("扫描 nodes 失败: %w", err)
 		}
 		// 面板连接参数（PHP 侧由 ThreeXUiClient::fromNode 直接读模型属性）
@@ -249,6 +253,8 @@ func (r *SQLRepository) SubscribableNodes(ctx context.Context, protocol string) 
 		node.WebBasePath = basePath.String
 		node.Username = username.String
 		node.VerifySSL = verify.Bool
+		// 原始 JSON 文本（host_v6 在里面；坏 JSON 由 HostV6 吞掉）
+		node.DriverConfig = driverCf.String
 		// PHP: ($this->driver_type ?? '3x-ui')，即 NULL/空 → '3x-ui'
 		node.DriverType = driverTy.String
 		if node.DriverType == "" {
@@ -305,7 +311,7 @@ func (r *SQLRepository) NodeInboundIDs(ctx context.Context, nodeID int64, protoc
 // XrayInbounds 返回该节点启用的入站（对齐 XrayInbound::enabledFor：sort、id 升序）。
 func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayInbound, error) {
 	rows, err := r.DB.QueryContext(ctx, `
-		SELECT id, node_id, tag, remark, protocol, port, settings, stream_settings, enabled, sort
+		SELECT id, node_id, tag, remark, protocol, port, listen, settings, stream_settings, enabled, sort
 		FROM xray_inbounds
 		WHERE node_id = ? AND enabled = 1
 		ORDER BY sort, id`, nodeID)
@@ -319,14 +325,16 @@ func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayI
 		var (
 			ib       XrayInbound
 			remark   sql.NullString
+			listen   sql.NullString
 			settings sql.NullString
 			stream   sql.NullString
 		)
 		if err := rows.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port,
-			&settings, &stream, &ib.Enabled, &ib.Sort); err != nil {
+			&listen, &settings, &stream, &ib.Enabled, &ib.Sort); err != nil {
 			return nil, fmt.Errorf("扫描 xray_inbounds 失败: %w", err)
 		}
 		ib.Remark = remark.String
+		ib.Listen = listen.String
 		ib.Settings = settings.String
 		ib.StreamSettings = stream.String
 		out = append(out, ib)
@@ -485,7 +493,8 @@ func (r *SQLRepository) newPanelClient(node Node) (*panelClient, error) {
 	}
 
 	return &panelClient{
-		baseURL:    scheme + "://" + node.Host + ":" + strconv.FormatInt(port, 10) + basePath,
+		// net.JoinHostPort：域名/IPv4 输出与 "host:port" 逐字节一致，IPv6 字面量补方括号。
+		baseURL:    scheme + "://" + net.JoinHostPort(node.Host, strconv.FormatInt(port, 10)) + basePath,
 		apiKey:     apiKey,
 		username:   node.Username,
 		password:   password,

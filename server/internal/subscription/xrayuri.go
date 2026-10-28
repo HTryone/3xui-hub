@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"hash/crc32"
+	"net"
 	"strings"
 )
 
@@ -160,7 +161,7 @@ func xrayVlessURI(node Node, inbound XrayInbound, user *User, host string) strin
 		}
 	}
 
-	return "vless://" + user.UUID + "@" + host + ":" + itoa(inbound.Port) +
+	return "vless://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
 		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
 }
 
@@ -231,7 +232,7 @@ func xrayTrojanURI(node Node, inbound XrayInbound, user *User, host string) stri
 		query += "&path=" + rawurlencode(coalesceString(jsonField(stream, "wsSettings", "path"), "/"))
 	}
 
-	return "trojan://" + user.UUID + "@" + host + ":" + itoa(inbound.Port) +
+	return "trojan://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
 		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
 }
 
@@ -244,8 +245,14 @@ func xraySSURI(node Node, inbound XrayInbound, host string) string {
 	}
 	password := jsonFieldString(settings, "password")
 
-	return "ss://" + b64encode([]byte(method+":"+password)) + "@" + host + ":" + itoa(inbound.Port) +
+	return "ss://" + b64encode([]byte(method+":"+password)) + "@" + xrayURIHostPort(host, inbound.Port) +
 		"#" + rawurlencode(inboundLabel(node, inbound))
+}
+
+// xrayURIHostPort 拼链接里的「host:port」：域名/IPv4 与 "host:port" 逐字节一致，
+// IPv6 字面量补方括号（否则 "@2602:fa4f::1:443" 会把末段当端口）。
+func xrayURIHostPort(host string, port int64) string {
+	return net.JoinHostPort(host, itoa(port))
 }
 
 // serverNameFor 对应 serverNameFor()：按用户 id 从同一站点的 serverNames 里稳定选一个。

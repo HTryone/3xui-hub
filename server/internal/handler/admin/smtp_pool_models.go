@@ -114,6 +114,9 @@ type SMTPAccountStore interface {
 	UpdateSMTPAccount(ctx context.Context, id uint64, in SMTPAccountInput, now time.Time) (*SMTPAccount, error)
 	DeleteSMTPAccount(ctx context.Context, id uint64) error
 	SetSMTPAccountStatus(ctx context.Context, id uint64, status string, now time.Time) error
+	// ResetSMTPAccountToday 手动把今日已发与连续失败清零（不动状态/冷却）：
+	// sent_today 到 daily_limit 后不想等到跨天时的逃生口。
+	ResetSMTPAccountToday(ctx context.Context, id uint64, now time.Time) error
 }
 
 // smtpFailure 是一次失败的分类（决定「换号 / 冷却 / 直接失败」）。

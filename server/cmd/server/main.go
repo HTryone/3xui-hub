@@ -171,7 +171,7 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 	nodeDomain := admin.NewNodeDomain(admin.NodeDeps{
 		Store:  nodeStore,
 		Ops:    admin.NewRealNodeOps(admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")}, nodeStore, logger),
-		Config: admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL")},
+		Config: admin.NodeConfig{AppKey: cfg.AppKey, PanelURL: os.Getenv("APP_URL"), PanelURLV6: os.Getenv("APP_URL_V6")},
 		Logger: logger,
 	})
 

@@ -117,6 +117,8 @@ func (d *NodeDomain) nodeStore(c *gin.Context) {
 
 	if driverType == "xray" {
 		create.NodeSecret = randomAlnum(32)
+		// issue #88：host_v6 进 driver_config（nodes 表没这列），空串 = 未配置。
+		create.HostV6 = nodeOptionalString(input, "host_v6")
 		pull := int64(30)
 		if raw, ok := d.store.SiteConfigMany(ctxOf(c), []string{siteKeyXrayPullInterval}); ok == nil {
 			if v := raw[siteKeyXrayPullInterval]; v != "" {
@@ -240,6 +242,12 @@ func (d *NodeDomain) nodeUpdate(c *gin.Context) {
 		in.MultiplierSet = true
 		in.TrafficMultiplier = multiplierInput(v)
 	}
+	// issue #88：host_v6 只对 xray 节点有意义（3x-ui 节点面板主动连节点，不涉及 v6 入口）。
+	// 传空串/null = 清空该配置。
+	if v, present := input["host_v6"]; present && driverType == "xray" {
+		in.HostV6Set = true
+		in.HostV6 = ptrStringOrNil(v)
+	}
 
 	// 初始化进行中：改连接信息/入站直接拒绝；只改 enabled 时转交任务（不落 nodes）。
 	activeTask, err := d.store.ActiveNodeInitTask(ctxOf(c), node.ID)
@@ -272,6 +280,19 @@ func (d *NodeDomain) nodeUpdate(c *gin.Context) {
 		secret := randomAlnum(32)
 		if err := d.store.SetNodeSecret(ctxOf(c), updated.ID, secret); err != nil {
 			d.failServer(c, "生成节点密钥", err)
+			return
+		}
+	}
+
+	// issue #88：host_v6 存 driver_config（行锁 + 键级合并，不整块回写）。
+	// 空串/null 一并写入：mergeDriverConfig 里空串是有效值，读取侧按「没配」处理。
+	if in.HostV6Set && updated.IsXray() {
+		patch := map[string]any{"host_v6": ""}
+		if in.HostV6 != nil {
+			patch["host_v6"] = phpTrimSpaceOnly(*in.HostV6)
+		}
+		if err := d.store.MergeDriverConfig(ctxOf(c), updated.ID, patch); err != nil {
+			d.failServer(c, "保存节点 IPv6 地址", err)
 			return
 		}
 	}

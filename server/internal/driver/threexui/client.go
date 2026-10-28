@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -209,12 +210,14 @@ func New(cfg Config) *Client {
 		now = time.Now
 	}
 
+	// baseURL 的 host:port 走 net.JoinHostPort：域名/IPv4 输出与 "%s:%d" 逐字节一致，
+	// IPv6 字面量自动补方括号（否则 "https://2602:...:1fc5:48972" 会被切成主机名+端口）。
 	c := &Client{
 		scheme:        scheme,
 		host:          cfg.Host,
 		port:          port,
 		basePath:      basePath,
-		baseURL:       fmt.Sprintf("%s://%s:%d%s", scheme, cfg.Host, port, basePath),
+		baseURL:       fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(cfg.Host, strconv.Itoa(port)), basePath),
 		apiKey:        cfg.APIKey,
 		username:      cfg.Username,
 		password:      cfg.Password,

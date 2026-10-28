@@ -291,7 +291,10 @@ func (s *Service) fetchNodeLinks(ctx context.Context, node Node, inboundIDs []in
 // 读库失败等同于该节点没有入站，PHP 侧异常同样被 catch 掉）。
 func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repository) []string {
 	host := phpTrim(node.Host)
-	if host == "" || user.UUID == "" {
+	hostV6 := node.HostV6()
+	// issue #88：只配了 host_v6、没配 host 的节点仍然可以有 v6 入口的链接，
+	// 所以这里不再以 host 为空直接放弃，改为逐入站选地址。
+	if user.UUID == "" {
 		return nil
 	}
 
@@ -305,7 +308,12 @@ func xraySubscriptionURIs(node Node, user *User, ctx context.Context, repo Repos
 		if user.Protocol != inbound.Protocol {
 			continue
 		}
-		uris = append(uris, xrayInboundURI(node, inbound, user, host))
+		inboundHost, ok := subscriptionHostFor(host, hostV6, inbound.Listen)
+		if !ok {
+			// 两个地址都空 / v6 入站但只有 v4 地址：跳过，绝不产出 "host:port" 残缺链接。
+			continue
+		}
+		uris = append(uris, xrayInboundURI(node, inbound, user, inboundHost))
 	}
 	// PHP 侧 XrayDriver::getClientLinks 返回后还要过一遍 sanitizeLinks（过滤空串、去重）。
 	return sanitizeLinks(uris)

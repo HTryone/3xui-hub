@@ -1986,32 +1986,70 @@ func (r *commandRunner) realityIssuesFor(ib struct {
 	}
 
 	if len(san) > 0 {
-		if snArr, ok := realitySettings["serverNames"].([]any); ok {
-			for _, sn := range snArr {
-				s, ok := sn.(string)
-				if !ok {
-					continue
-				}
-				s = strings.ToLower(strings.TrimSpace(s))
-				if s == "" {
-					continue
-				}
-				found := false
-				for _, name := range san {
-					if name == s {
-						found = true
-						break
-					}
-				}
-				if !found {
+		// 回执里的 server_names 可能被 agent 截断（条目上限 / 回执体积上限）。截断时列表
+		// 里没有某个名字 ≠ 证书里没有它，这时做「不在覆盖范围」的硬判定必然误报——
+		// 以前把 24 条 SAN 的 www.amazon.com 截成 8 条，正确配置就是这样被判成故障的。
+		// san_total 是截断前的真实条数；0 = 旧版 agent 不回带，总数未知，同样不能硬判。
+		sanTotal := int(toInt64Value(row["san_total"]))
+		incomplete := sanTotal == 0 || sanTotal > len(san)
+		if incomplete {
+			// 只剩「列表里有的名字一定没问题」这一半结论；列表外的名字给一条事实性
+			// 提示（不是故障），说明本轮没比全，免得把校验盲区藏起来。
+			var missed []string
+			if snArr, ok := realitySettings["serverNames"].([]any); ok {
+				missed = missingServerNames(snArr, san)
+			}
+			if len(missed) > 0 {
+				if sanTotal == 0 {
 					issues = append(issues, fmt.Sprintf(
-						"serverName %s 不在 dest 证书覆盖范围内（被分到它的用户会握手失败）", s))
+						"dest 回执未带 SAN 总数（agent 过旧），巡检只比对了 %d 条，未比对 serverName %s",
+						len(san), strings.Join(missed, "、")))
+				} else {
+					issues = append(issues, fmt.Sprintf(
+						"dest 证书有 %d 条 SAN，巡检只拿到 %d 条（agent 回执截断），未比对 serverName %s",
+						sanTotal, len(san), strings.Join(missed, "、")))
 				}
+			}
+		} else if snArr, ok := realitySettings["serverNames"].([]any); ok {
+			// 列表完整（len(server_names) >= san_total），缺失即证书真没覆盖，报故障
+			for _, s := range missingServerNames(snArr, san) {
+				issues = append(issues, fmt.Sprintf(
+					"serverName %s 不在 dest 证书覆盖范围内（被分到它的用户会握手失败）", s))
 			}
 		}
 	}
 
 	return issues
+}
+
+// missingServerNames 返回入站 serverNames 里在 san（已小写去空白）中找不到的条目，
+// 按入站声明顺序、去重。空串与重复项跳过。
+func missingServerNames(snArr []any, san []string) []string {
+	seen := make(map[string]bool, len(snArr))
+	var missing []string
+	for _, sn := range snArr {
+		s, ok := sn.(string)
+		if !ok {
+			continue
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		found := false
+		for _, name := range san {
+			if name == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, s)
+		}
+	}
+
+	return missing
 }
 
 // probeRealityScan 下发 reality_scan 指令并等回执。

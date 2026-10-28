@@ -5,9 +5,9 @@ package admin
 
 import (
 	"context"
+	"net"
 	"strconv"
 	"strings"
-
 	"controlhub-server/internal/driver/xray"
 
 	"github.com/gin-gonic/gin"
@@ -94,6 +94,8 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 			data.put("node_secret_prefix", nil)
 		}
 		data.put("xray_version", nodeDriverConfigString(n, "xray_version"))
+		// issue #88：IPv6 入口地址（编辑表单回显；null = 未配置）
+		data.put("host_v6", nodeDriverConfigHostV6(n))
 		data.put("config_version", n.ConfigVersion)
 		data.put("lag_seconds", nodeDriverConfigInt(n, "lag_seconds"))
 		data.put("agent", nodeDriverConfigAgent(n))
@@ -252,6 +254,19 @@ func nodeDriverConfigBool(n *NodeRecord, path ...string) bool {
 	return nodeTruthy(nodeDriverConfig(n, path...))
 }
 
+// nodeDriverConfigHostV6 取 driver_config.host_v6：空/缺失都输出 null（前端占位符即「未配置」）。
+func nodeDriverConfigHostV6(n *NodeRecord) any {
+	v := nodeDriverConfig(n, "host_v6")
+	if v == nil {
+		return nil
+	}
+	s := phpTrimSpaceOnly(nodeScalarString(v))
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func nodeDriverConfigAgent(n *NodeRecord) any {
 	v := nodeDriverConfig(n, "agent")
 	if _, isObj := v.(*jsObj); isObj {
@@ -358,11 +373,22 @@ func (d *NodeDomain) installCommand(n *NodeRecord) string {
 	}
 	return "curl -fsSL " + base + "/node-install.sh -o /tmp/controlhub-node-install.sh && " +
 		"bash /tmp/controlhub-node-install.sh --hub " + base +
-		" --node " + name + " --secret " + secret
+		" --node " + name + " --secret " + secret + d.installHubV6Flag()
+}
+
+// installHubV6Flag 返回安装命令里的 --hub-v6 段（issue #88）。
+//
+// 只在面板配了 APP_URL_V6 时才拼出来：没配就不出现这个参数，老部署拿到的命令逐字节不变；
+// 配了才有 agent 的 v6 兜底通道（hub_url 优先、hub_url_v6 兜底）。
+func (d *NodeDomain) installHubV6Flag() string {
+	v6 := strings.TrimRight(strings.TrimSpace(d.cfg.PanelURLV6), "/")
+	if v6 == "" {
+		return ""
+	}
+	return " --hub-v6 " + v6
 }
 
 // ---- 节点表单校验 ----
-
 // validateNode 对齐 validateNode()：xray 节点的 host/username/api_key 非必填。
 func (d *NodeDomain) validateNode(c *gin.Context, input map[string]any, forUpdate bool) bool {
 	isXray := nodeDriverTypeOf(input) == "xray"
@@ -380,6 +406,8 @@ func (d *NodeDomain) validateNode(c *gin.Context, input map[string]any, forUpdat
 	v.field("driver_type", "sometimes", "in:3x-ui,xray")
 	v.field("name", nameRule, "string", "max:120")
 	v.field("host", hostRule, "string", "max:200")
+	// issue #88：IPv6 入口地址（可选）。裸地址或域名，长度上限与 host 一致。
+	v.field("host_v6", "sometimes", "nullable", "string", "max:200")
 	v.field("port", "sometimes", "integer", "between:1,65535")
 	v.field("scheme", "sometimes", "in:http,https")
 	v.field("web_base_path", "sometimes", "nullable", "string", "max:200")
@@ -400,6 +428,16 @@ func (d *NodeDomain) validateNode(c *gin.Context, input map[string]any, forUpdat
 		d.failNodeValidation(c, v)
 		return false
 	}
+	// issue #88：host_v6 只能是 IPv6 字面量或域名。填 IPv4 会被当成「v6 入口地址」，
+	// 于是绑 v6 的入站产出的订阅链接指向 v4 —— 客户端按 v6 入口却连不上，且很难看出来。
+	if val, present := input["host_v6"]; present && val != nil {
+		s := strings.Trim(strings.TrimSpace(nodeScalarString(val)), "[]")
+		if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
+			d.fail(c, "host_v6 要填节点的 IPv6 地址或只解析 AAAA 的域名，不能填 IPv4", 500)
+			return false
+		}
+	}
+
 	return true
 }
 

@@ -9,6 +9,7 @@ package admin
 //	PUT    /email/smtp-accounts/:account    修改
 //	DELETE /email/smtp-accounts/:account    删除
 //	PUT    /email/smtp-accounts/:account/status  状态切换（active/disabled）
+//	PUT    /email/smtp-accounts/:account/reset-today  今日计数清零
 //
 // 密码只进不出：列表/详情一律回 has_password，不回明文或密文。
 
@@ -25,6 +26,8 @@ func (d *MailDomain) registerSMTPAccountRoutes(r gin.IRouter) {
 	r.PUT("/email/smtp-accounts/:account", d.updateSMTPAccount)
 	r.DELETE("/email/smtp-accounts/:account", d.deleteSMTPAccount)
 	r.PUT("/email/smtp-accounts/:account/status", d.setSMTPAccountStatus)
+	// 今日计数清零（sent_today / error_count）。放在 :account 静态段之后不影响既有路由匹配。
+	r.PUT("/email/smtp-accounts/:account/reset-today", d.resetSMTPAccountToday)
 }
 
 // paramID / notFoundRoute 与 Handler 同口径（邮件域是独立 Domain，不复用 *Handler）。
@@ -245,4 +248,38 @@ func (d *MailDomain) setSMTPAccountStatus(c *gin.Context) {
 		return
 	}
 	d.success(c, presentSMTPAccount(acc), "状态已更新")
+}
+
+// resetSMTPAccountToday 今日计数清零（sent_today / error_count）。
+//
+// 用途：日限额到量后不必等到跨天。刻意不碰状态与冷却 —— 冷却中的号
+// 仍然要等 cooldown_until 到期（或管理员手动启用），重置计数不等于「放行」。
+func (d *MailDomain) resetSMTPAccountToday(c *gin.Context) {
+	id, ok := d.paramID(c, "account")
+	if !ok {
+		d.notFoundRoute(c)
+		return
+	}
+	if _, err := d.store.SMTPAccountByID(ctxOf(c), id); err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+	if err := d.store.ResetSMTPAccountToday(ctxOf(c), id, d.now().UTC()); err != nil {
+		if err == sql.ErrNoRows {
+			d.notFoundRoute(c)
+			return
+		}
+		d.failServer(c, "重置 SMTP 账号今日计数", err)
+		return
+	}
+	acc, err := d.store.SMTPAccountByID(ctxOf(c), id)
+	if err != nil {
+		d.failServer(c, "查询 SMTP 账号", err)
+		return
+	}
+	d.success(c, presentSMTPAccount(acc), "今日计数已重置")
 }

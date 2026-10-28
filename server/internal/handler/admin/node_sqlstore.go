@@ -339,6 +339,10 @@ func (s *nodeSQLStore) CreateNode(ctx context.Context, in NodeCreateInput) (*Nod
 		if in.PullInterval != nil {
 			cfg = append(cfg, ordMember{Key: "pull_interval", Value: *in.PullInterval})
 		}
+		// issue #88：IPv6 入口地址（订阅按入站地址族选地址时读它）。
+		if in.HostV6 != nil && phpTrimSpaceOnly(*in.HostV6) != "" {
+			cfg = append(cfg, ordMember{Key: "host_v6", Value: phpTrimSpaceOnly(*in.HostV6)})
+		}
 		body, err := ordEncode(cfg)
 		if err != nil {
 			return nil, err

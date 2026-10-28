@@ -84,6 +84,9 @@ type NodeCreateInput struct {
 	NodeSecret string
 	// PullInterval 仅 xray 节点：写入 driver_config.pull_interval。
 	PullInterval *int64
+	// HostV6 仅 xray 节点：IPv6 入口地址，写入 driver_config.host_v6
+	// （nodes 表没有该列，老库也不做 ALTER；与 node_secret 同住 JSON 列）。
+	HostV6 *string
 	// Inbounds 仅 3x-ui 节点：新建时要落的入站。
 	Inbounds map[string][]int64
 }
@@ -107,6 +110,9 @@ type NodeUpdateInput struct {
 	MultiplierSet     bool // 传了 traffic_multiplier（null 即清空回继承）
 	Inbounds          map[string][]int64
 	InboundsSet       bool
+	// HostV6 传了才改（null/空串 = 清空 driver_config.host_v6）。
+	HostV6    *string
+	HostV6Set bool
 }
 
 // NodeTaskRecord 是 async_tasks 一行（节点域只看这些列）。
@@ -598,6 +604,9 @@ type NodeConfig struct {
 	AppKey []byte
 	// PanelURL 对齐 config('app.url')（install_command 用）；空则回落 http://localhost。
 	PanelURL string
+	// PanelURLV6 是面板的 IPv6 地址（APP_URL_V6，可选，issue #88）。
+	// 填了才会在节点安装命令里带 --hub-v6，agent 才有 v6 兜底通道；留空 = 行为与改动前一致。
+	PanelURLV6 string
 	// RealityScanWait 对齐 config('panel.reality_scan_wait', 18) 秒。
 	RealityScanWait int
 	// OutboundTestWait 是出站连通测试的等待上限（PHP 写死 8 秒）。

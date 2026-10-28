@@ -247,6 +247,21 @@ func (s *mailSQLStore) SetSMTPAccountStatus(ctx context.Context, id uint64, stat
 	return err
 }
 
+// ResetSMTPAccountToday 手动重置今日已发与连续失败次数。
+//
+// 刻意**不动** status / cooldown_until / reset_at：
+//   - 状态是上线与否的开关，重置计数不该顺手把冷却中的号放行；
+//   - sent_today 的跨天口径由 reset_at 决定，计数归零后两种情形都读作 0
+//     （reset_at 是今天 → sent_today 本身为 0；不是今天 → smtpSentToday 直接回 0），
+//     改 reset_at 反而会把「今日窗口起点」抹掉。
+func (s *mailSQLStore) ResetSMTPAccountToday(ctx context.Context, id uint64, now time.Time) error {
+	now = now.UTC().Truncate(time.Second)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE smtp_accounts SET sent_today = 0, error_count = 0, updated_at = ? WHERE id = ?",
+		now, id)
+	return err
+}
+
 // encryptSMTPPassword 空串不加密（落 NULL），其余走 Laravel 兼容加密。
 func (s *mailSQLStore) encryptSMTPPassword(plain string) (any, error) {
 	if plain == "" {

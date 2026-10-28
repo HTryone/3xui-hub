@@ -10,6 +10,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"regexp"
@@ -42,6 +43,8 @@ func (d *MailDomain) Register(r gin.IRouter) {
 	r.GET("/email/schedule-mail", d.mailScheduleConfig)
 	r.PUT("/email/schedule-mail", d.mailSaveScheduleConfig)
 	r.GET("/email/logs", d.mailLogs)
+	// 批量发信进度（goroutine 队列不落库，进度由队列水位+mail_logs 聚合得出）
+	r.GET("/email/batch-progress", d.mailBatchProgress)
 	// 多 SMTP 账号池（列表/新增/修改/删除/状态切换）
 	d.registerSMTPAccountRoutes(r)
 }
@@ -221,10 +224,14 @@ func mailConfigStoreValue(key string, val any) string {
 }
 
 // mailTest 对齐 POST /admin-api/email/test。
+//
+// account 可选：传了就用该池号发（验证池里配的号到底通不通），
+// 不传 = 站点默认账号，与上线前行为完全一致。
 func (d *MailDomain) mailTest(c *gin.Context) {
 	data := jsonInput(c)
 	v := newValidator(ctxOf(c), data)
 	v.field("to", "required")
+	v.field("account", "nullable", "integer", "min:1")
 	if !v.passes() {
 		if err := v.storeFailure(); err != nil {
 			d.failServer(c, "校验测试邮件", err)
@@ -240,19 +247,52 @@ func (d *MailDomain) mailTest(c *gin.Context) {
 		return
 	}
 
-	cfg, err := d.store.MailConfigMany(ctxOf(c), emailConfigKeys)
+	// 先挑发信参数：指定了池号就用池号，否则用站点默认账号。
+	var (
+		settings SMTPSettings
+		fromName string
+	)
+	if val, has := data["account"]; has && val != nil {
+		id := uint64(inputInt(val))
+		acc, err := d.store.SMTPAccountByID(ctxOf(c), id)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				d.fail(c, "SMTP 账号不存在", 404)
+				return
+			}
+			d.failServer(c, "查询 SMTP 账号", err)
+			return
+		}
+		settings = acc.Settings()
+		// 号上没填发件名 → 下面回落到站点 smtp_from_name（与默认账号同口径）
+		fromName = derefString(acc.FromName)
+		if settings.Host == "" {
+			d.fail(c, "该 SMTP 账号未配置服务器地址", 400)
+			return
+		}
+	} else {
+		cfg, err := d.store.MailConfigMany(ctxOf(c), emailConfigKeys)
+		if err != nil {
+			d.failServer(c, "读取邮件配置", err)
+			return
+		}
+		if cfg["smtp_host"] == "" {
+			d.fail(c, "请先配置 SMTP 服务器地址", 400)
+			return
+		}
+		settings = d.buildSMTPSettings(cfg)
+		fromName = cfg["smtp_from_name"]
+	}
+
+	// 模板主体与站点发件名仍取站点配置（测试信正文与走哪个号无关）。
+	cfg, err := d.store.MailConfigMany(ctxOf(c), []string{"email_template", "smtp_from_name"})
 	if err != nil {
 		d.failServer(c, "读取邮件配置", err)
 		return
 	}
-	if cfg["smtp_host"] == "" {
-		d.fail(c, "请先配置 SMTP 服务器地址", 400)
-		return
+	if fromName == "" {
+		fromName = cfg["smtp_from_name"]
 	}
-
-	settings := d.buildSMTPSettings(cfg)
-	fromAddress := cfg["smtp_username"]
-	fromName := cfg["smtp_from_name"]
 
 	template := cfg["email_template"]
 	if template == "" {
@@ -288,7 +328,6 @@ func (d *MailDomain) mailTest(c *gin.Context) {
 	if err := d.store.CreateMailLog(ctxOf(c), logRow); err != nil {
 		d.logger.Printf("admin 写测试邮件日志失败: %v", err)
 	}
-	_ = fromAddress
 	d.success(c, nil, "测试邮件已发送")
 }
 
@@ -544,11 +583,77 @@ func (d *MailDomain) mailBatchSend(c *gin.Context) {
 	if rateEnabled {
 		rateLimited = ratePerMinute
 	}
+	// 预计总时长：两套旋钮同时生效，实际速率由更慢的那个决定。
+	//   每分钟 N 封 → 每封等效 60/N 秒；mail_send_interval_ms → 两封之间的固定等待。
+	// 只按其中一个算会给出比实际快得多的预计值（100 封、rate=100、interval=5s：
+	// 实际约 8 分钟，只按 rate 算则报 60 秒）。
+	intervalMs := int64(d.mailSendInterval() / time.Millisecond)
+	perMailSeconds := 0.0
+	if rateEnabled && ratePerMinute > 0 {
+		perMailSeconds = 60.0 / float64(ratePerMinute)
+	}
+	if i := float64(intervalMs) / 1000.0; i > perMailSeconds {
+		perMailSeconds = i
+	}
+	estimateSeconds := int64(math.Ceil(perMailSeconds * float64(total)))
 	d.success(c, jo(
 		"batch_id", batchIDInt,
 		"total", total,
 		"rate_limited", rateLimited,
+		"send_interval_ms", intervalMs,
+		"estimate_seconds", estimateSeconds,
 	), fmt.Sprintf("已加入发送队列，共 %d 封", total))
+}
+
+// mailBatchProgress 对齐 GET /admin-api/email/batch-progress?batch_id=xxx。
+//
+// goroutine 队列不落库，所以「还剩几封」只能由队列内存水位 + 库里的既成事实拼出来：
+// sent/failed 数库，queued/sending 读队列。重启进程后 queued 归零、sent/failed 保留。
+func (d *MailDomain) mailBatchProgress(c *gin.Context) {
+	raw := ""
+	if s := queryString(c, "batch_id"); s != nil {
+		raw = strings.TrimSpace(*s)
+	}
+	batchID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || batchID <= 0 {
+		d.failValidation(c, "batch_id 无效")
+		return
+	}
+
+	p, err := d.store.MailBatchProgress(ctxOf(c), batchID)
+	if err != nil {
+		d.failServer(c, "查询批次进度", err)
+		return
+	}
+
+	// queued/sending 只取**本批**的水位：mail:notify-scan 的定时通知邮件、另一个并发
+	// 批次都排在同一条队列里，用全局 Stats().Pending 会让 total 虚高、done 迟迟不到位。
+	var queued, sending, qfailed int64
+	if stater, ok := d.queue.(MailQueueBatchStater); ok {
+		st := stater.BatchState(batchID)
+		queued, sending = st.Queued, st.Sending
+		// queue_failed 是进程级累计失败数（全局口径，仅供排查），不影响本批 done。
+		if gs, ok := d.queue.(MailQueueStater); ok {
+			qfailed = gs.Stats().Failed
+		}
+	}
+
+	// total 取「库里已发 + 本批队列里还排着的」：两者相加就是本批的总量，
+	// 比复算用户表更贴近实际（用户状态会变）。done 到位时 total == sent+failed。
+	total := p.Sent + p.Failed + queued + sending
+	d.success(c, jo(
+		"batch_id", p.BatchID,
+		"total", total,
+		"sent", p.Sent,
+		"failed", p.Failed,
+		"remaining", queued+sending,
+		"queued", queued,
+		"sending", sending,
+		"queue_failed", qfailed,
+		"done", queued == 0 && sending == 0,
+		"first_at", nullableEloq(p.FirstAt),
+		"last_at", nullableEloq(p.LastAt),
+	))
 }
 
 // resolveRecipients 对齐 MailBatchService::resolveRecipients（找不到人返回 error）。

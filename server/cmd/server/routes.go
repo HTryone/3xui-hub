@@ -190,8 +190,9 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		// 节点任务（初始化 / 入站同步 / 删除清理）必须派发，否则永远 pending。
 		Tasks: newNodeTaskDispatcher(asyncSvc, queue),
 		Config: admin.NodeConfig{
-			AppKey:   cfg.AppKey,
-			PanelURL: os.Getenv("APP_URL"),
+			AppKey:     cfg.AppKey,
+			PanelURL:   os.Getenv("APP_URL"),
+			PanelURLV6: os.Getenv("APP_URL_V6"),
 		},
 		Logger: logger,
 	})
@@ -242,9 +243,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 节点下载到的文件与指令里的 sha256 对不上，每次同步都失败。
 	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "backend", "storage", "app", "xray", "geo")), nil)
 	systemDomain := admin.NewSystemDomain(admin.SystemDeps{
-		Store:  admin.NewSystemSQLStore(db),
-		Geo:    geoService,
-		Logger: logger,
+		Store:     admin.NewSystemSQLStore(db),
+		Geo:       geoService,
+		MailQueue: mailDomain, // 监控页「排队中/运行中/失败」读内存队列水位，不读恒 0 的 jobs 表
+		Logger:    logger,
 	})
 	systemDomain.Register(adminGroup)
 	systemDomain.RegisterGeodata(adminGroup)

@@ -68,6 +68,13 @@ func CertDNSNames(dest string) ([]string, bool) {
 	names, ok := certProbe(host, port)
 
 	certCacheMu.Lock()
+	// 顺手清掉过期条目：dest 由管理员自由填写，换一批配置就会留一批死键；
+	// 只按 TTL 判活、永不删除会让 map 无限增长。
+	for k, e := range certCache {
+		if !now.Before(e.expires) {
+			delete(certCache, k)
+		}
+	}
 	certCache[addr] = certCacheEntry{names: names, ok: ok, expires: now.Add(certCacheTTL)}
 	certCacheMu.Unlock()
 	return append([]string(nil), names...), ok

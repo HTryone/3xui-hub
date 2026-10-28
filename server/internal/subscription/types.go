@@ -94,6 +94,7 @@ type XrayInbound struct {
 	Remark         string
 	Protocol       string
 	Port           int64
+	Listen         string // 绑定地址（DB 默认 0.0.0.0）；订阅按地址族选 host / host_v6
 	Settings       string // JSON 文本
 	StreamSettings string // JSON 文本
 	Enabled        bool

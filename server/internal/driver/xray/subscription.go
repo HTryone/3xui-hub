@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/base64"
 	"hash/crc32"
+	"net"
 	"strings"
 
 	"controlhub-server/internal/driver/internal/phpjson"
@@ -164,7 +165,7 @@ func vlessURI(node Node, ib Inbound, user User, host string) string {
 		}
 	}
 
-	return "vless://" + user.UUID + "@" + host + ":" + phpval.Itoa(ib.Port) +
+	return "vless://" + user.UUID + "@" + uriHostPort(host, ib.Port) +
 		"?" + query + "#" + phpval.RawURLEncode(InboundLabel(node, ib))
 }
 
@@ -224,7 +225,7 @@ func trojanURI(node Node, ib Inbound, user User, host string) string {
 		query += "&path=" + phpval.RawURLEncode(coalesceString(jsonField(stream, "wsSettings", "path"), "/"))
 	}
 
-	return "trojan://" + user.UUID + "@" + host + ":" + phpval.Itoa(ib.Port) +
+	return "trojan://" + user.UUID + "@" + uriHostPort(host, ib.Port) +
 		"?" + query + "#" + phpval.RawURLEncode(InboundLabel(node, ib))
 }
 
@@ -239,8 +240,14 @@ func ssURI(node Node, ib Inbound, host string) string {
 	password := jsonFieldString(settings, "password")
 
 	return "ss://" + base64.StdEncoding.EncodeToString([]byte(method+":"+password)) +
-		"@" + host + ":" + phpval.Itoa(ib.Port) +
+		"@" + uriHostPort(host, ib.Port) +
 		"#" + phpval.RawURLEncode(InboundLabel(node, ib))
+}
+
+// uriHostPort 拼链接里的「host:port」：域名/IPv4 与 "host:port" 逐字节一致，
+// IPv6 字面量补方括号（否则 "@2602:fa4f::1:443" 会把末段当端口）。
+func uriHostPort(host string, port int64) string {
+	return net.JoinHostPort(host, phpval.Itoa(port))
 }
 
 // ServerNameFor 复刻 serverNameFor()：多 SNI 入站按用户稳定抽取一个 serverName。

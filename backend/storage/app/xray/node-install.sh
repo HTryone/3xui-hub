@@ -5,6 +5,7 @@
 #   curl -fsSL {HUB}/node-install.sh -o /tmp/controlhub-node-install.sh \
 #     && bash /tmp/controlhub-node-install.sh \
 #          --hub https://hub.example.com --node my-node --secret xxxx
+#       可选：--hub-v6 https://v6.hub.example.com（面板有 IPv6 地址时的兜底通道）
 # 动作：
 #   1. 检测 CPU 架构 → 映射面板资产 arch
 #   2. 从面板取 default 版本清单 → 下载对应 xray zip + sha256 自校验
@@ -19,11 +20,15 @@ SERVICE="controlhub-node.service"
 
 # ── 解析参数 ──────────────────────────────────────────────
 HUB=""
+# HUB_V6 是可选的面板 IPv6 地址（issue #88）：配了才写进 state.json 的 hub_url_v6，
+# agent 以 hub_url 优先、连不上再换它；不传 = state.json 里不出现这个键，行为与改动前一致。
+HUB_V6=""
 NODE_NAME=""
 SECRET=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub)    HUB="$2"; shift 2 ;;
+    --hub-v6) HUB_V6="$2"; shift 2 ;;
     --node)   NODE_NAME="$2"; shift 2 ;;
     --secret) SECRET="$2"; shift 2 ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -35,6 +40,7 @@ if [ -z "$HUB" ] || [ -z "$NODE_NAME" ] || [ -z "$SECRET" ]; then
   exit 1
 fi
 HUB="${HUB%/}"   # 只去掉结尾斜杠，不动协议里的 //
+HUB_V6="${HUB_V6%/}"
 
 # ── 提权：root 直跑 → sudo → su，每一档都有下一步可走 ──────
 # 不在面板命令里写死 sudo：Debian 基础镜像常是「root 直登 + 根本没装 sudo」
@@ -176,7 +182,7 @@ echo "==> 写入节点状态 state.json（权限 600，含密钥）"
 # 用 python3 json.dump 生成：值经 JSON 转义，密钥/名称含特殊字符（" \ 换行）也不会拼坏；
 # 先写临时文件再 mv 原子替换，避免写入中途中断留下半截非法 JSON 把 agent 卡死。
 STATE_TMP="$NODE_DIR/state.json.tmp"
-HUB="$HUB" NODE_NAME="$NODE_NAME" SECRET="$SECRET" \
+HUB="$HUB" HUB_V6="$HUB_V6" NODE_NAME="$NODE_NAME" SECRET="$SECRET" \
 XRAY_VER="$XRAY_VER" ARCH="$ARCH" STATE_TMP="$STATE_TMP" python3 - <<'PY' || { rm -f "$STATE_TMP"; echo "state.json 生成失败"; exit 1; }
 import json, os
 state = {
@@ -186,6 +192,9 @@ state = {
     "xray_version": os.environ["XRAY_VER"],
     "kernel_arch": os.environ["ARCH"],
 }
+# issue #88：面板 IPv6 兜底地址（可选）。留空就不写这个键，老节点 state.json 逐字节不变。
+if os.environ.get("HUB_V6"):
+    state["hub_url_v6"] = os.environ["HUB_V6"]
 with open(os.environ["STATE_TMP"], "w") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
     f.write("\n")
