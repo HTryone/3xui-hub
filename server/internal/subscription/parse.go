@@ -1,7 +1,9 @@
 package subscription
 
 import (
+	"encoding/base64"
 	"strings"
+	"unicode/utf8"
 )
 
 // 逐条复刻 SubscriptionService.php 的解析段：
@@ -31,9 +33,9 @@ func parseLink(link string) (*parsedLink, bool) {
 	}
 
 	parsed := &parsedLink{
-		Protocol: m[1],
+		Protocol: normalizeLinkProtocol(m[1]),
 		UserPart: m[2],
-		Server:   m[3],
+		Server:   serverHost(m[3]),
 		Port:     parseIntPrefix(m[4]),
 		Params:   map[string]string{},
 	}
@@ -52,6 +54,28 @@ func parseLink(link string) (*parsedLink, bool) {
 		parsed.Name = urldecode(link[h+1:])
 	}
 	return parsed, true
+}
+
+// serverHost 把正则的 host 捕获组归一成「能直接写进客户端 server 字段」的形态。
+//
+// 链接里 IPv6 必须写成 `[2001:db8::1]`（RFC 3986），但 Clash 的 `server:` 与 sing-box 的
+// `server` 要的是裸地址：两边都是拿 server + port 拼 host:port 去拨号，带方括号会变成
+// `[[2001:db8::1]]:443`（mihomo）或被当域名去解析（sing-box）。
+// 所以 parsedLink.Server 全链路只有一种形态 —— 裸地址，下游各分支不用逐个判断。
+// 反向（拼链接时补方括号）在 xrayuri 侧（xrayVlessURI 等），两端可逆。
+func serverHost(host string) string {
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		return host[1 : len(host)-1]
+	}
+	return host
+}
+
+// bracketHost 是 serverHost 的反向：IPv6 裸地址补回方括号（IPv4/域名原样返回）。
+func bracketHost(host string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
 
 // parsedSsCredentials 对应 parseSsCredentials()：base64(method:password) → [method, password]。
@@ -83,6 +107,145 @@ func parseHysteriaPassword(userPart string) (string, bool) {
 		return "", false
 	}
 	return decoded, true
+}
+
+// parseHysteriaAuth 是 hy2 链接 userinfo 的读取口径：**先试 base64，回落到明文**。
+//
+// hysteria2 生态里两种写法并存：3x-ui 等面板发 base64（老 PHP 行为），而官方文档与
+// 多数客户端发明文 auth（本站生成的链接就是明文 uuid）。只认 base64 会把明文密码
+// 解成乱码或整条丢弃。
+//
+// 判定用「规范化往返」而不是「能不能解出来」：明文 uuid 里的 '-' 会被 decodeBase64URL
+// 换成 '+'，重新编码后与原文不同 → 判定为明文。这样两条路互不误伤。
+func parseHysteriaAuth(userPart string) (string, bool) {
+	if decoded, ok := canonicalBase64Decode(userPart); ok {
+		decoded = hysteriaAeadPattern.ReplaceAllString(decoded, "")
+		if decoded != "" {
+			return decoded, true
+		}
+	}
+	plain := strings.TrimSpace(urldecode(userPart))
+	plain = hysteriaAeadPattern.ReplaceAllString(plain, "")
+	if plain == "" {
+		return "", false
+	}
+	return plain, true
+}
+
+// canonicalBase64Decode 只在「解码后重新编码 == 原文（忽略 padding/URL 安全字母表）」时返回结果，
+// 避免把普通明文当成 base64 解成乱码。
+func canonicalBase64Decode(value string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	decoded, ok := decodeBase64URL(value)
+	if !ok || decoded == "" || !utf8.ValidString(decoded) {
+		return "", false
+	}
+	trimmed := strings.TrimRight(value, "=")
+	std := strings.TrimRight(base64.StdEncoding.EncodeToString([]byte(decoded)), "=")
+	url := strings.TrimRight(base64.URLEncoding.EncodeToString([]byte(decoded)), "=")
+	if std == trimmed || url == trimmed {
+		return decoded, true
+	}
+	return "", false
+}
+
+// normalizeLinkProtocol 归一协议别名：hy2 与 hysteria2 等价（hysteria 官方文档的简写）。
+// 归一后 Clash 的 type / sing-box 的 type 都写 hysteria2，避免下游出现 "hy2" 这种客户端不认的值。
+func normalizeLinkProtocol(protocol string) string {
+	if protocol == "hy2" {
+		return "hysteria2"
+	}
+	return protocol
+}
+
+// clashHysteriaPorts 规整 mport：跳跃区间可能是 "A-B"、"A,B,C" 或 "A"。空白一律去掉，
+// 其余原样透传（mihomo 的 ports 就是这几种写法）。
+func clashHysteriaPorts(raw string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(raw, " ", "")), "")
+}
+
+// singboxServerPorts 把 mport 转成 sing-box 的 server_ports 数组。
+//
+// sing-box 的区间写法是 "A:B"（不是 hy2 链接里的 "A-B"），逗号分隔的多段逐个转换；
+// 任何一段不是合法端口/区间就整条不带（宁可不跳跃，也不下发客户端解析不了的值）。
+func singboxServerPorts(raw string) []any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := make([]any, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		lo = strings.TrimSpace(lo)
+		if !isPortText(lo) {
+			return nil
+		}
+		if !isRange {
+			out = append(out, lo)
+			continue
+		}
+		hi = strings.TrimSpace(hi)
+		if !isPortText(hi) {
+			return nil
+		}
+		out = append(out, lo+":"+hi)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isPortText 判断是否全为 ASCII 数字（1..5 位，且落在 1-65535）。
+func isPortText(s string) bool {
+	if s == "" || len(s) > 5 || !isAllDigitsASCII(s) {
+		return false
+	}
+	port := parseIntPrefix(s)
+	return port >= 1 && port <= 65535
+}
+
+// applyClashHysteria2 追加 hysteria2 专有字段（端口跳跃 / alpn / 混淆 / 证书校验）。
+//
+// 这些键 PHP 老实现没有，追加在既有字段之后：不带这些参数的链接字节完全不变。
+func applyClashHysteria2(proxy *phpMap, parsed *parsedLink) {
+	if parsed.Protocol != "hysteria2" {
+		return
+	}
+	if ports := clashHysteriaPorts(parsed.Params["mport"]); ports != "" {
+		proxy.set("ports", ports)
+	}
+	// mihomo 的 hysteria2 固定走 h3（显式写出，避免客户端按别家默认值协商失败）
+	proxy.set("alpn", []any{"h3"})
+	if obfs := strings.TrimSpace(parsed.Params["obfs"]); obfs != "" {
+		proxy.set("obfs", obfs)
+		if password := strings.TrimSpace(parsed.Params["obfs-password"]); password != "" {
+			proxy.set("obfs-password", password)
+		}
+	}
+	// insecure=1 只置 tls 不够：mihomo 仍需 skip-cert-verify 才真的跳过校验（自签证书场景）
+	if phpTruthy(mapOr(parsed.Params, "insecure", "0")) {
+		proxy.set("skip-cert-verify", true)
+	}
+	// pinSHA256：证书指纹固定（mihomo 的 fingerprint 就是 hysteria2 证书 sha256）
+	if pin := strings.TrimSpace(parsed.Params["pinSHA256"]); pin != "" {
+		proxy.set("fingerprint", pin)
+	}
+}
+
+// phpTruthy 近似 PHP 的布尔真值判定（"0" / "" / "false" 为假）。
+func phpTruthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "0", "false", "off", "no":
+		return false
+	}
+	return true
 }
 
 // applyClashTlsAndNetwork 对应 applyClashTlsAndNetwork()：mihomo 的 TLS / 传输段（vmess 分支复用）。
@@ -225,7 +388,7 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 		return proxy
 
 	case "hysteria2", "hysteria":
-		password, ok := parseHysteriaPassword(parsed.UserPart)
+		password, ok := parseHysteriaAuth(parsed.UserPart)
 		if !ok {
 			return nil
 		}
@@ -246,6 +409,7 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 		}
 		// mihomo 的 hysteria 依赖 sniffing 探测流量类型，显式开启
 		proxy.set("sniffing", true)
+		applyClashHysteria2(&proxy, parsed)
 		return proxy
 	}
 
@@ -342,8 +506,10 @@ func (s *Service) parseLinkToClashProxy(link string, regionCounters map[string]i
 }
 
 // fallbackName 对应 PHP 的 `"{$protocol}-{$server}:{$port}"`。
+// server 是裸地址（见 serverHost），IPv6 补回方括号，否则 `vless-2001:db8::1:443`
+// 分不清哪段是端口。
 func fallbackName(parsed *parsedLink) string {
-	return parsed.Protocol + "-" + parsed.Server + ":" + itoa(parsed.Port)
+	return parsed.Protocol + "-" + bracketHost(parsed.Server) + ":" + itoa(parsed.Port)
 }
 
 // parseLinkToSingboxOutbound 对应 parseLinkToSingboxOutbound()。
@@ -418,12 +584,17 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 		outbound.set("password", password)
 
 	case "hysteria2", "hysteria":
-		password, ok := parseHysteriaPassword(parsed.UserPart)
+		password, ok := parseHysteriaAuth(parsed.UserPart)
 		if !ok {
 			return nil
 		}
 		outbound.set("type", parsed.Protocol)
 		outbound.set("password", password)
+		// 端口跳跃：sing-box 1.11+ 的 server_ports（区间写法是 "A:B"，不是链接里的 "A-B"）。
+		// 不带 hop_interval：链接里没有这个信息，sing-box 自己按默认间隔重拨。
+		if ports := singboxServerPorts(parsed.Params["mport"]); ports != nil {
+			outbound.set("server_ports", ports)
+		}
 		// sing-box hysteria2 出站要求 TLS 段：有 sni 用 sni，否则默认带 server_name
 		tls := obj("enabled", true)
 		if sni, has := parsed.Params["sni"]; has {
@@ -436,6 +607,14 @@ func (s *Service) parseLinkToSingboxOutbound(link string, regionCounters map[str
 			tls.set("utls", obj("enabled", true, "fingerprint", fp))
 		}
 		outbound.set("tls", tls)
+		// obfs（salamander）：sing-box 是对象形态 {type, password}
+		if obfs := strings.TrimSpace(parsed.Params["obfs"]); obfs != "" && parsed.Protocol == "hysteria2" {
+			obfsObj := obj("type", obfs)
+			if pwd := strings.TrimSpace(parsed.Params["obfs-password"]); pwd != "" {
+				obfsObj.set("password", pwd)
+			}
+			outbound.set("obfs", obfsObj)
+		}
 	}
 
 	// TLS / Reality

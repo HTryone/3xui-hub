@@ -99,6 +99,9 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 		data.put("config_version", n.ConfigVersion)
 		data.put("lag_seconds", nodeDriverConfigInt(n, "lag_seconds"))
 		data.put("agent", nodeDriverConfigAgent(n))
+		// issue #94 R5：BBR 运行态（来自心跳，原样回传）。
+		// 未上报 → null：不编造默认值，前端据此显示「未上报」。
+		data.put("bbr", nodeDriverConfigBBR(n))
 		data.put("ws_connected", nodeDriverConfigBool(n, "ws", "connected"))
 		data.put("install_command", d.installCommand(n))
 
@@ -114,6 +117,10 @@ func (d *NodeDomain) present(c *gin.Context, env presentEnv, n *NodeRecord, full
 		env.agent = agent
 		data.put("agent_version", nullableStr(d.reportedAgentVersion(n)))
 		data.put("agent_latest", nullableStr(manifestLatestVersion(agent)))
+		// issue #94：端口跳跃要 agent ≥ 1.0.7，前端据此把按钮禁用并提示「需升级 agent」。
+		// 与 node_hop 的入队门槛同一个判定，避免 UI 允许点、后端才拒。
+		data.put("hop_supported", agentSupportsHop(n))
+		data.put("hop_min_agent_version", minHopAgentVersion)
 		inFlight, err := d.store.HasInFlightUpgrade(ctxOf(c), n.ID)
 		if err != nil {
 			d.failServer(c, "查询在途升级指令", err)
@@ -269,6 +276,18 @@ func nodeDriverConfigHostV6(n *NodeRecord) any {
 
 func nodeDriverConfigAgent(n *NodeRecord) any {
 	v := nodeDriverConfig(n, "agent")
+	if _, isObj := v.(*jsObj); isObj {
+		return v
+	}
+	return nil
+}
+
+// nodeDriverConfigBBR 取 driver_config.bbr 原样回传（issue #94 R5）。
+//
+// 缺键 / 不是对象 → null（前端显示「未上报」）。不补默认值：把缺失的
+// tcp_congestion_control 补成 "cubic"、bbr_module 补成 false 都是在编造节点状态。
+func nodeDriverConfigBBR(n *NodeRecord) any {
+	v := nodeDriverConfig(n, "bbr")
 	if _, isObj := v.(*jsObj); isObj {
 		return v
 	}

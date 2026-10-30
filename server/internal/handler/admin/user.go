@@ -107,7 +107,7 @@ func (d *UserDomain) validateUser(c *gin.Context) (map[string]any, string, bool)
 
 	v := newValidator(ctxOf(c), data).existsChecker(d.userExistsChecker())
 	v.field("email", "nullable") // 占位：email 语义在上面单独校验
-	v.field("protocol", "sometimes", "in:vless,trojan")
+	v.field("protocol", "sometimes", "in:vless,vmess,trojan,shadowsocks,hysteria")
 	v.field("plan_id", "nullable", "integer", "exists:plans,id")
 	v.field("traffic_limit", "sometimes", "integer", "min:0")
 	v.field("traffic_used", "sometimes", "integer", "min:0")
@@ -519,6 +519,15 @@ func (d *UserDomain) userRenew(c *gin.Context) {
 	d.success(c, presentUser(full, true, presentProxies(proxies, d.now())), "续费成功")
 }
 
+// userSwitcherProtocols 是「用户可切换到的协议」白名单，与 validateUser 的 in: 规则同源。
+//
+// 五协议对齐 3x-ui（vless/vmess/trojan/shadowsocks/hysteria）；两处顺序与取值必须一字不差，
+// 否则会出现「建号能选、切协议被拒」或者反过来的一半状态。
+//
+// hysteria 只影响 xray 节点（协议在 users 表，渲染时按协议注入 client），
+// 3x-ui 节点没有 hysteria 入站时 SwitchProtocol 会整台跳过，不会把用户挂空。
+var userSwitcherProtocols = []string{"vless", "vmess", "trojan", "shadowsocks", "hysteria"}
+
 // userSwitchProtocol 对齐 UserController::switchProtocol。
 func (d *UserDomain) userSwitchProtocol(c *gin.Context) {
 	u, ok := d.loadUser(c)
@@ -527,7 +536,7 @@ func (d *UserDomain) userSwitchProtocol(c *gin.Context) {
 	}
 	data := jsonInput(c)
 	proto, has := inputString(data["protocol"])
-	if !has || data["protocol"] == nil || (proto != "vless" && proto != "trojan") {
+	if !has || data["protocol"] == nil || !phpInArray(proto, userSwitcherProtocols) {
 		if data["protocol"] == nil || proto == "" {
 			d.failValidation(c, "The protocol field is required.")
 			return

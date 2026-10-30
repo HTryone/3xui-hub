@@ -132,7 +132,7 @@ func (o *userPanelOps) SwitchProtocol(ctx context.Context, user *admin.UserRow, 
 	if oldProtocol == newProtocol {
 		return nil
 	}
-	if newProtocol != "vless" && newProtocol != "trojan" {
+	if newProtocol != "vless" && newProtocol != "trojan" && newProtocol != "hysteria" {
 		return fmt.Errorf("不支持的协议: %s", newProtocol)
 	}
 	drivers, err := o.col.NodeDrivers(ctx)

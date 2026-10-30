@@ -753,6 +753,7 @@ CREATE TABLE `xray_inbounds` (
   `stream_settings` json DEFAULT NULL,
   `sniffing` json DEFAULT NULL,
   `reality_private_key` text COLLATE utf8mb4_unicode_ci,
+  `salamander_password` text COLLATE utf8mb4_unicode_ci,
   `enabled` tinyint(1) NOT NULL DEFAULT '1',
   `sort` int unsigned NOT NULL DEFAULT '0',
   `created_at` timestamp NULL DEFAULT NULL,

@@ -193,6 +193,10 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 			AppKey:     cfg.AppKey,
 			PanelURL:   os.Getenv("APP_URL"),
 			PanelURLV6: os.Getenv("APP_URL_V6"),
+			// 端口跳跃首次可能要先装 iptables，等待上限比 reality_scan 长。
+			HopWait: envInt("PANEL_HOP_WAIT", 0),
+			// sysctl / BBR 下发：写 conf + modprobe + sysctl -p + 读回，正常 1-2 秒。
+			SysctlWait: envInt("PANEL_SYSCTL_WAIT", 0),
 		},
 		Logger: logger,
 	})
@@ -246,6 +250,7 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Store:     admin.NewSystemSQLStore(db),
 		Geo:       geoService,
 		MailQueue: mailDomain, // 监控页「排队中/运行中/失败」读内存队列水位，不读恒 0 的 jobs 表
+		TaskQueue: taskQueueStater{q: queue}, // 节点任务队列同理：这条队列也不落表
 		Logger:    logger,
 	})
 	systemDomain.Register(adminGroup)

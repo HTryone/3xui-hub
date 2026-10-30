@@ -128,6 +128,22 @@ func (d *NodeDomain) Register(r gin.IRouter) {
 	r.POST("/nodes/:node/test", d.nodeTest)
 	r.POST("/nodes/:node/upgrade-agent", d.upgradeAgent)
 
+	// ── 端口跳跃（HY2 udpHop 的节点侧防火墙，issue #94）──
+	// 只把白名单载荷转发成指令，不自己动防火墙；agent < 1.0.7 直接 4xx。
+	r.POST("/nodes/:node/hop/probe", d.hopProbe)
+	r.POST("/nodes/:node/hop/apply", d.hopApply)
+	r.POST("/nodes/:node/hop/remove", d.hopRemove)
+	r.POST("/nodes/:node/hop/status", d.hopStatus)
+
+	// ── 系统调优（sysctl / BBR，issue #94 R4）──
+	// 同样只转发白名单载荷；key / profile 白名单镜像 agent 侧。
+	r.POST("/nodes/:node/sysctl", d.sysctlApply)
+
+	// ── TLS 证书库（hysteria 的 TLS 证书引用源）──
+	r.GET("/xray-certificates", d.xrayCertificateIndex)
+	r.POST("/xray-certificates", d.xrayCertificateStore)
+	r.DELETE("/xray-certificates/:certificate", d.xrayCertificateDestroy)
+
 	// ── xray 入站 ──
 	r.GET("/nodes/:node/xray-inbounds", d.xrayInboundIndex)
 	r.POST("/nodes/:node/xray-inbounds", d.xrayInboundStore)

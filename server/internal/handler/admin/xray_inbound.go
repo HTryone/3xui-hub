@@ -3,17 +3,20 @@ package admin
 // xray 节点入站管理（/admin-api/nodes/{node}/xray-inbounds）。
 // 逐条对齐 backend/app/Http/Controllers/Admin/XrayInboundController.php。
 //
-// 入站协议面板自建：vless / vmess / trojan / shadowsocks
-// （含 tcp/ws/grpc/xhttp/httpupgrade 传输、none/tls/reality 安全层；reality 仅 vless）。
+// 入站协议面板自建：vless / vmess / trojan / shadowsocks / hysteria
+// （含 tcp/ws/grpc/xhttp/httpupgrade 传输、none/tls/reality 安全层；reality 仅 vless），
+// 另有传统代理与自有 UDP 栈的 socks / http / tunnel / wireguard。
 // 任何变更后 bump 该节点 config_version → 节点秒级拉取。
 
 import (
+	"encoding/base64"
 	"strconv"
 	"strings"
 
 	"controlhub-server/internal/driver/xray"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/curve25519"
 )
 
 // xrayInboundIndex 对齐 index()。
@@ -37,7 +40,14 @@ func (d *NodeDomain) xrayInboundIndex(c *gin.Context) {
 	for i := range inbounds {
 		items = append(items, presentXrayInbound(&inbounds[i], counts))
 	}
-	d.success(c, jo("inbounds", items, "config_version", node.ConfigVersion))
+	d.success(c, jo(
+		"inbounds", items,
+		"config_version", node.ConfigVersion,
+		// issue #94：端口跳跃要在节点上配防火墙，只有 agent ≥ 1.0.7 才有那几个 action。
+		// 前端据此禁用「端口跳跃」区块并提示「需升级 agent」（与入队门槛同一判定）。
+		"hop_supported", agentSupportsHop(node),
+		"hop_min_agent_version", minHopAgentVersion,
+	))
 }
 
 // xrayInboundStore 对齐 store()。
@@ -358,7 +368,13 @@ func (d *NodeDomain) loadOwnedInbound(c *gin.Context, node *NodeRecord) (*XrayIn
 // validateInboundPayload 对齐 validatePayload()。
 func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any) bool {
 	v := newNodeValidator(ctxOf(c), input)
-	v.field("protocol", "required", "in:vless,vmess,trojan,shadowsocks")
+	// 入站协议白名单：与 XrayInbounds.vue 的协议下拉一一对应，多一项前端提交会被打回、
+	// 少一项协议建不出来。socks / http / tunnel / wireguard 是 P2 补回来的全协议适配：
+	//   socks     传统 SOCKS5 代理入站（auth 用户密码）
+	//   http      传统 HTTP 正向代理入站（accounts 用户密码）
+	//   tunnel    dokodemo-door（内核 26.x 的协议名就叫 tunnel）：目标地址+端口原样转发
+	//   wireguard 内核自带 WireGuard 服务端（UDP 监听，server 私钥 + 对端公钥清单）
+	v.field("protocol", "required", "in:vless,vmess,trojan,shadowsocks,hysteria,socks,http,tunnel,wireguard")
 	v.field("tag", "nullable", "string", "max:64", "regex:/^[A-Za-z0-9_-]+$/")
 	v.field("remark", "nullable", "string", "max:128")
 	v.field("port", "required", "integer", "between:1,65535")
@@ -440,6 +456,39 @@ func (d *NodeDomain) validateInboundPayload(c *gin.Context, input map[string]any
 	v.field("tls_key", "nullable", "string", "max:65535")
 	v.field("ss_method", "nullable", "in:aes-256-gcm,aes-128-gcm,chacha20-poly1305,xchacha20-poly1305,2022-blake3-aes-256-gcm,2022-blake3-aes-128-gcm")
 	v.field("ss_password", "nullable", "string", "max:128")
+	// socks / http（传统代理入站）：单组账号密码。密码编辑时留空 = 沿用原值。
+	v.field("auth_user", "nullable", "string", "max:64")
+	v.field("auth_pass", "nullable", "string", "max:128")
+	// tunnel（dokodemo-door）：转发目标 + L4 网络（settings.network，不是传输层）。
+	v.field("tunnel_address", "nullable", "string", "max:255")
+	v.field("tunnel_port", "nullable", "integer", "between:1,65535")
+	// 逗号是校验规则的分隔符，「tcp,udp」这种值只能手工校验（见 tunnelNetwork）。
+	v.field("tunnel_network", "nullable", "string", "max:16")
+	// wireguard：服务端私钥由面板生成（读接口不回显），这里只收对端清单与 MTU。
+	v.field("wg_peers", "nullable", "string", "max:8192")
+	v.field("wg_mtu", "nullable", "integer", "min:576", "max:9000")
+	// hysteria（HY2）：主端口复用 port；其余见 buildHysteriaStream。
+	v.field("hy_hop_ports", "nullable", "string", "max:64")
+	v.field("hy_hop_interval", "nullable", "string", "max:64")
+	v.field("hy_udp_idle_timeout", "nullable", "integer", "min:2", "max:600")
+	v.field("hy_masquerade_type", "nullable", "in:,proxy,file,string")
+	v.field("hy_masquerade_url", "nullable", "string", "max:255")
+	v.field("hy_masquerade_dir", "nullable", "string", "max:255")
+	v.field("hy_masquerade_content", "nullable", "string", "max:8192")
+	v.field("hy_masquerade_status_code", "nullable", "integer", "min:0", "max:999")
+	v.field("hy_congestion", "nullable", "in:reno,bbr,brutal,force-brutal")
+	// hy2 高级 TLS 开关 + QUIC 调优（quicParams）：brutal 带宽是整数 Mbps，0 = 不写。
+	v.field("hy_reject_unknown_sni", "nullable", "boolean")
+	v.field("hy_session_resumption", "nullable", "boolean")
+	v.field("hy_brutal_up", "nullable", "integer", "min:0", "max:1000000")
+	v.field("hy_brutal_down", "nullable", "integer", "min:0", "max:1000000")
+	v.field("hy_init_stream_window", "nullable", "integer", "min:0", "max:2147483647")
+	v.field("hy_max_stream_window", "nullable", "integer", "min:0", "max:2147483647")
+	v.field("hy_init_conn_window", "nullable", "integer", "min:0", "max:2147483647")
+	v.field("hy_max_conn_window", "nullable", "integer", "min:0", "max:2147483647")
+	// salamander 混淆密码：空串 = 清除（「清空=清除」），不带字段 = 不改。
+	v.field("hy_salamander_password", "nullable", "string", "max:255")
+	v.field("tls_cert_id", "nullable", "integer", "min:1")
 	v.field("enabled", "nullable", "boolean")
 	v.field("sort", "nullable", "integer", "min:0", "max:65535")
 
@@ -474,6 +523,18 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	if protocol == "shadowsocks" && (security != "none" || network != "tcp") {
 		d.fail(c, "Shadowsocks 仅支持 tcp + 无附加安全层", 500)
 		return XrayInboundInput{}, false
+	}
+	if protocol == "hysteria" {
+		// HY2 的传输层固定：内核只认 network=hysteria + 强制 TLS（QUIC 自带加密）。
+		// 前端不选传输/安全层，这里统一归一，避免历史负载带进非法组合。
+		network = "hysteria"
+		security = "tls"
+	}
+	if protocol == "wireguard" {
+		// WireGuard 自带加密、固定 UDP：传输层与安全层都不存在，归一成空
+		// （后面按空值跳过所有传输分支，stream_settings 落库就是 {}）。
+		network = ""
+		security = "none"
 	}
 
 	// Reality 后量子：seed 与 verify 成对。
@@ -510,8 +571,12 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	}
 
 	// 端口冲突：同节点启用入站不可复用端口（xray 会启动失败）。
+	// 按传输族比对：tunnel 的 L4 网络在 settings.network（tcp / udp / tcp,udp），
+	// 其余协议看协议本身（wireguard / hysteria 是 UDP）。
 	port := inputInt(input["port"])
-	portTaken, err := d.store.XrayInboundPortTaken(ctxOf(c), node.ID, port, excludeID)
+	// tunnel 的 L4 网络非法时这里按缺省算，真正的报错留给 settings 构造（文案更具体）。
+	tunNetwork, _ := tunnelNetwork(input)
+	portTaken, err := d.store.XrayInboundPortTaken(ctxOf(c), node.ID, port, inboundFamiliesOf(protocol, tunNetwork), excludeID)
 	if err != nil {
 		d.failServer(c, "检查入站端口", err)
 		return XrayInboundInput{}, false
@@ -545,12 +610,96 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 			d.fail(c, "Shadowsocks 必须设置密码", 500)
 			return XrayInboundInput{}, false
 		}
+	case "hysteria":
+		// 内核只接受 version=2；写 1 会让**整份节点配置**被拒（不是只挂这个入站）。
+		settings = jo("version", 2)
+	case "socks", "http":
+		// 传统代理入站。落库形状（xray 26.3.27 实测可跑通真实代理流量）：
+		//   socks = {auth: "password", accounts: [{user, pass}], udp: false}
+		//   http  = {accounts: [{user, pass}], allowTransparent: false}
+		user := strings.TrimSpace(nodeStringField(input, "auth_user"))
+		pass := nodeStringField(input, "auth_pass")
+		if pass == "" && existing != nil {
+			// 密码不回显：编辑时留空 = 沿用原值（重填才改）。
+			prev, _ := parseOrderedJS(existing.Settings)
+			pass = jsonGetString(prev, "accounts", "0", "pass")
+		}
+		if user == "" || pass == "" {
+			d.fail(c, "SOCKS / HTTP 入站必须填写用户名与密码（内核默认 noauth，公网裸代理会被扫端口滥用）", 500)
+			return XrayInboundInput{}, false
+		}
+		account := jo("user", user, "pass", pass)
+		if protocol == "socks" {
+			// udp=false：只占 TCP，与端口族判定（inboundFamiliesOf）同口径。
+			settings = jo("auth", "password", "accounts", jsArr{account}, "udp", false)
+		} else {
+			settings = jo("accounts", jsArr{account}, "allowTransparent", false)
+		}
+	case "tunnel":
+		// dokodemo-door：把收到的流量原样转给 address:port。
+		// 注意 L4 网络是 settings.network（tcp/udp/tcp,udp），写进 streamSettings.network
+		// 会被内核直接拒（unknown transport protocol: udp）。
+		tunAddr := strings.TrimSpace(nodeStringField(input, "tunnel_address"))
+		tunPort := int64(0)
+		if v, present := input["tunnel_port"]; present && v != nil {
+			tunPort = inputInt(v)
+		}
+		if tunAddr == "" || tunPort <= 0 {
+			d.fail(c, "Tunnel 入站必须填写转发目标（地址 + 端口）", 500)
+			return XrayInboundInput{}, false
+		}
+		tunNet, netOK := tunnelNetwork(input)
+		if !netOK {
+			d.fail(c, "Tunnel 转发协议只支持 tcp / udp / tcp,udp", 500)
+			return XrayInboundInput{}, false
+		}
+		settings = jo("address", tunAddr, "port", tunPort, "network", tunNet)
+	case "wireguard":
+		// 内核自带的 WireGuard 服务端：UDP 监听，服务端私钥 + 对端公钥清单。
+		// secretKey 是服务端身份私钥（等同于节点密码），只在库里与下发给节点的配置里出现，
+		// 读接口只回 wg_public_key。
+		secret := ""
+		if existing != nil {
+			prev, _ := parseOrderedJS(existing.Settings)
+			secret = jsonGetString(prev, "secretKey")
+		}
+		if secret == "" {
+			kp, err := xray.WireGuardKeypair()
+			if err != nil {
+				d.failServer(c, "生成 WireGuard 密钥", err)
+				return XrayInboundInput{}, false
+			}
+			secret = kp[0]
+		}
+		peers, ok := wireGuardPeers(nodeStringField(input, "wg_peers"))
+		if !ok {
+			d.fail(c, "WireGuard 对端格式错误：每行「公钥 [允许IP,...]」，公钥为 44 字符 base64", 500)
+			return XrayInboundInput{}, false
+		}
+		mtu := int64(1420)
+		if v, present := input["wg_mtu"]; present && inputInt(v) > 0 {
+			mtu = inputInt(v)
+		}
+		// noKernelTun=true：内核目前只有 gVisor TUN 支持 WireGuard 入站（自带告警），
+		// 显式写上，免得以后内核默认值变化把入站搞挂。
+		settings = jo("secretKey", secret, "mtu", mtu, "noKernelTun", true)
+		if len(peers) > 0 {
+			settings.put("peers", peers)
+		}
 	default:
 		settings = jo()
 	}
 
 	// stream_settings
-	stream := jo("network", network, "security", security)
+	//
+	// wireguard 自带加密、固定 UDP，没有可选的传输层与安全层：整段不写
+	// （写入 network 虽然会被内核忽略，但列表页会把它显示成 TCP 入站，误导管理员）。
+	var stream *jsObj
+	if protocol == "wireguard" {
+		stream = jo()
+	} else {
+		stream = jo("network", network, "security", security)
+	}
 
 	in := XrayInboundInput{
 		NodeID:   node.ID,
@@ -584,6 +733,22 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 	} else if existing != nil {
 		// 从 reality 改成别的安全层：清掉旧私钥（对齐 setRealityPrivateKey(null)）。
 		in.RealityKeySet = true
+	}
+
+	if protocol == "hysteria" {
+		var prevStream any
+		if existing != nil {
+			prevStream, _ = parseOrderedJS(existing.StreamSettings)
+		}
+		if !d.buildHysteriaStream(c, input, stream, prevStream) {
+			return XrayInboundInput{}, false
+		}
+		// salamander 混淆密码：密码写独立加密列，stream_settings 只留 {"type":"salamander"} 占位
+		// （issue #94 硬指标：库里不允许出现密码原文）。
+		applyHysteriaSalamander(input, stream, prevStream, existing, &in)
+	} else if existing != nil && existing.SalamanderPassword != nil {
+		// 协议从 hysteria 改走别的：清掉遗留的混淆密码，别把密文留在没人读的列里。
+		in.SalamanderPasswordSet = true
 	}
 
 	if network == "ws" {
@@ -627,7 +792,9 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		stream.put("tcpSettings", jo("header", jo("type", "http", "request", request)))
 	}
 
-	if security == "tls" {
+	// hysteria 的 tlsSettings 已在 buildHysteriaStream 里按证书引用写好
+	// （只存 tlsCertId，私钥留在证书库），不能再走下面这段内联 PEM 分支。
+	if security == "tls" && protocol != "hysteria" {
 		tls := jo()
 		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
 			tls.put("serverName", sni)
@@ -643,6 +810,13 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		stream.put("tlsSettings", tls)
 	}
 
+	if protocol == "hysteria" {
+		// HY2 强制 TLS：没引用证书时内核起不来（与 TLS 入站同理）。
+		if jsonGet(stream, "tlsSettings", xray.CertRefKey) == nil {
+			d.fail(c, "Hysteria 入站必须选择 TLS 证书（证书库引用）", 500)
+			return XrayInboundInput{}, false
+		}
+	}
 	in.StreamSettings = phpEncode(stream)
 
 	remark := strings.TrimSpace(nodeStringField(input, "remark"))
@@ -664,6 +838,382 @@ func (d *NodeDomain) buildInboundInput(c *gin.Context, node *NodeRecord, input m
 		in.Sort = &n
 	}
 	return in, true
+}
+
+// defaultHopInterval 是端口跳跃的缺省重拨间隔（秒，3x-ui 前端同款 5-10）。
+const defaultHopInterval = "5-10"
+
+// buildHysteriaStream 组装 hysteria 入站的 streamSettings 专有段。
+//
+// 落库形状（对齐 3x-ui / xray-core 的 hysteria 传输）：
+//
+//	network          = "hysteria"（内核只认这一个传输名）
+//	security         = "tls"
+//	hysteriaSettings = {version: 2, udpIdleTimeout, masquerade?}
+//	tlsSettings      = {serverName?, alpn: [h3], rejectUnknownSni, enableSessionResumption, tlsCertId}
+//	                   ← 只存引用，私钥不进这张表
+//	finalmask.quicParams = {congestion?, brutalUp?, brutalDown?, 4 个 QUIC 窗口?, udpHop?: {ports, interval}}
+//	finalmask.udp       = [{type: "salamander"}]  ← 只有占位，混淆密码在独立加密列（见 applyHysteriaSalamander）
+//
+// 硬约束：主端口不许落在跳跃区间内 —— 否则已经到主端口的包会被 REDISECT 规则
+// 再绕一圈，连接直接断。
+func (d *NodeDomain) buildHysteriaStream(c *gin.Context, input map[string]any, stream *jsObj, prevStream any) bool {
+	port := inputInt(input["port"])
+
+	hopPorts := strings.TrimSpace(nodeStringField(input, "hy_hop_ports"))
+	hopInterval := strings.TrimSpace(nodeStringField(input, "hy_hop_interval"))
+	if hopPorts != "" {
+		// interval 只在配了跳跃区间时才有意义；缺省 5-10（与 3x-ui 表单默认一致）。
+		if hopInterval == "" {
+			hopInterval = defaultHopInterval
+		}
+		lo, hi, ok := parsePortSpan(hopPorts)
+		if !ok {
+			d.fail(c, "跳跃区间格式错误：应形如 20000-30000（端口 1-65535，左端不大于右端）", 500)
+			return false
+		}
+		if port >= lo && port <= hi {
+			d.fail(c, "主端口不能落在跳跃区间内（"+hopPorts+"）：主端口自身的流量会被转发规则误绕，连接会断", 500)
+			return false
+		}
+		if _, _, ok := parsePortSpan(hopInterval); !ok {
+			d.fail(c, "跳跃间隔格式错误：应形如 5-10", 500)
+			return false
+		}
+	}
+
+	// 主端口不能与区间外的其它启用入站撞车（由调用方统一判定），这里只校验区间自身。
+	hy := jo("version", 2)
+	idle := int64(60)
+	if v, present := input["hy_udp_idle_timeout"]; present && inputInt(v) != 0 {
+		idle = inputInt(v)
+	}
+	hy.put("udpIdleTimeout", idle)
+	if masq := hysteriaMasquerade(input); masq != nil {
+		hy.put("masquerade", masq)
+	}
+	stream.put("hysteriaSettings", hy)
+
+	tls := jo()
+	sni := strings.TrimSpace(nodeStringField(input, "tls_server_name"))
+	if sni == "" {
+		// 同证书引用：编辑时没带 SNI 就沿用原值。
+		sni = jsonGetString(prevStream, "tlsSettings", "serverName")
+	}
+	if sni != "" {
+		tls.put("serverName", sni)
+	}
+	// HY2 走 QUIC，协商的 ALPN 固定是 h3；不写这一项时部分客户端/内核组合握手失败。
+	// 只对 hysteria 生效，通用 TLS 入站分支不碰。
+	tls.put("alpn", jsArr{"h3"})
+	// 高级 TLS 开关（3x-ui tlsSettings 同名字段）：缺省 false = 内核默认。
+	// 编辑时没带字段就沿用原值，避免一次改备注把开关清零。
+	tls.put("rejectUnknownSni", hyBoolField(input, "hy_reject_unknown_sni", prevStream, "tlsSettings", "rejectUnknownSni"))
+	tls.put("enableSessionResumption", hyBoolField(input, "hy_session_resumption", prevStream, "tlsSettings", "enableSessionResumption"))
+	// 证书走引用：只存证书库 id，渲染时解密注入 certificates。
+	certID := int64(0)
+	if v, present := input["tls_cert_id"]; present && v != nil {
+		certID = inputInt(v)
+	}
+	if certID <= 0 {
+		// 编辑时没带证书字段 → 沿用原引用（避免一次改备注就把证书清掉）。
+		certID = jsonInt(jsonGet(prevStream, "tlsSettings", xray.CertRefKey))
+	}
+	if certID > 0 {
+		tls.put(xray.CertRefKey, certID)
+	}
+	stream.put("tlsSettings", tls)
+
+	// finalmask：congestion、brutal 带宽、QUIC 窗口与端口跳跃都在 quicParams 下。
+	quic := jo()
+	cong := strings.TrimSpace(nodeStringField(input, "hy_congestion"))
+	if cong == "" {
+		// 编辑时没带拥塞控制 → 沿用原值（brutal 带宽是否写也取决于它）。
+		cong = jsonGetString(prevStream, "finalmask", "quicParams", "congestion")
+	}
+	if cong != "" {
+		quic.put("congestion", cong)
+	}
+	// 内核硬约束（实测 26.3.27）：force-brutal 必须带上行带宽，否则整份节点配置被
+	// 「force-brutal requires up」拒掉 —— 面板要在提交时就拦住。
+	if cong == "force-brutal" && hyMbpsField(input, "hy_brutal_up", prevStream, "brutalUp") <= 0 {
+		d.fail(c, "force-brutal 必须填上行带宽（Mbps）：内核要求 force-brutal 限定上行，留空会让整份节点配置起不来", 500)
+		return false
+	}
+	// brutalUp/brutalDown 只对 brutal / force-brutal 有意义：其它拥塞算法下内核直接忽略，
+	// 写进去只会让表单显示与实际不符。值是带宽字符串（内核口径 `<数字> <单位>`，
+	// 单位 bps/Kbps/Mbps/Gbps 都是 bit，裸数字按 bit/s），面板统一按整数 Mbps 收、写成 "N Mbps"。
+	if cong == "brutal" || cong == "force-brutal" {
+		for _, b := range []struct{ inputKey, wireKey string }{
+			{"hy_brutal_up", "brutalUp"},
+			{"hy_brutal_down", "brutalDown"},
+		} {
+			if mbps := hyMbpsField(input, b.inputKey, prevStream, b.wireKey); mbps > 0 {
+				quic.put(b.wireKey, strconv.FormatInt(mbps, 10)+" Mbps")
+			}
+		}
+	}
+	// QUIC 接收窗口（字节）：0/未填不写（内核默认）；非 0 时内核要求至少 16384，先在这里拦。
+	for _, w := range []struct{ inputKey, wireKey, label string }{
+		{"hy_init_stream_window", "initStreamReceiveWindow", "初始流接收窗口"},
+		{"hy_max_stream_window", "maxStreamReceiveWindow", "最大流接收窗口"},
+		{"hy_init_conn_window", "initConnectionReceiveWindow", "初始连接接收窗口"},
+		{"hy_max_conn_window", "maxConnectionReceiveWindow", "最大连接接收窗口"},
+	} {
+		n := hyIntField(input, w.inputKey, prevStream, "finalmask", "quicParams", w.wireKey)
+		if n == 0 {
+			continue
+		}
+		if n < minQuicWindow {
+			d.fail(c, "HY2 的 "+w.label+"至少 16384 字节，或留空/填 0 用内核默认（内核会拒掉更小的值）", 500)
+			return false
+		}
+		quic.put(w.wireKey, n)
+	}
+	if hopPorts != "" {
+		quic.put("udpHop", jo("ports", hopPorts, "interval", hopInterval))
+	}
+	if len(quic.keys) > 0 {
+		stream.put("finalmask", jo("quicParams", quic))
+	}
+	return true
+}
+
+// minQuicWindow 是 xray-core 对 QUIC 接收窗口的下限（非 0 时必须 ≥ 16384，否则整份节点
+// 配置被拒：`InitStreamReceiveWindow must be at least 16384`）。
+const minQuicWindow = 16384
+
+// salamanderMaskPlaceholder 是 finalmask.udp 里 salamander 段的**落库形态**：
+// 只有 type，没有 settings —— 真密码在 xray_inbounds.salamander_password（AES 密文），
+// 渲染时才解密注入成 {"type":"salamander","settings":{"password":"..."}}。
+//
+// 为什么不写 `"settings":{"password":"***"}` 之类的占位值：占位一旦被谁当真配置下发，
+// 内核不报错（实测 26.3.27 空密码照样 Configuration OK），客户端却会拿占位当 key，
+// 表现成「握手成功但连不通」，排查成本极高。宁可不写键。
+func salamanderMaskPlaceholder() *jsObj { return jo("type", "salamander") }
+
+// applyHysteriaSalamander 决定 HY2 入站的 salamander 混淆状态：写/清/沿用。
+//
+//   - 请求带 hy_salamander_password 且非空 → 密码进独立加密列，stream_settings 只留占位；
+//   - 带字段但为空 → 清除（对齐「清空=清除」），占位一并摘掉，内核就不启用混淆；
+//   - 没带字段 → 沿用落库状态（只改备注/改别的参数不能把混淆静默关掉）。
+func applyHysteriaSalamander(input map[string]any, stream *jsObj, prevStream any, existing *XrayInboundRecord, in *XrayInboundInput) {
+	if _, present := input["hy_salamander_password"]; present {
+		password := strings.TrimSpace(nodeStringField(input, "hy_salamander_password"))
+		in.SalamanderPasswordSet = true
+		if password == "" {
+			// 清除：不写 finalmask.udp（stream 是新建的，本来也没有键要删）。
+			in.SalamanderPassword = nil
+			return
+		}
+		in.SalamanderPassword = &password
+		setSalamanderUDP(stream, jsArr{salamanderMaskPlaceholder()})
+		return
+	}
+
+	// 未带字段：库里已有密码 → 回写占位（buildHysteriaStream 每次都是重建 finalmask，
+	// 不回写就等于把混淆关掉）。
+	if existing != nil && existing.SalamanderPassword != nil && *existing.SalamanderPassword != "" {
+		setSalamanderUDP(stream, jsArr{salamanderMaskPlaceholder()})
+		return
+	}
+	// 兼容手写进库的存量形态（udp 段里自带密码）：原样搬过去，别在保存别的参数时弄丢。
+	if udp, ok := jsonGet(prevStream, "finalmask", "udp").(jsArr); ok && len(udp) > 0 {
+		setSalamanderUDP(stream, udp)
+	}
+}
+
+// setSalamanderUDP 把 udp 段写进 stream.finalmask，保留同层的 quicParams 等键。
+func setSalamanderUDP(stream *jsObj, udp jsArr) {
+	finalmask, _ := stream.get("finalmask")
+	fm, ok := finalmask.(*jsObj)
+	if !ok {
+		fm = jo()
+	}
+	fm.put("udp", udp)
+	stream.put("finalmask", fm)
+}
+
+// hyBoolField 取布尔开关：请求里带了就按请求；没带则沿用落库原值；都没有 → false（内核默认）。
+func hyBoolField(input map[string]any, key string, prev any, path ...string) bool {
+	if v, present := input[key]; present && v != nil {
+		return inputBool(v)
+	}
+	return nodeTruthy(jsonGet(prev, path...))
+}
+
+// hyIntField 取整型字段（窗口字节数）：请求带了就按请求，没带沿用落库原值。
+func hyIntField(input map[string]any, key string, prev any, path ...string) int64 {
+	if v, present := input[key]; present && v != nil {
+		return inputInt(v)
+	}
+	return jsonInt(jsonGet(prev, path...))
+}
+
+// hyMbpsField 取「整数 Mbps」字段：请求带了就按请求，没带则把落库的带宽字符串换算回来。
+func hyMbpsField(input map[string]any, key string, prev any, wireKey string) int64 {
+	if v, present := input[key]; present && v != nil {
+		return inputInt(v)
+	}
+	return bandwidthMbps(jsonGetString(prev, "finalmask", "quicParams", wireKey))
+}
+
+// bandwidthMbps 把内核的带宽字符串换算成整数 Mbps（"100 Mbps" → 100）。
+//
+// 内核口径（实测 xray 26.3.27）：`<数字><单位>`，单位 bps/Kbps/Mbps/Gbps 都按 bit 算，
+// 裸数字也按 bit/s；单位不认识（如 "12MB/s"）时内核直接「unsupported unit」拒绝。
+// 换算不出来 → 0（表单留空重填，避免把原值猜成错的）。
+func bandwidthMbps(raw string) int64 {
+	s := strings.ToLower(strings.Join(strings.Fields(raw), ""))
+	if s == "" {
+		return 0
+	}
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
+		i++
+	}
+	num, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return 0
+	}
+	switch s[i:] {
+	case "", "bps", "bit/s":
+		num /= 1e6
+	case "kbps":
+		num /= 1e3
+	case "mbps":
+	case "gbps":
+		num *= 1e3
+	default:
+		return 0
+	}
+	return int64(num + 0.5)
+}
+
+// hysteriaMasquerade 组装 masquerade 段；全部为空 → nil（不落库，用内核默认）。
+func hysteriaMasquerade(input map[string]any) *jsObj {
+	typ := strings.TrimSpace(nodeStringField(input, "hy_masquerade_type"))
+	url := strings.TrimSpace(nodeStringField(input, "hy_masquerade_url"))
+	dir := strings.TrimSpace(nodeStringField(input, "hy_masquerade_dir"))
+	content := nodeStringField(input, "hy_masquerade_content")
+	status := int64(0)
+	if v, present := input["hy_masquerade_status_code"]; present && v != nil {
+		status = inputInt(v)
+	}
+	if typ == "" && url == "" && dir == "" && content == "" && status == 0 {
+		return nil
+	}
+	m := jo("type", typ)
+	switch typ {
+	case "proxy":
+		m.put("url", url)
+	case "file":
+		m.put("dir", dir)
+	case "string":
+		m.put("content", content)
+		if status != 0 {
+			m.put("statusCode", status)
+		}
+	}
+	return m
+}
+
+// parsePortSpan 解析 "A-B" 形式的端口区间；单端口 "A" 视作 A-A。
+func parsePortSpan(raw string) (int64, int64, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), "-")
+	if len(parts) > 2 || len(parts) == 0 {
+		return 0, 0, false
+	}
+	lo, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+	if err != nil || lo < 1 || lo > 65535 {
+		return 0, 0, false
+	}
+	hi := lo
+	if len(parts) == 2 {
+		hi, err = strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil || hi < 1 || hi > 65535 {
+			return 0, 0, false
+		}
+	}
+	if lo > hi {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// ---- socks / http / tunnel / wireguard 的构造小工具 ----
+
+// defaultTunnelNetwork 是 dokodemo-door 的缺省 L4 网络（3x-ui 表单同款）。
+const defaultTunnelNetwork = "tcp,udp"
+
+// tunnelNetwork 读 tunnel 入站的 L4 网络（落 settings.network 的那个值）。
+// 第二个返回值 false = 值非法（合法值只有 tcp / udp / tcp,udp，缺省 tcp,udp）。
+func tunnelNetwork(input map[string]any) (string, bool) {
+	raw, _ := inputString(input["tunnel_network"])
+	switch strings.TrimSpace(raw) {
+	case "":
+		return defaultTunnelNetwork, true
+	case "tcp", "udp", "tcp,udp":
+		return strings.TrimSpace(raw), true
+	}
+	return "", false
+}
+
+// wireGuardPeers 把「每行一条：公钥 [允许IP,...]」解析成内核的 peers 数组。
+// 公钥必须是 32 字节 base64（WireGuard key）；允许IP 可省（服务端仍能握手，
+// 只是没有回程路由，实际用不起来）。
+func wireGuardPeers(raw string) (jsArr, bool) {
+	peers := jsArr{}
+	for _, line := range splitLines(raw) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if !isWireGuardKey(fields[0]) {
+			return nil, false
+		}
+		peer := jo("publicKey", fields[0])
+		allowed := jsArr{}
+		for _, chunk := range fields[1:] {
+			for _, ip := range strings.Split(chunk, ",") {
+				if ip = strings.TrimSpace(ip); ip != "" {
+					allowed = append(allowed, ip)
+				}
+			}
+		}
+		if len(allowed) > 0 {
+			peer.put("allowedIPs", allowed)
+		}
+		peers = append(peers, peer)
+	}
+	return peers, true
+}
+
+// isWireGuardKey 判断是否为 32 字节的 base64 密钥（带/不带填充都收，
+// 客户端导出的多为带填充的 44 字符形态）。
+func isWireGuardKey(s string) bool {
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+		if raw, err := enc.DecodeString(s); err == nil && len(raw) == 32 {
+			return true
+		}
+	}
+	return false
+}
+
+// wireGuardPublicKey 由 WireGuard 私钥推导公钥（同格式：标准 base64 带填充）。
+// 服务端私钥只落库、读接口只回这个公钥 —— 管理员拿它配客户端。
+func wireGuardPublicKey(privateKey string) string {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(privateKey))
+	if err != nil || len(raw) != 32 {
+		if raw, err = base64.RawStdEncoding.DecodeString(strings.TrimSpace(privateKey)); err != nil || len(raw) != 32 {
+			return ""
+		}
+	}
+	pk, err := curve25519.X25519(raw, curve25519.Basepoint)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(pk)
 }
 
 // guardServerNames 对齐 guardServerNames()：REALITY serverNames 与 dest 的静态一致性拦截。
@@ -877,7 +1427,7 @@ func (d *NodeDomain) suggestInboundTag(c *gin.Context, node *NodeRecord, protoco
 		base += "-reality"
 	case security == "tls" && network != "tcp":
 		base += "-ws-tls"
-	case network != "tcp":
+	case network != "tcp" && network != "":
 		base += "-" + network
 	}
 	base = sanitizeTagChars(base)
@@ -1081,6 +1631,12 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		sniffing = jo("enabled", true, "destOverride", jsArr{"http", "tls", "quic"})
 	}
 
+	// wireguard 的 streamSettings 是空的（内核固定 UDP 监听），列表页要显示 udp 而不是默认 tcp。
+	network := jsonDefaultString(stream, "tcp", "network")
+	if ib.Protocol == "wireguard" {
+		network = "udp"
+	}
+
 	return jo(
 		"id", ib.ID,
 		"tag", ib.Tag,
@@ -1088,7 +1644,7 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"protocol", ib.Protocol,
 		"port", ib.Port,
 		"listen", ib.Listen,
-		"network", jsonDefaultString(stream, "tcp", "network"),
+		"network", network,
 		"security", jsonDefaultString(stream, "none", "security"),
 		"sniffing", sniffing,
 		"dest", nullableValue(reality, "dest"),
@@ -1152,6 +1708,34 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 		"has_tls_cert", jsonArrayLen(jsonGet(stream, "tlsSettings", "certificates")) > 0,
 		"ss_method", ssMethod(ib, settings),
 		"ss_password_set", ssPasswordSet(ib, settings),
+		// socks / http（传统代理）：用户名回显，密码只回「已设置」
+		"auth_user", accountUser(ib, settings),
+		"auth_password_set", accountPasswordSet(ib, settings),
+		// tunnel（dokodemo-door）：转发目标与 L4 网络
+		"tunnel_address", nullableValue(settings, "address"),
+		"tunnel_port", jsonIntAt(settings, "port"),
+		"tunnel_network", jsonDefaultString(settings, "", "network"),
+		// wireguard：服务端私钥永不出接口，只回公钥 + 对端清单（公钥不是密钥）
+		"wg_mtu", jsonIntAt(settings, "mtu"),
+		"wg_public_key", wgPublicKeyOf(ib, settings),
+		"wg_peers", wireGuardPeersText(settings),
+		"wg_peer_count", jsonArrayLen(jsonGet(settings, "peers")),
+		"hy_hop_ports", jsonDefaultString(stream, "", "finalmask", "quicParams", "udpHop", "ports"),
+		"hy_hop_interval", jsonDefaultString(stream, "", "finalmask", "quicParams", "udpHop", "interval"),
+		"hy_udp_idle_timeout", nullableValue(jsonGet(stream, "hysteriaSettings"), "udpIdleTimeout"),
+		"hy_masquerade", nullableValue(jsonGet(stream, "hysteriaSettings"), "masquerade"),
+		"hy_congestion", jsonDefaultString(stream, "", "finalmask", "quicParams", "congestion"),
+		"hy_reject_unknown_sni", jsonBoolAt(stream, "tlsSettings", "rejectUnknownSni"),
+		"hy_session_resumption", jsonBoolAt(stream, "tlsSettings", "enableSessionResumption"),
+		"hy_brutal_up", bandwidthMbps(jsonDefaultString(stream, "", "finalmask", "quicParams", "brutalUp")),
+		"hy_brutal_down", bandwidthMbps(jsonDefaultString(stream, "", "finalmask", "quicParams", "brutalDown")),
+		"hy_init_stream_window", jsonIntAt(stream, "finalmask", "quicParams", "initStreamReceiveWindow"),
+		"hy_max_stream_window", jsonIntAt(stream, "finalmask", "quicParams", "maxStreamReceiveWindow"),
+		"hy_init_conn_window", jsonIntAt(stream, "finalmask", "quicParams", "initConnectionReceiveWindow"),
+		"hy_max_conn_window", jsonIntAt(stream, "finalmask", "quicParams", "maxConnectionReceiveWindow"),
+		// salamander 混淆密码只回显「已设置/未设置」，原文永不出接口。
+		"hy_salamander_password_set", ib.SalamanderPassword != nil && *ib.SalamanderPassword != "",
+		"tls_cert_id", nullableValue(jsonGet(stream, "tlsSettings"), xray.CertRefKey),
 		"enabled", ib.Enabled,
 		"sort", ib.Sort,
 		"client_count", clientCount,
@@ -1246,6 +1830,60 @@ func ssPasswordSet(ib *XrayInboundRecord, settings any) bool {
 		return false
 	}
 	return nodeTruthy(jsonGet(settings, "password"))
+}
+
+// accountUser 回显 socks / http 入站的代理账号（其余协议 null）。
+func accountUser(ib *XrayInboundRecord, settings any) any {
+	if ib.Protocol != "socks" && ib.Protocol != "http" {
+		return nil
+	}
+	return nullableValue(settings, "accounts", "0", "user")
+}
+
+// accountPasswordSet 只回「已设置密码」，原文永不出接口（编辑时留空 = 不改）。
+func accountPasswordSet(ib *XrayInboundRecord, settings any) bool {
+	if ib.Protocol != "socks" && ib.Protocol != "http" {
+		return false
+	}
+	return nodeTruthy(jsonGet(settings, "accounts", "0", "pass"))
+}
+
+// wgPublicKeyOf 由落库的服务端私钥现算 WireGuard 公钥（公钥不是密钥，可以回显）。
+func wgPublicKeyOf(ib *XrayInboundRecord, settings any) any {
+	if ib.Protocol != "wireguard" {
+		return nil
+	}
+	pub := wireGuardPublicKey(jsonGetString(settings, "secretKey"))
+	if pub == "" {
+		return nil
+	}
+	return pub
+}
+
+// wireGuardPeersText 把 peers 还原成「每行一条：公钥 允许IP,...」，
+// 让编辑弹窗能原样回填（对端公钥不是密钥）。
+func wireGuardPeersText(settings any) string {
+	peers, ok := jsonGet(settings, "peers").(jsArr)
+	if !ok {
+		return ""
+	}
+	lines := make([]string, 0, len(peers))
+	for _, p := range peers {
+		key := jsonGetString(p, "publicKey")
+		if key == "" {
+			continue
+		}
+		line := key
+		if arr, ok := jsonGet(p, "allowedIPs").(jsArr); ok && len(arr) > 0 {
+			ips := make([]string, 0, len(arr))
+			for _, ip := range arr {
+				ips = append(ips, nodeScalarString(ip))
+			}
+			line += " " + strings.Join(ips, ",")
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // stringsToJSArr 把 []string 转成 jsArr。

@@ -389,6 +389,11 @@ func reportConfig(data map[string]any, node nodeapi.Node, now time.Time) nodeapi
 		})
 	}
 
+	// issue #94 R5：BBR 运行态与 /alive 同一个补丁函数（两条通道永远一致）。
+	if bbr, ok := nodeapi.BBRStatusPatch(data); ok {
+		cfg.Set("bbr", bbr)
+	}
+
 	current := node.ConfigVersion()
 	reported := intOf(data["config_version"])
 	if reported < current {

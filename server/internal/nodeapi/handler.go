@@ -448,6 +448,12 @@ func (h *Handler) Alive(c *gin.Context) {
 		cfg.Set("xray_version", s)
 	}
 
+	// issue #94 R5：BBR 运行态（agent 报的是 /proc/sys 的实际值）。老 agent 不带这个
+	// 键，此时不覆盖已有的 bbr —— 见 BBRStatusPatch 的注释。
+	if bbr, ok := BBRStatusPatch(data); ok {
+		cfg.Set("bbr", bbr)
+	}
+
 	// 配置滞后：agent 报的版本落后于面板当前版本 → 记录「落后了多久」。
 	current := node.ConfigVersion()
 	reported := intOf(data["config_version"])

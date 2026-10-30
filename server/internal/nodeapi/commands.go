@@ -43,9 +43,35 @@ const (
 	// 内置 direct/blocked、负载均衡 tag、UDP 出站（wireguard/warp）由面板侧过滤，
 	// 不会出现在 payload 里。agent 侧实现不在本仓（本任务只定义协议）。
 	ActionOutboundTest = "outbound_test"
+
+	// 以下是端口跳跃（HY2 udpHop，issue #94 R1–R3）的四个窄接口 action。
+	//
+	// 每个 action 的载荷都是白名单字段（面板侧拼好，agent 侧再校验一遍），
+	// 面板不提供「下发任意 shell」的通道。
+	//
+	//	port_probe          {"pool":"20000-50000","count":200,"exclude":[443]}  → 只读
+	//	firewall_hop_apply  {"inbound_id":7,"main_port":56123,"ports":"20000-20199","proto":"udp"}
+	//	firewall_hop_remove {"inbound_id":7}
+	//	firewall_hop_status {}                                                 → 只读
+	//
+	// 要求 agent ≥ 1.0.7（面板侧在入队前就拦掉老版本，见 admin.node_hop）。
+	ActionPortProbe         = "port_probe"
+	ActionFirewallHopApply  = "firewall_hop_apply"
+	ActionFirewallHopRemove = "firewall_hop_remove"
+	ActionFirewallHopStatus = "firewall_hop_status"
+
+	// ActionSysctlApply 是系统调优（sysctl / BBR，issue #94 R4）。
+	//
+	//	payload = {"profile":"bbr"}                                  （预置：bbr / conntrack）
+	//	payload = {"keys":{"net.ipv4.tcp_congestion_control":"bbr"}} （显式键值，白名单）
+	//
+	// 回执是 agent 读 /proc/sys 得到的实际值：{"applied":{...},"modules":[...],"path":"..."}。
+	// 只写 /etc/sysctl.d/99-controlhub-tuning.conf，key 必须白名单（agent 侧复核）。
+	// 与端口跳跃同一批加入 agent，版本门槛相同（见 admin.node_sysctl）。
+	ActionSysctlApply = "sysctl_apply"
 	// 以上与 app/Models/NodeApiCommand.php 的常量逐字一致；本模块只用
-	// ActionRealityScan / ActionOutboundTest（决定回执截断上限），其余导出供后续
-	// P9（WS 通道）复用。
+	// ActionRealityScan / ActionOutboundTest / 端口跳跃四件套（决定回执截断上限），
+	// 其余导出供后续 P9（WS 通道）复用。
 )
 
 const (
@@ -61,6 +87,14 @@ const (
 	// outputLimitOutboundTest 是出站延时回执的截断长度：回执是每条出站一个对象的
 	// JSON 数组（约 60 字节/条），默认 2000 只够 ~30 条，批量测试会截断成非法 JSON。
 	outputLimitOutboundTest = 30000
+	// outputLimitHop 是端口跳跃回执的截断长度：port_probe 会带 busy_udp/busy_tcp
+	// （各至多 512 个端口）与至多 64 段 free_ranges，firewall_hop_status 会列出全部
+	// HY2HOP-* 链及其规则 —— 都远超 2000，截断后就是非法 JSON。
+	outputLimitHop = 30000
+	// outputLimitSysctl 是 sysctl_apply 回执的截断长度：applied 至多 16 个 key 的原值
+	// （tcp_rmem 这类三连值是长字符串），再加上 modules；默认 2000 在极端情况下会截断，
+	// 截断后前端拿不到「实际生效值」。
+	outputLimitSysctl = 4000
 )
 
 // Command 是下发给 agent 的一条指令。
@@ -205,6 +239,10 @@ func outputLimitFor(action string) int {
 		return outputLimitRealityScan
 	case ActionOutboundTest:
 		return outputLimitOutboundTest
+	case ActionPortProbe, ActionFirewallHopApply, ActionFirewallHopRemove, ActionFirewallHopStatus:
+		return outputLimitHop
+	case ActionSysctlApply:
+		return outputLimitSysctl
 	}
 	return outputLimitDefault
 }

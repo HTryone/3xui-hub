@@ -17,9 +17,6 @@ import (
 //   - rules 段：大陆域名/大陆 IP/局域网/中国公共 DNS 全部 DIRECT，其余走
 //     既有的 Proxy 组（对应 clashRules），不新增任何策略组，
 //     等价于 FlClash「路由设置」里全部开关打开。
-//   - IPv6：全局 `ipv6: true` + `dns.ipv6: true`，v6 侧补齐 ::1 / fc00::/7 /
-//     ff00::/8 网段与 2400:3200::1 引导 DNS —— 不这么做，客户端（如 FlClash）
-//     必须手动打开「内核 IPv6」才收到 v6 流量，v6 节点会表现为解析不出来。
 
 // clashDNSConfig 是订阅正文最前面的全局设置 + dns 段。
 //
@@ -37,11 +34,10 @@ const clashDNSConfig = "" +
 	"mode: rule\n" +
 	"unified-delay: true\n" +
 	"tcp-concurrent: true\n" +
-	"ipv6: true\n" +
 	"\n" +
 	"dns:\n" +
 	"  enable: true\n" +
-	"  ipv6: true\n" +
+	"  ipv6: false\n" +
 	"  enhanced-mode: fake-ip\n" +
 	"  fake-ip-range: 198.18.0.1/16\n" +
 	"  respect-rules: true\n" +
@@ -49,11 +45,9 @@ const clashDNSConfig = "" +
 	"    - 223.5.5.5\n" +
 	"    - 223.6.6.6\n" +
 	"    - 119.29.29.29\n" +
-	"    - 2400:3200::1\n" +
 	"  proxy-server-nameserver:\n" +
 	"    - 223.5.5.5\n" +
 	"    - 119.29.29.29\n" +
-	"    - 2400:3200::1\n" +
 	"  nameserver:\n" +
 	"    - https://dns.alidns.com/dns-query\n" +
 	"    - https://doh.pub/dns-query\n" +
@@ -127,9 +121,6 @@ const clashRules = "" +
 	"  - IP-CIDR,100.64.0.0/10,DIRECT\n" +
 	"  - IP-CIDR,224.0.0.0/4,DIRECT\n" +
 	"  - IP-CIDR6,fe80::/10,DIRECT\n" +
-	"  - IP-CIDR6,::1/128,DIRECT\n" +
-	"  - IP-CIDR6,fc00::/7,DIRECT\n" +
-	"  - IP-CIDR6,ff00::/8,DIRECT\n" +
 	"  # 中国公共 DNS（域名 + IP 钉直连，解析链路防绕圈）\n" +
 	"  - DOMAIN-SUFFIX,alidns.com,DIRECT\n" +
 	"  - DOMAIN-SUFFIX,doh.pub,DIRECT\n" +
@@ -213,6 +204,16 @@ func (s *Service) generateClash(user *User, plan *Plan, links []string, cfg *sit
 		writeClashScalar(&b, proxy, "servername", "servername")
 		writeClashScalar(&b, proxy, "client-fingerprint", "client-fingerprint")
 
+		// hysteria2 专有字段（老协议不产出这些键，节点正文字节不变）
+		writeClashScalar(&b, proxy, "fingerprint", "fingerprint")
+		writeClashBool(&b, proxy, "skip-cert-verify", "skip-cert-verify")
+		writeClashScalar(&b, proxy, "obfs", "obfs")
+		writeClashScalar(&b, proxy, "obfs-password", "obfs-password")
+		writeClashScalar(&b, proxy, "ports", "ports")
+		if alpn, ok := field(proxy, "alpn").([]any); ok && len(alpn) > 0 {
+			b.WriteString("    alpn: [" + joinAny(alpn, ", ") + "]\n")
+		}
+
 		if reality, ok := field(proxy, "reality-opts").(phpMap); ok {
 			b.WriteString("    reality-opts:\n")
 			// 必须给 public-key / short-id 加引号：066559 这类纯数字前导零的 sid
@@ -277,6 +278,15 @@ func writeClashBool(b *strings.Builder, proxy phpMap, key, label string) {
 	if v, has := proxy.get(key); has {
 		b.WriteString("    " + label + ": " + phpBoolText(v) + "\n")
 	}
+}
+
+// joinAny 用 sep 连接任意值（YAML 流式序列用）。
+func joinAny(items []any, sep string) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, phpString(item))
+	}
+	return strings.Join(parts, sep)
 }
 
 func phpBoolText(v any) string {

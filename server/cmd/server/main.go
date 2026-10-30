@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -138,6 +139,19 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envInt 读整型环境变量；未设置或非法/非正数时返回 def（由调用方补默认）。
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 // backupTimeoutMinutes 读 BACKUP_TIMEOUT_MINUTES（默认 30 分钟）。

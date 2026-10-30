@@ -62,6 +62,14 @@ func validateAlive(data any) error {
 	v.field("down_speed", Nullable(), Numeric(), Min(0))
 	v.field("net_total_up", Nullable(), Integer(), Min(0))
 	v.field("net_total_down", Nullable(), Integer(), Min(0))
+	// issue #94 R5：BBR 运行态（整块可选，四个字段各自也可选）。
+	// 不校验 key 数量：未知键在 BBRStatusPatch 里按白名单丢弃，不因为多传一个键就
+	// 让整条心跳 500（心跳失败会连带 status 不刷新）。
+	v.field("bbr", Nullable(), ArrayRule())
+	v.field("bbr.tcp_congestion_control", Nullable(), String(), Max(64))
+	v.field("bbr.default_qdisc", Nullable(), String(), Max(64))
+	v.field("bbr.bbr_module", Nullable(), Boolean())
+	v.field("bbr.conntrack_max", Nullable(), Integer(), Min(0))
 	return collect(v)
 }
 
@@ -116,6 +124,49 @@ func ParsePushStats(ordered any) []PushStats {
 		})
 	}
 	return out
+}
+
+// bbrHeartbeatKeys 是心跳 bbr 对象的四个白名单字段，顺序即落库键序
+// （与 agent/sysctl.go 的 bbrStatus 结构一一对应）。
+var bbrHeartbeatKeys = []string{"tcp_congestion_control", "default_qdisc", "bbr_module", "conntrack_max"}
+
+// BBRStatusPatch 把心跳里的 bbr 对象转成 driver_config.bbr 的补丁（issue #94 R5）。
+//
+// ok=false 的三种情况：心跳没带 bbr 键（老 agent）、显式传 null、形状不是对象。
+// 这三种都**不覆盖**已有的 bbr —— 「这次没上报」不等于「节点上没有 BBR 状态」，
+// 写 null 会把上一次的真实值抹掉，面板上就变成看不出所以然。
+//
+// 带了对象但某个字段是 null（agent 读不到 /proc/sys：非 Linux、conntrack 模块未加载）
+// 时按原样写 null：面板要能区分「没上报」与「上报了关」。未知键在这里丢弃，不落库。
+func BBRStatusPatch(data map[string]any) (Object, bool) {
+	raw, exists := data["bbr"]
+	if !exists || raw == nil {
+		return Object{}, false
+	}
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return Object{}, false
+	}
+
+	out := Object{}
+	for _, key := range bbrHeartbeatKeys {
+		value := fields[key]
+		switch {
+		case value == nil:
+			out.Set(key, nil)
+		case key == "bbr_module":
+			out.Set(key, boolOf(value))
+		case key == "conntrack_max":
+			out.Set(key, intOf(value))
+		default:
+			if s, isStr := value.(string); isStr {
+				out.Set(key, s)
+			} else {
+				out.Set(key, nil)
+			}
+		}
+	}
+	return out, true
 }
 
 // AckResult 是一条指令回执（对齐 ack 的 results.*）。

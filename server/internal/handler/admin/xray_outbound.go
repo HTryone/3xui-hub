@@ -22,7 +22,7 @@ import (
 var (
 	outboundReservedTags       = map[string]bool{"direct": true, "blocked": true, "api": true}
 	outboundUnsupportedProxy   = []string{"freedom", "blackhole"}
-	outboundLinkSupportedProto = []string{"vless", "vmess", "trojan", "shadowsocks", "socks", "http"}
+	outboundLinkSupportedProto = []string{"vless", "vmess", "trojan", "shadowsocks", "socks", "http", "hysteria"}
 )
 
 // xrayOutboundIndex 对齐 index()。
@@ -317,7 +317,7 @@ func (d *NodeDomain) validateOutboundPayload(c *gin.Context, input map[string]an
 	v := newNodeValidator(ctxOf(c), input)
 	// 标识允许中文等任意非空字符（实测 xray 26.3.27 支持中文 tag）。
 	v.field("tag", "required", "string", "max:64", "regex:/\\S/")
-	v.field("protocol", "required", "in:freedom,blackhole,vmess,vless,trojan,shadowsocks,socks,http,wireguard")
+	v.field("protocol", "required", "in:freedom,blackhole,vmess,vless,trojan,shadowsocks,socks,http,wireguard,hysteria,dns")
 	v.field("remark", "nullable", "string", "max:128")
 	v.field("enabled", "nullable", "boolean")
 	v.field("sort", "nullable", "integer", "min:0", "max:65535")
@@ -329,7 +329,10 @@ func (d *NodeDomain) validateOutboundPayload(c *gin.Context, input map[string]an
 	v.field("encryption", "nullable", "string", "max:64")
 	v.field("method", "nullable", "string", "max:64")
 	v.field("username", "nullable", "string", "max:255")
-	v.field("network", "nullable", "in:tcp,ws,grpc,xhttp,httpupgrade")
+	v.field("network", "nullable", "in:tcp,ws,grpc,xhttp,httpupgrade,hysteria")
+	// dns 出站的 network 是「查询走 udp 还是 tcp」（xray settings.network），
+	// 与上面的传输层 network 同名但语义不同，故单独一个字段，避免把 udp 写进 streamSettings。
+	v.field("dns_network", "nullable", "in:udp,tcp")
 	v.field("security", "nullable", "in:none,tls,reality")
 	v.field("ws_path", "nullable", "string", "max:255")
 	v.field("ws_host", "nullable", "string", "max:255")
@@ -500,12 +503,17 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 		return p, true
 	}
 
+	// dns 出站的端口缺省是系统 DNS（53）：表单默认 443，切到 dns 后不填也不会被「端口必填」挡下。
+	if protocol == "dns" && port == 0 {
+		port = 53
+	}
+
 	switch protocol {
 	case "freedom":
 		return phpEncode(jo("domainStrategy", "AsIs"))
 	case "blackhole":
 		return phpEncode(jo())
-	case "vmess", "vless", "trojan", "shadowsocks", "socks", "http":
+	case "vmess", "vless", "trojan", "shadowsocks", "socks", "http", "hysteria", "dns":
 	default:
 		return phpEncode(jo())
 	}
@@ -575,6 +583,28 @@ func (d *NodeDomain) buildOutboundSettings(c *gin.Context, protocol string, inpu
 				"pass", nodeStringField(input, "password"),
 			)},
 		)}))
+	case "hysteria":
+		// xray-core 的 hysteria 出站 settings 只认 version / address / port 三个键，
+		// 其余键（auth、up/down 之类）会被内核静默忽略 —— 写进来就是死配置。
+		// auth 属于传输层，见 buildOutboundStream 的 hysteriaSettings.auth；
+		// version 必须写 2（写 1 或省略，内核直接 "version != 2" 拒掉整份配置）。
+		// 落库形状（实测 xray 26.3.27）：
+		//   settings        = {version: 2, address, port}
+		//   streamSettings  = {network: hysteria, security: tls,
+		//                      hysteriaSettings: {version: 2, auth},
+		//                      tlsSettings: {serverName?, alpn: [h3]}}
+		return phpEncode(jo(
+			"version", int64(2),
+			"address", addr,
+			"port",    p,
+		))
+	case "dns":
+		// dns 出站：官方 settings 形状 = {network: udp|tcp, address, port}。
+		network := "udp"
+		if s := nodeStringField(input, "dns_network"); s != "" {
+			network = s
+		}
+		return phpEncode(jo("network", network, "address", addr, "port", p))
 	}
 	return phpEncode(jo())
 }
@@ -591,6 +621,14 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 	if protocol == "freedom" || protocol == "blackhole" {
 		return phpEncode(jo()), true
 	}
+	// dns 出站没有传输层（udp/tcp 写在 settings.network 里），只保留「借道出口」。
+	if protocol == "dns" {
+		stream := jo()
+		if dialerProxy != "" {
+			stream.put("sockopt", jo("dialerProxy", dialerProxy))
+		}
+		return phpEncode(stream), true
+	}
 
 	network := "tcp"
 	if s, ok := inputString(input["network"]); ok && s != "" {
@@ -599,6 +637,16 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 	security := "none"
 	if s, ok := inputString(input["security"]); ok && s != "" {
 		security = s
+	}
+
+	// hysteria 出站的传输层固定：内核只认 network=hysteria，且必须带 TLS
+	// （hysteria 传输 Dial 里拿不到 tlsSettings 就直接 "tls config is nil"）。
+	if protocol == "hysteria" {
+		network = "hysteria"
+		security = "tls"
+	} else if network == "hysteria" {
+		d.fail(c, "hysteria 传输只用于 hysteria 出站", 500)
+		return nil, false
 	}
 
 	// 组合合法性（与入站同守）：Reality 仅 VLESS。
@@ -612,6 +660,17 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 	}
 
 	stream := jo("network", network, "security", security)
+
+	if protocol == "hysteria" {
+		// auth 落在传输层：settings 里的 auth 会被内核静默忽略（实测 26.3.27），
+		// 空 auth 对端一定回 401，所以这里不给「空 auth 也能存」的口子。
+		auth := strings.TrimSpace(nodeStringField(input, "password"))
+		if auth == "" {
+			d.fail(c, "hysteria 出站必须填 auth（对端 hysteria2 的认证串）", 500)
+			return nil, false
+		}
+		stream.put("hysteriaSettings", jo("version", int64(2), "auth", auth))
+	}
 
 	if network == "ws" {
 		ws := jo()
@@ -655,6 +714,11 @@ func (d *NodeDomain) buildOutboundStream(c *gin.Context, node *NodeRecord, proto
 		tls := jo()
 		if sni := nodeStringField(input, "tls_server_name"); sni != "" {
 			tls.put("serverName", sni)
+		}
+		if protocol == "hysteria" {
+			// HY2 走 QUIC，ALPN 固定协商 h3（与入站侧同规矩）：不写时默认 alpn 是 h2/http1.1，
+			// 对端 QUIC 握手不认，出站直接连不上。
+			tls.put("alpn", jsArr{"h3"})
 		}
 		stream.put("tlsSettings", tls)
 	} else if security == "reality" {
@@ -1112,6 +1176,10 @@ func presentXrayOutbound(ob *XrayOutboundRecord, traffic *OutboundTraffic, targe
 	if _, ok := first.(*jsObj); !ok {
 		first = jsonGet(settings, "servers", "0")
 	}
+	if _, ok := first.(*jsObj); !ok {
+		// 扁平 settings（hysteria / dns）：地址、端口就在顶层，没有 vnext/servers 包装。
+		first = settings
+	}
 
 	var address, port any
 	if obj, ok := first.(*jsObj); ok {
@@ -1194,6 +1262,14 @@ func outboundTarget(ob *XrayOutboundRecord) (string, int64) {
 			}
 			return addr, port
 		}
+	}
+	// 扁平 settings（hysteria / dns）：地址、端口在顶层。
+	if addr := jsonGetString(settings, "address"); addr != "" {
+		port := jsonInt(jsonGet(settings, "port"))
+		if port == 0 {
+			port = 443
+		}
+		return addr, port
 	}
 	if ob.Protocol == "wireguard" {
 		endpoint := jsonGetString(settings, "peers", "0", "endpoint")

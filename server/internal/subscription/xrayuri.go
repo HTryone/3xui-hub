@@ -35,6 +35,8 @@ func xrayInboundURI(node Node, inbound XrayInbound, user *User, host string) str
 	case "shadowsocks":
 		// shadowsocks 是入站级单凭据（密码在入站而非用户），链接对同协议用户通用
 		return xraySSURI(node, inbound, host)
+	case "hysteria":
+		return xrayHysteriaURI(node, inbound, user, host)
 	default:
 		return ""
 	}
@@ -234,6 +236,38 @@ func xrayTrojanURI(node Node, inbound XrayInbound, user *User, host string) stri
 
 	return "trojan://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
 		"?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
+}
+
+// xrayHysteriaURI 生成 Hysteria2 分享链接：
+//
+//	hysteria2://<auth>@host:port/?sni=..&security=tls&mport=A-B#备注
+//
+// auth 是用户 UUID（= clientsFor 注入的 `auth`），明文下发（hy2 userinfo 本来就是明文，
+// 3x-ui 的 base64 写法是为了兼容老客户端，解析侧两种都认）。
+// 跳跃区间来自 streamSettings.finalmask.quicParams.udpHop.ports（面板 hy_hop_ports 的落点），
+// 用 mport 下发；没配就整条参数不出现。
+func xrayHysteriaURI(node Node, inbound XrayInbound, user *User, host string) string {
+	stream := decodeJSONAny(inbound.StreamSettings)
+	sni := jsonFieldString(stream, "tlsSettings", "serverName")
+	if sni == "" {
+		sni = host
+	}
+
+	query := "sni=" + rawurlencode(sni) + "&security=tls"
+	if ports := xrayHopPorts(stream); ports != "" {
+		query += "&mport=" + rawurlencode(ports)
+	}
+
+	return "hysteria2://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
+		"/?" + query + "#" + rawurlencode(inboundLabel(node, inbound))
+}
+
+// xrayHopPorts 读端口跳跃区间：finalmask.quicParams.udpHop.ports（没有则看 hysteriaSettings）。
+func xrayHopPorts(stream any) string {
+	if ports := phpTrim(jsonFieldString(stream, "finalmask", "quicParams", "udpHop", "ports")); ports != "" {
+		return ports
+	}
+	return phpTrim(jsonFieldString(stream, "hysteriaSettings", "udpHop", "ports"))
 }
 
 // xraySSURI 生成 Shadowsocks 链接（SIP002）：密码在入站侧，同协议用户共用同一链接。

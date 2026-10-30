@@ -25,6 +25,17 @@ var defaultTargets = []string{
 	"www.yahoo.com:443",
 	"www.bing.com:443",
 	"www.amazon.com:443",
+	// issue #96：补到 MaxTargets=20。不含 www.intel.com —— 它的证书是 *.intel.com，
+	// SAN 里没有 www.intel.com 这个具体名，手填该 SNI 会握手失败（issue 作者同口径）。
+	// 这 8 条实测 TLS1.3 + ALPN h2 + 链校验 ok，且 SAN 含自身具体名。
+	"www.sony.com:443",
+	"www.bmw.com:443",
+	"www.oracle.com:443",
+	"www.cisco.com:443",
+	"www.ibm.com:443",
+	"www.autodesk.com:443",
+	"www.paypal.com:443",
+	"www.dell.com:443",
 }
 
 // DefaultTargets 返回内置候选的副本（调用方可以随意改动）。

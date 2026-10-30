@@ -44,6 +44,9 @@ type RenderData struct {
 	RoutingRules  []RenderRoutingRule
 	Subscriptions []RenderSubscription
 	RelayClients  []RenderRelayClient
+	// Certificates 是 TLS 证书库（id → 已解密材料），供入站按 tlsSettings.tlsCertId 引用。
+	// 私钥只在这里出现，绝不落进 xray_inbounds.stream_settings。
+	Certificates map[int64]Certificate
 }
 
 // RenderNode 是渲染用到的节点字段。
@@ -86,6 +89,9 @@ type RenderInbound struct {
 	StreamSettings    json.RawMessage `json:"stream_settings"`
 	Sniffing          json.RawMessage `json:"sniffing"`
 	RealityPrivateKey *string         `json:"reality_private_key"`
+	// SalamanderPassword 保持库里的密文（与 reality_private_key 同口径），
+	// 渲染 finalmask.udp[salamander] 时才解密注入，落库的 stream_settings 里只有占位。
+	SalamanderPassword *string `json:"salamander_password"`
 }
 
 // RenderOutbound 是启用出站的一行。
@@ -126,6 +132,16 @@ type RenderSubscription struct {
 type RenderRelayClient struct {
 	InboundID int64  `json:"inbound_id"`
 	ClientID  string `json:"client_id"`
+}
+
+// Certificate 是 xray_certificates 的一行。
+//
+// KeyEnc 保持库里的密文（与 reality_private_key 同口径），渲染时才用 APP_KEY 解，
+// 数据访问层不持有密钥。
+type Certificate struct {
+	ID      int64
+	CertPEM string
+	KeyEnc  string
 }
 
 // realitySettings 的高级字段缺省语（对齐 3x-ui reality.ts 与内核默认值）。
@@ -266,6 +282,8 @@ func renderInbound(d *RenderData, ib RenderInbound, key []byte, withStream bool)
 			}
 			stream.Set("realitySettings", rs)
 		}
+		applyCertificateRef(stream, d.Certificates, key)
+		applySalamanderPassword(&stream, ib, key)
 		for _, subKey := range streamEmptyObjectKeys {
 			if v, ok := stream.Get(subKey); ok {
 				if arr, isArr := v.(Array); isArr && len(arr) == 0 {
@@ -347,6 +365,15 @@ func clientsFor(d *RenderData, ib RenderInbound) (Array, bool, error) {
 				{Key: "totalGB", Value: u.TrafficLimit},
 				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
 			}
+		case "hysteria":
+			// Hysteria2 以 auth 令牌定位用户（键名是 auth，不是 password/id）：
+			// 沿用 uuid 作令牌，与订阅侧 hysteria2:// 链接的密码同源。
+			client = Object{
+				{Key: "auth", Value: u.UUID},
+				{Key: "email", Value: clientEmailOf(u)},
+				{Key: "totalGB", Value: u.TrafficLimit},
+				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
+			}
 		default:
 			// 未知协议：PHP 的 match 返回 null，不注入该用户。
 			continue
@@ -359,9 +386,12 @@ func clientsFor(d *RenderData, ib RenderInbound) (Array, bool, error) {
 		if rc.InboundID != ib.ID {
 			continue
 		}
-		if ib.Protocol == "trojan" {
+		switch ib.Protocol {
+		case "trojan":
 			clients = append(clients, Object{{Key: "password", Value: rc.ClientID}})
-		} else {
+		case "hysteria":
+			clients = append(clients, Object{{Key: "auth", Value: rc.ClientID}})
+		default:
 			clients = append(clients, Object{{Key: "id", Value: rc.ClientID}})
 		}
 	}
@@ -404,6 +434,147 @@ func flowApplies(ib RenderInbound) bool {
 		security = "none"
 	}
 	return network == "tcp" && (security == "reality" || security == "tls")
+}
+
+// CertRefKey 是 tlsSettings 里「引用证书库」的键（只存证书库 id，不存任何 PEM）。
+const CertRefKey = "tlsCertId"
+
+// applyCertificateRef 把 tlsSettings.tlsCertId 展开成内核要的 certificates 段。
+//
+// 入站表的 stream_settings 只存证书库 id（私钥加密在 xray_certificates.key_enc），
+// 渲染时才把 PEM 拼进来 —— 这样 `SELECT stream_settings ... WHERE protocol='hysteria'`
+// 里永远看不到私钥。tlsCertId 不是 xray 认识的键，无论是否命中都必须摘掉。
+func applyCertificateRef(stream Object, certs map[int64]Certificate, key []byte) {
+	tls := toObject(mustGet(stream, "tlsSettings"))
+	raw, ok := tls.Get(CertRefKey)
+	if !ok {
+		return
+	}
+	id := intOf(raw)
+	out := tls.Clone()
+	for i, m := range out {
+		if m.Key == CertRefKey {
+			out = append(out[:i], out[i+1:]...)
+			break
+		}
+	}
+	cert, found := certs[id]
+	keyPEM := ""
+	if found && cert.KeyEnc != "" {
+		// 与 reality_private_key 同口径：解不开就当存量明文原样用。
+		if plain, err := crypto.DecryptString(cert.KeyEnc, key); err == nil {
+			keyPEM = plain
+		} else {
+			keyPEM = cert.KeyEnc
+		}
+	}
+	if cert.CertPEM != "" && keyPEM != "" {
+		out.Set("certificates", Array{Object{
+			{Key: "certificate", Value: Array{cert.CertPEM}},
+			{Key: "key", Value: Array{keyPEM}},
+		}})
+	}
+	stream.Set("tlsSettings", out)
+}
+
+// applySalamanderPassword 把 HY2 的 salamander 混淆密码从独立加密列注入 finalmask.udp。
+//
+// 落库形态只有占位 {"type":"salamander"}（真密码在 xray_inbounds.salamander_password，
+// AES 密文），渲染时才解密注入 —— 这样 `SELECT stream_settings FROM xray_inbounds
+// WHERE protocol='hysteria'` 里永远看不到密码原文。
+//
+// 两种必须处理的异常形态：
+//   - 有占位没密码（清除时漏写 / 手工改库）：整段摘掉。实测内核收到空密码不报错，
+//     照样 Configuration OK，但混淆 key 是空的 —— 客户端按真密码打过来会被丢，
+//     表现成「能握手、连不上」，所以宁可不启用。
+//   - 有密码没占位（历史行）：补一段，否则密码存了却不下发。
+func applySalamanderPassword(stream *Object, ib RenderInbound, key []byte) {
+	if stream == nil || ib.Protocol != "hysteria" {
+		return
+	}
+
+	password := salamanderPassword(ib, key)
+
+	fmRaw, hasFinalmask := stream.Get("finalmask")
+	fm, isObj := fmRaw.(Object)
+	if !isObj {
+		if !hasFinalmask {
+			if password == "" {
+				return
+			}
+			fm = Object{}
+		} else {
+			// finalmask 不是对象：形态本身有问题，不猜、原样下发。
+			return
+		}
+	}
+	udpRaw, _ := fm.Get("udp")
+	udp, _ := udpRaw.(Array)
+
+	out := Array{}
+	kept := false
+	for _, entry := range udp {
+		mask, isMask := entry.(Object)
+		if !isMask || stringOf(mustGet(mask, "type")) != "salamander" {
+			out = append(out, entry)
+			continue
+		}
+		kept = true
+		if password == "" {
+			continue
+		}
+		mask = mask.Clone()
+		settings := Object{}
+		if raw, ok := mask.Get("settings"); ok {
+			if s, isObj := raw.(Object); isObj {
+				settings = s.Clone()
+			}
+		}
+		settings.Set("password", password)
+		mask.Set("settings", settings)
+		out = append(out, mask)
+	}
+	if password != "" && !kept {
+		out = append(out, Object{
+			{Key: "type", Value: "salamander"},
+			{Key: "settings", Value: Object{{Key: "password", Value: password}}},
+		})
+	}
+
+	if len(out) == 0 {
+		fm = removeMember(fm, "udp")
+	} else {
+		fm.Set("udp", out)
+	}
+	if len(fm) == 0 {
+		*stream = removeMember(*stream, "finalmask")
+		return
+	}
+	stream.Set("finalmask", fm)
+}
+
+// salamanderPassword 解密混淆密码列；解不开就当存量明文原样用（与 reality 同口径）。
+func salamanderPassword(ib RenderInbound, key []byte) string {
+	if ib.SalamanderPassword == nil || *ib.SalamanderPassword == "" {
+		return ""
+	}
+	plain, err := crypto.DecryptString(*ib.SalamanderPassword, key)
+	if err != nil {
+		return *ib.SalamanderPassword
+	}
+	return plain
+}
+
+// removeMember 返回删掉指定键的副本：保序结构只有原位替换，删除只能复制。
+func removeMember(o Object, key string) Object {
+	out := make(Object, 0, len(o))
+	for _, m := range o {
+		if m.Key == key {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // realitySettingsFor 复刻 realitySettingsFor()：公开参数来自入站，私钥解密注入。
@@ -894,6 +1065,12 @@ type FingerprintData struct {
 	PlansCount     int64
 	PlansSum       int64
 	RoutingOptions RoutingOptions
+	// CertStamp 是 xray_certificates 的聚合摘要（max(updated_at) + count）。
+	//
+	// 必须进指纹：入站的 stream_settings 只存 tlsCertId，证书续期（重写 key_enc）
+	// 不会改 xray_inbounds.updated_at —— 少了这一段，续期后指纹不变、agent 拿 304，
+	// 内核会一直用旧证书直到过期。
+	CertStamp Stamp
 }
 
 // Stamp 是一张表在节点维度的指纹片段。
@@ -923,6 +1100,11 @@ func Fingerprint(d *FingerprintData) (string, error) {
 		parts = append(parts, s.Label+":"+orDash(s.MaxUpdatedAt)+":"+itoa(s.Count))
 	}
 	parts = append(parts, "relay:"+orDash(d.Relay.MaxUpdatedAt)+":"+itoa(d.Relay.Count))
+	// 证书库只对「引用了它的入站」有影响，但证书表很小，按全表摘要进指纹即可
+	// （否则续期后指纹不变 → 304 → 内核继续用旧证书）。
+	if d.CertStamp.Count > 0 {
+		parts = append(parts, "certs:"+orDash(d.CertStamp.MaxUpdatedAt)+":"+itoa(d.CertStamp.Count))
+	}
 	parts = append(parts, "users:"+itoa(d.UsersCount)+":"+itoa(d.UsersSum))
 	parts = append(parts, "plans:"+itoa(d.PlansCount)+":"+itoa(d.PlansSum))
 

@@ -7,13 +7,17 @@ package admin
 // 与 Laravel（app.timezone=UTC）读到的一致。严禁 SET time_zone。
 //
 // 加密字段（nodes.password / api_key / driver_config.node_secret /
-// xray_inbounds.reality_private_key / xray_outbounds.secret_key /
+// xray_inbounds.reality_private_key / xray_inbounds.salamander_password /
+// xray_outbounds.secret_key /
 // node_warp_accounts.access_token|private_key）全部走 internal/crypto，
 // 与 Laravel 的 Crypt::encryptString 可互读。
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"sort"
@@ -698,8 +702,19 @@ func (s *nodeSQLStore) EligibleProtocolCounts(ctx context.Context) (map[string]i
 	return out, rows.Err()
 }
 
+// AllUserIDs 返回**套餐现在还能用**的用户 id（建号任务的候选集）。
+//
+// 「还能用」= 有套餐 + 未过期 + 总量未超 + 当月未超，与封禁扫描器 banReasonAt 同判据。
+// 以前这里取全部用户：几万个过期/无套餐的人也被拆成 item 派下去，每个都要一次建号判断，
+// 白白浪费队列吞吐（线上表现为「新接节点初始化要跑很久」）。
+// 现在只取真正会建号的人；用户续费/重置流量后再跑初始化仍会被重新算进来。
 func (s *nodeSQLStore) AllUserIDs(ctx context.Context) ([]uint64, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM users ORDER BY id")
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id FROM users WHERE plan_id IS NOT NULL AND enabled = 1 "+
+			"AND (expired_at IS NULL OR expired_at > NOW()) "+
+			"AND (monthly_traffic_limit = 0 OR monthly_traffic_used < monthly_traffic_limit) "+
+			"AND (traffic_limit = 0 OR traffic_used < traffic_limit) "+
+			"ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -996,15 +1011,15 @@ func (s *nodeSQLStore) HasInFlightUpgrade(ctx context.Context, nodeID uint64) (b
 // ---- xray 入站 ----
 
 const xrayInboundColumns = `id, node_id, tag, remark, protocol, port, listen, settings, stream_settings,
-	sniffing, reality_private_key, enabled, sort, created_at, updated_at`
+	sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at`
 
 func (s *nodeSQLStore) scanXrayInbound(row interface{ Scan(...any) error }) (*XrayInboundRecord, error) {
 	var ib XrayInboundRecord
-	var remark, settings, stream, sniffing, privateKey sql.NullString
+	var remark, settings, stream, sniffing, privateKey, salamander sql.NullString
 	var enabled int
 	var createdAt, updatedAt sql.NullTime
 	if err := row.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port, &ib.Listen,
-		&settings, &stream, &sniffing, &privateKey, &enabled, &ib.Sort, &createdAt, &updatedAt); err != nil {
+		&settings, &stream, &sniffing, &privateKey, &salamander, &enabled, &ib.Sort, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	ib.Remark = nullStrPtr(remark)
@@ -1012,6 +1027,7 @@ func (s *nodeSQLStore) scanXrayInbound(row interface{ Scan(...any) error }) (*Xr
 	ib.StreamSettings = rawBytesOf(stream)
 	ib.Sniffing = rawBytesOf(sniffing)
 	ib.RealityPrivateKey = s.decryptOrRaw(privateKey)
+	ib.SalamanderPassword = s.decryptOrRaw(salamander)
 	ib.Enabled = enabled != 0
 	ib.CreatedAt = nullTimePtr(createdAt)
 	ib.UpdatedAt = nullTimePtr(updatedAt)
@@ -1053,16 +1069,169 @@ func (s *nodeSQLStore) XrayInboundTagTaken(ctx context.Context, nodeID uint64, t
 	return n > 0, err
 }
 
-func (s *nodeSQLStore) XrayInboundPortTaken(ctx context.Context, nodeID uint64, port int64, excludeID *uint64) (bool, error) {
-	query := "SELECT COUNT(*) FROM xray_inbounds WHERE node_id = ? AND port = ? AND enabled = 1"
+// XrayInboundPortTaken 判断同节点内「传输族有交集」的启用入站是否已占用该端口。
+//
+// 必须按 TCP/UDP 分家：443/tcp 的 vless 与 443/udp 的 hysteria 在同一个 socket 空间里
+// 互不冲突（内核各绑各的协议栈），只比端口数字会误报「端口已被占用」。
+// 反过来，tunnel 的 settings.network=tcp,udp 会同时占两族，只比单族会漏报。
+func (s *nodeSQLStore) XrayInboundPortTaken(ctx context.Context, nodeID uint64, port int64, families []string, excludeID *uint64) (bool, error) {
+	query := "SELECT protocol, settings FROM xray_inbounds WHERE node_id = ? AND port = ? AND enabled = 1"
 	args := []any{nodeID, port}
 	if excludeID != nil {
 		query += " AND id <> ?"
 		args = append(args, *excludeID)
 	}
-	var n int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
-	return n > 0, err
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			protocol string
+			settings sql.NullString
+		)
+		if err := rows.Scan(&protocol, &settings); err != nil {
+			return false, err
+		}
+		occupied := inboundFamilies(protocol, settings.String)
+		for _, family := range families {
+			for _, has := range occupied {
+				if has == family {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, rows.Err()
+}
+
+// inboundFamilies 返回入站在内核里实际占用的传输族（tcp / udp，可能两个都占）。
+//
+//   - hysteria / wireguard / amneziawg 恒为 UDP（QUIC / 自有 UDP 栈，与 streamSettings.network 无关）；
+//   - tunnel 是 dokodemo-door，L4 网络在 settings.network（tcp / udp / tcp,udp）——
+//     写进 streamSettings.network 会被内核直接拒（unknown transport protocol: udp）；
+//   - 其余（vless / vmess / trojan / shadowsocks / socks / http）走 TCP。
+func inboundFamilies(protocol, settings string) []string {
+	network := ""
+	if protocol == "tunnel" {
+		var s struct {
+			Network string `json:"network"`
+		}
+		if err := json.Unmarshal([]byte(settings), &s); err == nil {
+			network = s.Network
+		}
+	}
+	return inboundFamiliesOf(protocol, network)
+}
+
+// inboundFamiliesOf 是 family 判定的纯函数版：network 只对 tunnel 有意义
+// （建入站时取负载里的 tunnel_network）。
+func inboundFamiliesOf(protocol, network string) []string {
+	switch protocol {
+	case "hysteria", "wireguard", "amneziawg":
+		return []string{"udp"}
+	case "tunnel":
+		switch network {
+		case "udp":
+			return []string{"udp"}
+		case "tcp,udp", "udp,tcp":
+			return []string{"tcp", "udp"}
+		default:
+			return []string{"tcp"}
+		}
+	default:
+		return []string{"tcp"}
+	}
+}
+
+// XrayCertificates 读 TLS 证书库全表（证书库是人工维护的小表）。
+func (s *nodeSQLStore) XrayCertificates(ctx context.Context) ([]XrayCertificate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, name, domain, cert_pem, key_enc, not_after FROM xray_certificates ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []XrayCertificate{}
+	for rows.Next() {
+		var (
+			c        XrayCertificate
+			domain   sql.NullString
+			certPEM  sql.NullString
+			keyEnc   sql.NullString
+			notAfter sql.NullTime
+		)
+		if err := rows.Scan(&c.ID, &c.Name, &domain, &certPEM, &keyEnc, &notAfter); err != nil {
+			return nil, err
+		}
+		c.Domain = nullStrPtr(domain)
+		c.CertPEM = certPEM.String
+		c.KeyEnc = keyEnc.String
+		if notAfter.Valid {
+			t := notAfter.Time
+			c.NotAfter = &t
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CreateXrayCertificate 写一条证书（私钥加密落 key_enc）。
+//
+// not_after 由 cert_pem 解析得出（页面上显示「还剩 N 天」）；解析不了就留空，
+// 不阻塞保存 —— 证书链里第一张叶子证书才是有效期来源。
+func (s *nodeSQLStore) CreateXrayCertificate(ctx context.Context, in XrayCertificateInput) (*XrayCertificate, error) {
+	keyEnc, err := s.encryptString(in.KeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	var notAfter any
+	if t := certificateNotAfter(in.CertPEM); t != nil {
+		notAfter = t.UTC().Truncate(time.Second)
+	}
+	res, err := s.db.ExecContext(ctx,
+		"INSERT INTO xray_certificates (name, domain, cert_pem, key_enc, not_after, created_at, updated_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?)",
+		in.Name, nullStrValue(in.Domain), in.CertPEM, keyEnc, notAfter, now, now)
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.XrayCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].ID == uint64(id) {
+			return &all[i], nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (s *nodeSQLStore) DeleteXrayCertificate(ctx context.Context, id uint64) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM xray_certificates WHERE id = ?", id)
+	return err
+}
+
+// certificateNotAfter 取 PEM 里第一张证书的 NotAfter；解析失败 → nil。
+func certificateNotAfter(pemText string) *time.Time {
+	block, _ := pem.Decode([]byte(pemText))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	t := cert.NotAfter
+	return &t
 }
 
 func (s *nodeSQLStore) XrayInboundTags(ctx context.Context, nodeID uint64, excludeID *uint64) ([]string, error) {
@@ -1102,14 +1271,18 @@ func (s *nodeSQLStore) CreateXrayInbound(ctx context.Context, in XrayInboundInpu
 	if err != nil {
 		return nil, err
 	}
+	encryptedSalamander, err := s.encryptOptional(in.SalamanderPassword)
+	if err != nil {
+		return nil, err
+	}
 
 	res, err := s.db.ExecContext(ctx,
 		"INSERT INTO xray_inbounds (node_id, tag, remark, protocol, port, listen, settings, stream_settings, "+
-			"sniffing, reality_private_key, enabled, sort, created_at, updated_at) "+
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"sniffing, reality_private_key, salamander_password, enabled, sort, created_at, updated_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		in.NodeID, in.Tag, nullStrValue(in.Remark), in.Protocol, in.Port, in.Listen,
 		jsonTextValue(in.Settings), jsonTextValue(in.StreamSettings), jsonTextValue(in.Sniffing),
-		nullStrValue(encryptedKey), enabled, sortVal, now, now)
+		nullStrValue(encryptedKey), nullStrValue(encryptedSalamander), enabled, sortVal, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -1133,6 +1306,14 @@ func (s *nodeSQLStore) UpdateXrayInbound(ctx context.Context, id uint64, in Xray
 		}
 		sets = append(sets, "reality_private_key = ?")
 		args = append(args, nullStrValue(encryptedKey))
+	}
+	if in.SalamanderPasswordSet {
+		encryptedSalamander, err := s.encryptOptional(in.SalamanderPassword)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, "salamander_password = ?")
+		args = append(args, nullStrValue(encryptedSalamander))
 	}
 	if in.Enabled != nil {
 		sets = append(sets, "enabled = ?")

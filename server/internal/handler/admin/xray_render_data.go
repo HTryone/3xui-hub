@@ -146,6 +146,15 @@ func (d *NodeDomain) renderData(c *gin.Context, node *NodeRecord) (*xray.Data, e
 		})
 	}
 
+	certs, err := d.store.XrayCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data.Certificates = make(map[int64]xray.Certificate, len(certs))
+	for _, c := range certs {
+		data.Certificates[int64(c.ID)] = xray.Certificate{ID: int64(c.ID), CertPEM: c.CertPEM, KeyEnc: c.KeyEnc}
+	}
+
 	return data, nil
 }
 

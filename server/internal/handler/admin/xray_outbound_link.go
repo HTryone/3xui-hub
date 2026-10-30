@@ -15,6 +15,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---- 生成 ----
@@ -28,6 +29,14 @@ func xrayGenerateOutboundLink(ob *XrayOutboundRecord) (string, error) {
 
 	settings, _ := parseOrderedJS(ob.Settings)
 	stream, _ := parseOrderedJS(ob.StreamSettings)
+	name := outboundDisplayName(ob)
+
+	// hysteria 出站的目标在 settings 顶层（{version, address, port}，见
+	// sub_diag/xray-protocol-adaptation-spec.md），不在 vnext/servers 里，
+	// 先走单独分支，否则会被下面的目标地址校验挡掉。
+	if protocol == "hysteria" {
+		return outboundHysteriaURI(settings, stream, name)
+	}
 
 	first := jsonGet(settings, "vnext", "0")
 	if _, isObj := first.(*jsObj); !isObj {
@@ -38,7 +47,6 @@ func xrayGenerateOutboundLink(ob *XrayOutboundRecord) (string, error) {
 		return "", errors.New("该出站没有可导出的目标地址")
 	}
 
-	name := outboundDisplayName(ob)
 	switch protocol {
 	case "vless":
 		return outboundVLESSURI(firstObj, stream, name), nil
@@ -179,6 +187,87 @@ func outboundSSURI(first *jsObj, name string) string {
 	userinfo := base64.StdEncoding.EncodeToString([]byte(method + ":" + password))
 	return "ss://" + userinfo + "@" + linkHost(address) + ":" + strconv.FormatInt(port, 10) +
 		"#" + phpRawURLEncode(name)
+}
+
+// outboundHysteriaURI 生成 hysteria2 出站链接：
+//
+//	hysteria2://<auth>@host:port?sni=..&insecure=1&obfs=salamander&obfs-password=..#name
+//
+// 字段落点（与面板出站侧一致）：
+//   - auth 在 streamSettings.hysteriaSettings.auth（前端编辑回显也按这个读）；
+//   - sni / insecure 在 streamSettings.tlsSettings（serverName / allowInsecure）；
+//   - obfs 在 streamSettings.finalmask.udp[] 的 salamander 段。
+//
+// 参数一律「有才写」：没配就整条键不出现（客户端按各协议默认值走）。
+func outboundHysteriaURI(settings, stream any, name string) (string, error) {
+	address := jsonGetString(settings, "address")
+	port := jsonIntDefault(settings, "port", 0)
+	if address == "" {
+		// 兼容把目标写成 servers[0] 的配置（导入其它面板的出站 JSON 时常见）。
+		server := jsonGet(settings, "servers", "0")
+		address = jsonGetString(server, "address")
+		port = jsonIntDefault(server, "port", 0)
+	}
+	if address == "" {
+		return "", errors.New("该出站没有可导出的目标地址")
+	}
+	if port == 0 {
+		port = 443
+	}
+
+	auth := jsonGetString(stream, "hysteriaSettings", "auth")
+	if auth == "" {
+		auth = jsonGetString(settings, "auth")
+		if auth == "" {
+			auth = jsonGetString(settings, "servers", "0", "password")
+		}
+	}
+
+	query := ""
+	if sni := jsonGetString(stream, "tlsSettings", "serverName"); sni != "" {
+		query = appendLinkParam(query, "sni", sni)
+	}
+	if jsonBoolAt(stream, "tlsSettings", "allowInsecure") {
+		query = appendLinkParam(query, "insecure", "1")
+	}
+	if obfs, obfsPassword := hysteriaObfs(stream); obfs != "" {
+		query = appendLinkParam(query, "obfs", obfs)
+		if obfsPassword != "" {
+			query = appendLinkParam(query, "obfs-password", obfsPassword)
+		}
+	}
+
+	userinfo := ""
+	if auth != "" {
+		userinfo = phpRawURLEncode(auth) + "@"
+	}
+	link := "hysteria2://" + userinfo + linkHost(address) + ":" + strconv.FormatInt(port, 10)
+	if query != "" {
+		link += "?" + query
+	}
+	return link + "#" + phpRawURLEncode(name), nil
+}
+
+// appendLinkParam 往查询串追加一个已编码的键值（首个键不带 &）。
+func appendLinkParam(query, key, value string) string {
+	if query != "" {
+		query += "&"
+	}
+	return query + key + "=" + phpRawURLEncode(value)
+}
+
+// hysteriaObfs 读 finalmask.udp[] 里的混淆段（面板落点，与 3x-ui / 订阅侧同一处）：
+// 返回混淆类型与密码；没有配密码的段整段忽略（链接里表达不了）。
+func hysteriaObfs(stream any) (string, string) {
+	masks, _ := jsonGet(stream, "finalmask", "udp").(jsArr)
+	for _, raw := range masks {
+		kind := jsonGetString(raw, "type")
+		password := jsonGetString(raw, "settings", "password")
+		if kind != "" && password != "" {
+			return kind, password
+		}
+	}
+	return "", ""
 }
 
 func outboundSocksLikeURI(first *jsObj, name string, isHTTP bool) string {
@@ -326,6 +415,8 @@ func xrayParseOutboundLink(link string) (*jsObj, error) {
 		return parseDispatchLink(link, "trojan")
 	case "ss":
 		return parseSSLink(link)
+	case "hysteria2", "hy2":
+		return parseHysteriaLink(link)
 	case "socks", "socks5":
 		return parseSocksLikeLink(link)
 	case "http", "https":
@@ -571,6 +662,68 @@ func parseSSLink(link string) (*jsObj, error) {
 			"password", password,
 		)}),
 		"stream_settings", jo(),
+		"tag", tag,
+	), nil
+}
+
+// parseHysteriaLink 解析 hysteria2:// 与 hy2://（hy2 是官方简写，归一成 hysteria 出站）。
+//
+// 口径对齐 sub_diag/xray-protocol-adaptation-spec.md 的出站形状：
+//
+//	settings        = {version: 2, address, port}
+//	hysteriaSettings= {version: 2, auth}
+//	tlsSettings     = {serverName?, allowInsecure?}
+//	finalmask.udp[] = [{type, settings: {password}}]   ← obfs=salamander 的落点
+//
+// auth 两种写法都认：明文（客户端标准）与 base64（3x-ui 等老面板发的）。
+func parseHysteriaLink(link string) (*jsObj, error) {
+	u, err := parseURLParts(link)
+	if err != nil || u.Host == "" {
+		return nil, errors.New("hysteria2 链接解析失败")
+	}
+	port := u.Port
+	if port == 0 {
+		port = 443
+	}
+	if port < 1 || port > 65535 {
+		return nil, errors.New("hysteria2 链接解析失败")
+	}
+
+	query := u.Query
+	stream := jo("network", "hysteria", "security", "tls")
+
+	tls := jo()
+	if sni := strings.TrimSpace(query["sni"]); sni != "" {
+		tls.put("serverName", sni)
+	}
+	if nodeTruthy(query["insecure"]) {
+		tls.put("allowInsecure", true)
+	}
+	stream.put("tlsSettings", tls)
+
+	// 数值一律 int64：jsonInt 不认 Go 的 int，回读会变 0（DB 来回一趟才会被规范成 float64）。
+	hy := jo("version", int64(2))
+	if auth := hysteriaLinkAuth(u.UserDecoded); auth != "" {
+		hy.put("auth", auth)
+	}
+	stream.put("hysteriaSettings", hy)
+
+	if obfs := strings.TrimSpace(query["obfs"]); obfs != "" {
+		mask := jo("type", obfs)
+		if password := query["obfs-password"]; password != "" {
+			mask.put("settings", jo("password", password))
+		}
+		stream.put("finalmask", jo("udp", jsArr{mask}))
+	}
+
+	tag := linkFragment(link)
+	if tag == "" {
+		tag = u.Host
+	}
+	return jo(
+		"protocol", "hysteria",
+		"settings", jo("version", int64(2), "address", u.Host, "port", port),
+		"stream_settings", stream,
 		"tag", tag,
 	), nil
 }
@@ -856,6 +1009,34 @@ func base64LoosePercent(input string) (string, bool) {
 	return base64Loose(percentDecode(input))
 }
 
+// hysteriaLinkAuth 读 hy2 链接 userinfo 里的 auth：能当 base64 就按 base64，否则明文。
+//
+// 判据与订阅侧 parseHysteriaAuth 同源：「解码 + 重新编码必须等于原文」才算 base64。
+// 明文 uuid 里的 '-' 会被当成 URL-safe 字母表解成乱码，重编码后与原文不同 → 判为明文，
+// 两条路互不误伤。
+func hysteriaLinkAuth(userinfo string) string {
+	if userinfo == "" {
+		return ""
+	}
+	if decoded, ok := canonicalBase64Text(userinfo); ok {
+		return decoded
+	}
+	return userinfo
+}
+
+// canonicalBase64Text 只在「解码后重新编码 == 原文（忽略 padding 与 URL-safe 字母表差异）」时返回结果。
+func canonicalBase64Text(value string) (string, bool) {
+	decoded, ok := base64Loose(value)
+	if !ok || decoded == "" || !utf8.ValidString(decoded) {
+		return "", false
+	}
+	normalized := strings.TrimRight(strings.NewReplacer("-", "+", "_", "/").Replace(strings.TrimSpace(value)), "=")
+	if normalized != strings.TrimRight(base64.StdEncoding.EncodeToString([]byte(decoded)), "=") {
+		return "", false
+	}
+	return decoded, true
+}
+
 // ---- 小工具 ----
 
 func jsonIntDefault(obj any, path string, def int64) int64 {
@@ -906,4 +1087,3 @@ func linkHost(address string) string {
 	}
 	return address
 }
-

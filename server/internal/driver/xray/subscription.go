@@ -55,6 +55,8 @@ func SubscriptionURIs(node Node, inbounds []Inbound, user User) []string {
 		case "shadowsocks":
 			// shadowsocks 是入站级单凭据（密码在入站而非用户），链接对同协议用户通用
 			uri = ssURI(node, ib, host)
+		case "hysteria":
+			uri = hysteriaURI(node, ib, user, host)
 		default:
 			continue
 		}
@@ -227,6 +229,44 @@ func trojanURI(node Node, ib Inbound, user User, host string) string {
 
 	return "trojan://" + user.UUID + "@" + uriHostPort(host, ib.Port) +
 		"?" + query + "#" + phpval.RawURLEncode(InboundLabel(node, ib))
+}
+
+// hysteriaURI 生成 Hysteria2 分享链接：
+//
+//	hysteria2://<auth>@host:port/?sni=..&security=tls&mport=A-B#备注
+//
+// auth 就是用户的 UUID（与 clientsFor 注入的 `auth` 字段同源，明文——hy2 的 userinfo
+// 本来就该是明文，3x-ui 的 base64 写法只是历史包袱，解析侧两种都认）。
+// 端口跳跃的区间取自 streamSettings.finalmask.quicParams.udpHop.ports（面板 hy_hop_ports 的落点），
+// 用 mport 参数下发；没配跳跃就整条参数不出现，客户端只连主端口。
+func hysteriaURI(node Node, ib Inbound, user User, host string) string {
+	stream := streamObject(ib)
+	sni := jsonFieldString(stream, "tlsSettings", "serverName")
+	if sni == "" {
+		sni = host
+	}
+
+	query := "sni=" + phpval.RawURLEncode(sni) + "&security=tls"
+	if ports := hopPortsOf(stream); ports != "" {
+		query += "&mport=" + phpval.RawURLEncode(ports)
+	}
+
+	return "hysteria2://" + user.UUID + "@" + uriHostPort(host, ib.Port) +
+		"/?" + query + "#" + phpval.RawURLEncode(InboundLabel(node, ib))
+}
+
+// hopPortsOf 读端口跳跃区间：finalmask.quicParams.udpHop.ports（"20000-20199" /
+// "20000,20005" 这类原样值）。没配时返回空串。
+//
+// 兼容两种写法：quicParams 直接挂 udpHop，或 3x-ui 那种 finalmask 数组里挑 udpHop 段。
+func hopPortsOf(stream phpjson.Object) string {
+	quic := phpval.ToObject(jsonField(stream, "finalmask", "quicParams"))
+	if ports := strings.TrimSpace(phpval.String(jsonField(quic, "udpHop", "ports"))); ports != "" {
+		return ports
+	}
+	// hysteriaSettings 里也允许写（部分面板把跳跃参数放这里）
+	hysteria := phpval.ToObject(jsonField(stream, "hysteriaSettings"))
+	return strings.TrimSpace(phpval.String(jsonField(hysteria, "udpHop", "ports")))
 }
 
 // ssURI 生成 Shadowsocks 链接（SIP002）：密码在入站侧，同协议用户共用同一链接。

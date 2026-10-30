@@ -131,12 +131,20 @@ var (
 	multiplierSuffixPattern = regexp.MustCompile(`-([0-9]+(?:\.[0-9]+)?)x$`)
 	// 链接协议 + userinfo + host + port（Clash/Sing-box 解析器共用）。
 	//
-	// 对应 PHP 的 `/^(vless|vmess|trojan|ss|hysteria2|hysteria):\/\/([^@]+)@([^:\/\]]+):(\d+)/`：
+	// 对应 PHP 的 `/^(vless|vmess|trojan|ss|hysteria2|hysteria):\/\/([^@]+)@([^:\/\]]+):(\d+)/`，
+	// 另外接受 `hy2://` 别名（hysteria 官方文档与多数客户端的惯用简写，落库前归一成
+	// hysteria2，后续分支不用再关心写法）。
 	// host 段排除 ':'、'/'、']'（Go 的字符类里写 `]` 需要转义，反斜杠本身不排除 ——
 	// 写成 `\\\]` 会把 '\\' 也排除掉，与 PHP 不一致）。
-	linkPattern = regexp.MustCompile(`^(vless|vmess|trojan|ss|hysteria2|hysteria)://([^@]+)@([^:/\]]+):([0-9]+)`)
-	// 链接端口（过滤入站端口用）
-	linkPortPattern = regexp.MustCompile(`@[^/@\]]+:([0-9]+)`)
+	//
+	// 比 PHP 多认一处：带方括号的 IPv6 字面量 `[2001:db8::1]`。旧写法 `[^:/\]]+`
+	// 一遇 ':' 就停（`@[2001:db8::1]:443` 只吃到 `2001`）→ 整条失配 → 调用方静默丢掉该节点。
+	// 方括号分支里额外允许 '.'，覆盖 `[::ffff:1.2.3.4]` 这类 v4-mapped 写法。
+	linkPattern = regexp.MustCompile(`^(vless|vmess|trojan|ss|hysteria2|hy2|hysteria)://([^@]+)@(\[[0-9a-fA-F:.]+\]|[^:/\]]+):([0-9]+)`)
+	// 链接端口（过滤入站端口用）。host 段同样要认 `[2001:db8::1]`：
+	// 旧的 `@[^/@\]]+:` 在 IPv6 链接上会回溯成端口 "1"（把 `[2001:db8:` 当 host、
+	// 把 `1` 当端口），按端口过滤时错杀节点。host 用 (?:...) 不计捕获组，保证 m[1] 仍是端口。
+	linkPortPattern = regexp.MustCompile(`@(?:\[[0-9a-fA-F:.]+\]|[^/@\]]+):([0-9]+)`)
 	// hysteria 密码的 aead 后缀
 	hysteriaAeadPattern = regexp.MustCompile(`(?i):(\/gch|\/aead)$`)
 	// 自定义信息行切分

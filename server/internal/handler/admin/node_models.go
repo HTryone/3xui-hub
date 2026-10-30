@@ -147,7 +147,7 @@ type CommandRecord struct {
 
 // ---- xray 入站 ----
 
-// XrayInboundRecord 是 xray_inbounds 一行；RealityPrivateKey 为明文。
+// XrayInboundRecord 是 xray_inbounds 一行；RealityPrivateKey / SalamanderPassword 为明文。
 type XrayInboundRecord struct {
 	ID                uint64
 	NodeID            uint64
@@ -160,10 +160,33 @@ type XrayInboundRecord struct {
 	StreamSettings    []byte // JSON
 	Sniffing          []byte // JSON
 	RealityPrivateKey *string
-	Enabled           bool
-	Sort              int64
-	CreatedAt         *time.Time
-	UpdatedAt         *time.Time
+	// SalamanderPassword 是 HY2 的 finalmask.udp[salamander] 混淆密码（明文）。
+	// 库里在独立加密列，stream_settings 里只留 {"type":"salamander"} 占位。
+	SalamanderPassword *string
+	Enabled            bool
+	Sort               int64
+	CreatedAt          *time.Time
+	UpdatedAt          *time.Time
+}
+
+// XrayCertificate 是 xray_certificates 一行。
+//
+// KeyEnc 是库里的密文原文（与 reality_private_key 同口径），明文只在渲染时出现。
+type XrayCertificate struct {
+	ID       uint64
+	Name     string
+	Domain   *string
+	CertPEM  string
+	KeyEnc   string
+	NotAfter *time.Time
+}
+
+// XrayCertificateInput 是证书入库字段（私钥明文，由 store 加密后落 key_enc）。
+type XrayCertificateInput struct {
+	Name    string
+	Domain  *string
+	CertPEM string
+	KeyPEM  string
 }
 
 // XrayInboundInput 是入站落库字段（settings/stream/sniffing 已组装成 JSON）。
@@ -179,8 +202,12 @@ type XrayInboundInput struct {
 	Sniffing          []byte
 	RealityPrivateKey *string
 	RealityKeySet     bool
-	Enabled           *bool
-	Sort              *int64
+	// SalamanderPassword 是 HY2 混淆密码明文（store 加密后落独立列）；
+	// SalamanderPasswordSet=false 表示本次不动该列（编辑时没带这个字段）。
+	SalamanderPassword    *string
+	SalamanderPasswordSet bool
+	Enabled               *bool
+	Sort                  *int64
 }
 
 // ---- xray 出站 ----
@@ -446,8 +473,15 @@ type NodeStore interface {
 	XrayInboundsByNode(ctx context.Context, nodeID uint64) ([]XrayInboundRecord, error)
 	XrayInboundByID(ctx context.Context, nodeID, id uint64) (*XrayInboundRecord, error)
 	XrayInboundTagTaken(ctx context.Context, nodeID uint64, tag string, excludeID *uint64) (bool, error)
-	XrayInboundPortTaken(ctx context.Context, nodeID uint64, port int64, excludeID *uint64) (bool, error)
+	// XrayInboundPortTaken 按「传输族」判定端口占用：families 取 tcp / udp（可能同时两个，
+	// 如 tunnel 的 settings.network=tcp,udp）。同一端口在 TCP 与 UDP 上可以并存
+	// （vless:443/tcp 与 hysteria:443/udp 不冲突）。
+	XrayInboundPortTaken(ctx context.Context, nodeID uint64, port int64, families []string, excludeID *uint64) (bool, error)
 	XrayInboundTags(ctx context.Context, nodeID uint64, excludeID *uint64) ([]string, error)
+	// XrayCertificates 读 TLS 证书库（私钥为密文，渲染时解密）。
+	XrayCertificates(ctx context.Context) ([]XrayCertificate, error)
+	CreateXrayCertificate(ctx context.Context, in XrayCertificateInput) (*XrayCertificate, error)
+	DeleteXrayCertificate(ctx context.Context, id uint64) error
 	CreateXrayInbound(ctx context.Context, in XrayInboundInput) (*XrayInboundRecord, error)
 	UpdateXrayInbound(ctx context.Context, id uint64, in XrayInboundInput) (*XrayInboundRecord, error)
 	DeleteXrayInbound(ctx context.Context, id uint64) error
@@ -611,6 +645,16 @@ type NodeConfig struct {
 	RealityScanWait int
 	// OutboundTestWait 是出站连通测试的等待上限（PHP 写死 8 秒）。
 	OutboundTestWait int
+	// HopWait 是端口跳跃指令的等待上限（秒）。
+	//
+	// 比 reality_scan 长：firewall_hop_apply 首次可能先 apt-get 装 iptables，
+	// 再写链 + 读回自验 + netfilter-persistent save，正常 2-5 秒，缺依赖时十几秒。
+	HopWait int
+	// SysctlWait 是 sysctl_apply（系统调优 / BBR）的等待上限（秒）。
+	//
+	// 比端口跳跃短：写一个 conf + modprobe + sysctl -p + 读回 /proc/sys，正常 1-2 秒；
+	// 极端情况（内核模块要现 disk 上找）也只要几秒。
+	SysctlWait int
 	// OutboundSubFetchTimeout 是订阅拉取超时（PHP 30s）。
 	OutboundSubFetchTimeout int
 	// ThirdPartyFetchTimeout 是第三方拉取超时（PHP 15s）。
@@ -621,6 +665,10 @@ type NodeConfig struct {
 const (
 	defaultRealityScanWait  = 18
 	defaultOutboundTestWait = 8
+	// defaultHopWait 覆盖「缺 iptables 时 apt-get 安装」这条最慢路径。
+	defaultHopWait = 40
+	// defaultSysctlWait 覆盖「模块现加载 + sysctl -p + 读回」的正常路径。
+	defaultSysctlWait = 15
 )
 
 // nodeConfigDefaults 补齐零值配置。
@@ -633,6 +681,12 @@ func nodeConfigDefaults(c NodeConfig) NodeConfig {
 	}
 	if c.OutboundTestWait <= 0 {
 		c.OutboundTestWait = defaultOutboundTestWait
+	}
+	if c.HopWait <= 0 {
+		c.HopWait = defaultHopWait
+	}
+	if c.SysctlWait <= 0 {
+		c.SysctlWait = defaultSysctlWait
 	}
 	return c
 }

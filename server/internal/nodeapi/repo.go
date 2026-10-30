@@ -329,7 +329,42 @@ func (r *Repo) LoadRenderData(ctx context.Context, node Node) (*RenderData, erro
 	}
 	d.RelayClients = relays
 
+	certs, err := r.enabledCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d.Certificates = certs
+
 	return d, nil
+}
+
+// enabledCertificates 读 TLS 证书库并按 id 索引（私钥解密）。
+//
+// 只有入站 streamSettings.tlsSettings.tlsCertId 引用到的证书才会被渲染使用；
+// 这里一次性读全表 —— 证书库是人工维护的小表，没必要按 id 过滤。
+func (r *Repo) enabledCertificates(ctx context.Context) (map[int64]Certificate, error) {
+	rows, err := r.DB.QueryContext(ctx, "SELECT id, cert_pem, key_enc FROM xray_certificates")
+	if err != nil {
+		return nil, fmt.Errorf("查询证书库失败: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]Certificate{}
+	for rows.Next() {
+		var (
+			c      Certificate
+			cert   sql.NullString
+			keyEnc sql.NullString
+		)
+		if err := rows.Scan(&c.ID, &cert, &keyEnc); err != nil {
+			return nil, fmt.Errorf("读证书失败: %w", err)
+		}
+		c.CertPEM = cert.String
+		// 私钥保持密文，渲染时用 APP_KEY 解（本层不持有密钥）。
+		c.KeyEnc = keyEnc.String
+		out[c.ID] = c
+	}
+	return out, rows.Err()
 }
 
 func inboundIDs(inbounds []RenderInbound) []int64 {
@@ -369,7 +404,7 @@ func (r *Repo) eligibleUsers(ctx context.Context) ([]RenderUser, error) {
 
 func (r *Repo) enabledInbounds(ctx context.Context, nodeID int64) ([]RenderInbound, error) {
 	rows, err := r.DB.QueryContext(ctx,
-		"SELECT id, tag, remark, protocol, port, listen, settings, stream_settings, sniffing, reality_private_key "+
+		"SELECT id, tag, remark, protocol, port, listen, settings, stream_settings, sniffing, reality_private_key, salamander_password "+
 			"FROM xray_inbounds WHERE node_id = ? AND enabled = 1 ORDER BY sort, id", nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("查询入站失败: %w", err)
@@ -381,10 +416,10 @@ func (r *Repo) enabledInbounds(ctx context.Context, nodeID int64) ([]RenderInbou
 		var (
 			ib                              RenderInbound
 			remark, settings, stream, sniff sql.NullString
-			privKey                         sql.NullString
+			privKey, salamander             sql.NullString
 		)
 		if err := rows.Scan(&ib.ID, &ib.Tag, &remark, &ib.Protocol, &ib.Port, &ib.Listen,
-			&settings, &stream, &sniff, &privKey); err != nil {
+			&settings, &stream, &sniff, &privKey, &salamander); err != nil {
 			return nil, fmt.Errorf("读入站失败: %w", err)
 		}
 		if remark.Valid {
@@ -397,6 +432,10 @@ func (r *Repo) enabledInbounds(ctx context.Context, nodeID int64) ([]RenderInbou
 		if privKey.Valid {
 			v := privKey.String
 			ib.RealityPrivateKey = &v
+		}
+		if salamander.Valid {
+			v := salamander.String
+			ib.SalamanderPassword = &v
 		}
 		out = append(out, ib)
 	}
@@ -582,6 +621,12 @@ func (r *Repo) LoadFingerprint(ctx context.Context, node Node) (*FingerprintData
 	}
 	fd.Relay = relay
 
+	certStamp, err := r.certificateStamp(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fd.CertStamp = certStamp
+
 	if err := r.usersPlansSummary(ctx, fd); err != nil {
 		return nil, err
 	}
@@ -616,6 +661,26 @@ func (r *Repo) relayStamp(ctx context.Context, nodeID int64) (Stamp, error) {
 		return Stamp{}, fmt.Errorf("指纹查询 xray_relay_clients 失败: %w", err)
 	}
 	stamp := Stamp{Label: "relay", Count: count}
+	if maxUpdated.Valid {
+		stamp.MaxUpdatedAt = maxUpdated.String
+	}
+	return stamp, nil
+}
+
+// certificateStamp 是 TLS 证书库的聚合摘要（全表，不按节点）。
+//
+// 表由 cmd/server 的 ensureSchema 幂等建，服务启动即存在。
+func (r *Repo) certificateStamp(ctx context.Context) (Stamp, error) {
+	var (
+		maxUpdated sql.NullString
+		count      int64
+	)
+	err := r.DB.QueryRowContext(ctx,
+		"SELECT MAX(updated_at), COUNT(*) FROM xray_certificates").Scan(&maxUpdated, &count)
+	if err != nil {
+		return Stamp{}, fmt.Errorf("指纹查询 xray_certificates 失败: %w", err)
+	}
+	stamp := Stamp{Label: "certificates", Count: count}
 	if maxUpdated.Valid {
 		stamp.MaxUpdatedAt = maxUpdated.String
 	}

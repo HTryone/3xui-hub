@@ -46,6 +46,16 @@ type Data struct {
 	RoutingRules  []RoutingRule
 	Subscriptions []OutboundSubscription
 	RelayClients  []RelayClient
+	// Certificates 是 TLS 证书库（id → 已解密材料），供入站按 tlsCertId 引用。
+	// 私钥只在这里出现，绝不落进 xray_inbounds.stream_settings。
+	Certificates map[int64]Certificate
+}
+
+// Certificate 是 xray_certificates 的一行（私钥保持密文，渲染时解密）。
+type Certificate struct {
+	ID      int64
+	CertPEM string
+	KeyEnc  string
 }
 
 // Node 是渲染用到的节点字段。
@@ -282,6 +292,7 @@ func renderInbound(d *Data, ib Inbound, key []byte, withStream bool) (phpjson.Ob
 			}
 			stream.Set("realitySettings", rs)
 		}
+		applyCertificateRef(stream, d.Certificates, key)
 		for _, subKey := range streamEmptyObjectKeys {
 			if v, ok := stream.Get(subKey); ok {
 				if arr, isArr := v.(phpjson.Array); isArr && len(arr) == 0 {
@@ -385,6 +396,15 @@ func clientsFor(d *Data, ib Inbound) (phpjson.Array, bool, error) {
 				{Key: "totalGB", Value: u.TrafficLimit},
 				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
 			}
+		case "hysteria":
+			// Hysteria2 以 auth 令牌定位用户（键名是 auth，不是 password/id）：
+			// 沿用 uuid 作令牌，与订阅侧 hysteria2:// 链接的密码同源。
+			client = phpjson.Object{
+				{Key: "auth", Value: u.UUID},
+				{Key: "email", Value: ClientEmail(u.ID)},
+				{Key: "totalGB", Value: u.TrafficLimit},
+				{Key: "expiryTime", Value: expiryZulu(u.ExpiredAt)},
+			}
 		default:
 			// 未知协议：PHP 的 match 返回 null，不注入该用户。
 			continue
@@ -397,9 +417,12 @@ func clientsFor(d *Data, ib Inbound) (phpjson.Array, bool, error) {
 		if rc.InboundID != ib.ID {
 			continue
 		}
-		if ib.Protocol == "trojan" {
+		switch ib.Protocol {
+		case "trojan":
 			clients = append(clients, phpjson.Object{{Key: "password", Value: rc.ClientID}})
-		} else {
+		case "hysteria":
+			clients = append(clients, phpjson.Object{{Key: "auth", Value: rc.ClientID}})
+		default:
 			clients = append(clients, phpjson.Object{{Key: "id", Value: rc.ClientID}})
 		}
 	}
@@ -437,6 +460,50 @@ func FlowApplies(ib Inbound) bool {
 		security = "none"
 	}
 	return network == "tcp" && (security == "reality" || security == "tls")
+}
+
+// CertRefKey 是 tlsSettings 里「引用证书库」的键（只存证书库 id，不存任何 PEM）。
+const CertRefKey = "tlsCertId"
+
+// applyCertificateRef 把 tlsSettings.tlsCertId 展开成内核要的 certificates 段。
+//
+// 入站表的 stream_settings 只存证书库 id（私钥加密在 xray_certificates.key_enc），
+// 渲染时才把 PEM 拼进来 —— 这样 `SELECT stream_settings ... WHERE protocol='hysteria'`
+// 里永远看不到私钥。tlsCertId 本身不是 xray 认识的键，无论是否命中都必须摘掉。
+func applyCertificateRef(stream phpjson.Object, certs map[int64]Certificate, key []byte) {
+	tls := phpval.ToObject(mustGet(stream, "tlsSettings"))
+	raw, ok := tls.Get(CertRefKey)
+	if !ok {
+		return
+	}
+	id := phpval.Int(raw)
+	out := tls.Clone()
+	if idx := indexOfKey(out, CertRefKey); idx >= 0 {
+		out = append(out[:idx], out[idx+1:]...)
+	}
+	cert, found := certs[id]
+	keyPEM := ""
+	if found && cert.KeyEnc != "" {
+		// 与 reality_private_key 同口径：解不开就当存量明文原样用。
+		keyPEM = secrets.DecryptOrRaw(cert.KeyEnc, key)
+	}
+	if cert.CertPEM != "" && keyPEM != "" {
+		out.Set("certificates", phpjson.Array{phpjson.Object{
+			{Key: "certificate", Value: phpjson.Array{cert.CertPEM}},
+			{Key: "key", Value: phpjson.Array{keyPEM}},
+		}})
+	}
+	stream.Set("tlsSettings", out)
+}
+
+// indexOfKey 返回对象里键的位置（不存在 → -1）。
+func indexOfKey(o phpjson.Object, key string) int {
+	for i, m := range o {
+		if m.Key == key {
+			return i
+		}
+	}
+	return -1
 }
 
 // RealitySettingsFor 复刻 realitySettingsFor()：公开参数来自入站，私钥解密注入。
