@@ -257,6 +257,13 @@ func xrayHysteriaURI(node Node, inbound XrayInbound, user *User, host string) st
 	if ports := xrayHopPorts(stream); ports != "" {
 		query += "&mport=" + rawurlencode(ports)
 	}
+	// salamander 混淆（issue #94）：密码是入站级单凭据（同协议用户共用），库里存密文，
+	// XrayInbounds 已解出明文挂到 inbound.SalamanderPassword。
+	// 有密码才写 obfs；没配就整条键不出现（客户端按默认「不混淆」走）。
+	// 值原样编码不 trim：写库时已 trim 过，这里再动一个字符就跟服务端密码对不上。
+	if password := inbound.SalamanderPassword; strings.TrimSpace(password) != "" {
+		query += "&obfs=salamander&obfs-password=" + rawurlencode(password)
+	}
 
 	return "hysteria2://" + user.UUID + "@" + xrayURIHostPort(host, inbound.Port) +
 		"/?" + query + "#" + rawurlencode(inboundLabel(node, inbound))

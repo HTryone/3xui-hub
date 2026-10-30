@@ -2,6 +2,11 @@
 
 ControlHub 完整更新历史。最新版本见 [README](README.md)。
 
+### v2.6.1 (2026-10-30)
+
+- **修 HY2 混淆配了不生效**：面板启用 salamander 混淆后，订阅里的 `hysteria2://` 链接不带 `obfs` 参数，客户端拿到链接仍按「不混淆」连，结果连不上。现在链接会带上 `obfs=salamander&obfs-password=<密码>`（Clash 与 sing-box 两种订阅格式都已覆盖）
+- 混淆密码读取失败时按「未配置」处理，不会让整条入站从订阅里消失
+
 ### v2.6.0 (2026-10-30)
 
 - **新增 Hysteria2（HY2）入站**：QUIC 协议，抗封锁与弱网表现更好；面板可建入站、自动注入用户、订阅出 `hysteria2://`

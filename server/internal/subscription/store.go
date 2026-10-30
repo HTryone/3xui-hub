@@ -311,7 +311,8 @@ func (r *SQLRepository) NodeInboundIDs(ctx context.Context, nodeID int64, protoc
 // XrayInbounds 返回该节点启用的入站（对齐 XrayInbound::enabledFor：sort、id 升序）。
 func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayInbound, error) {
 	rows, err := r.DB.QueryContext(ctx, `
-		SELECT id, node_id, tag, remark, protocol, port, listen, settings, stream_settings, enabled, sort
+		SELECT id, node_id, tag, remark, protocol, port, listen, settings, stream_settings,
+		       salamander_password, enabled, sort
 		FROM xray_inbounds
 		WHERE node_id = ? AND enabled = 1
 		ORDER BY sort, id`, nodeID)
@@ -323,20 +324,25 @@ func (r *SQLRepository) XrayInbounds(ctx context.Context, nodeID int64) ([]XrayI
 	var out []XrayInbound
 	for rows.Next() {
 		var (
-			ib       XrayInbound
-			remark   sql.NullString
-			listen   sql.NullString
-			settings sql.NullString
-			stream   sql.NullString
+			ib         XrayInbound
+			remark     sql.NullString
+			listen     sql.NullString
+			settings   sql.NullString
+			stream     sql.NullString
+			salamander sql.NullString
 		)
 		if err := rows.Scan(&ib.ID, &ib.NodeID, &ib.Tag, &remark, &ib.Protocol, &ib.Port,
-			&listen, &settings, &stream, &ib.Enabled, &ib.Sort); err != nil {
+			&listen, &settings, &stream, &salamander, &ib.Enabled, &ib.Sort); err != nil {
 			return nil, fmt.Errorf("扫描 xray_inbounds 失败: %w", err)
 		}
 		ib.Remark = remark.String
 		ib.Listen = listen.String
 		ib.Settings = settings.String
 		ib.StreamSettings = stream.String
+		// 混淆密码（issue #94）：解不开就当没配 —— 一条密码坏掉不该让整个入站从订阅里消失。
+		if plain, err := r.decryptField(salamander.String); err == nil {
+			ib.SalamanderPassword = plain
+		}
 		out = append(out, ib)
 	}
 	return out, rows.Err()

@@ -2,7 +2,7 @@
 
 企业级跨境电商网络服务运营平台 | Enterprise Cross-border Network Service Platform
 
-**版本：2.6.0**
+**版本：2.6.1**
 
 <!-- PROJECT SHIELDS -->
 [![Version][version-shield]][version-url]
@@ -132,7 +132,7 @@ MIT License
 
 Enterprise cross-border network service platform — centralized management of nodes, users, plans, orders and payments.
 
-**Version: 2.6.0**
+**Version: 2.6.1**
 
 ## Screenshots
 

@@ -97,8 +97,12 @@ type XrayInbound struct {
 	Listen         string // 绑定地址（DB 默认 0.0.0.0）；订阅按地址族选 host / host_v6
 	Settings       string // JSON 文本
 	StreamSettings string // JSON 文本
-	Enabled        bool
-	Sort           int64
+	// SalamanderPassword 是 hysteria 入站的 salamander 混淆密码明文
+	// （库里 salamander_password 是密文，由 XrayInbounds 解密后挂上来）。
+	// 空 = 未启用混淆；解密失败也按空处理（不能因为密码坏掉丢掉整条链接）。
+	SalamanderPassword string
+	Enabled            bool
+	Sort               int64
 }
 
 // ThirdPartySub 是 third_party_subs 表的一行。
