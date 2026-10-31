@@ -880,6 +880,7 @@ const (
 	certPickExpired = "expired"
 	certPickNoKey   = "nokey"
 	certPickDBError = "dberr"
+	certPickNoMatch = "nomatch"
 )
 
 // hysteriaCertMissingMessage 把「自动挑不到证书」的原因翻成给管理员看的一句话。
@@ -891,6 +892,8 @@ func hysteriaCertMissingMessage(reason string) string {
 		return "Hysteria 入站需要 TLS 证书：证书库里的证书缺少证书或私钥，请先到『TLS 证书库』补全一张再回来"
 	case certPickDBError:
 		return "Hysteria 入站需要 TLS 证书：读取证书库失败，请稍后重试或到『TLS 证书库』手动选一张"
+	case certPickNoMatch:
+		return "Hysteria 入站需要 TLS 证书：证书库里没有与该域名匹配的证书（域名不一致的证书握手会失败，故不自动选用）。请先到『TLS 证书库』为该域名签/导一张，或在下方手动指定"
 	}
 	return "Hysteria 入站需要 TLS 证书：证书库为空，请先到『TLS 证书库』添加一张再回来"
 }
@@ -937,6 +940,9 @@ func (d *NodeDomain) autoPickHysteriaCert(c *gin.Context, node *NodeRecord, inpu
 		return certPickNoKey
 	case live == 0:
 		return certPickExpired
+	case live > 0 && (strings.TrimSpace(sni) != "" || strings.TrimSpace(nodeHostName(node)) != ""):
+		// 库里有未过期的证书，但没有一张能覆盖要用的域名 —— 不能拿别的域名凑数。
+		return certPickNoMatch
 	}
 	return certPickEmpty
 }
@@ -976,6 +982,9 @@ func pickCertForHysteria(certs []XrayCertificate, sni, nodeHost string, now time
 	}
 
 	sni = strings.ToLower(strings.TrimSpace(sni))
+	host := strings.ToLower(strings.TrimSpace(nodeHost))
+
+	// ① 与入站 SNI 匹配
 	if sni != "" {
 		for _, c := range live {
 			if certDomainMatches(c.domain, sni) {
@@ -983,7 +992,7 @@ func pickCertForHysteria(certs []XrayCertificate, sni, nodeHost string, now time
 			}
 		}
 	}
-	host := strings.ToLower(strings.TrimSpace(nodeHost))
+	// ② 与节点域名匹配
 	if host != "" && host != sni {
 		for _, c := range live {
 			if certDomainMatches(c.domain, host) {
@@ -991,8 +1000,16 @@ func pickCertForHysteria(certs []XrayCertificate, sni, nodeHost string, now time
 			}
 		}
 	}
+	// 知道该用哪个域名却一张都不匹配 → 拒绝兜底，让调用方报错。
+	//
+	// 这里**故意不做「到期最晚的一张」兜底**：证书域名不匹配时客户端按 SNI 握手必失败，
+	// 面板却显示建站成功，比直接报错危险得多。线上真踩过：给 KR01 建 HY2 时库里没有
+	// kr1.wujiecloud.top，兜底挑了 jk.wujiecloud.top，入站看着正常、实际连不上。
+	if sni != "" || host != "" {
+		return 0, len(live), material
+	}
 
-	// 兜底：到期最晚的一张（not_after 未知的排在已知的后面）。
+	// 两个域名都不知道（例如节点没填 host）：只能退到到期最晚的一张。
 	best := live[0]
 	for _, c := range live[1:] {
 		switch {
