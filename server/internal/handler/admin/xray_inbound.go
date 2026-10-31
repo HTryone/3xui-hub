@@ -1836,9 +1836,14 @@ func presentXrayInbound(ib *XrayInboundRecord, userCounts map[string]int64) *jsO
 	client := jsonGet(reality, "settings")
 	xs := jsonGet(stream, "xhttpSettings")
 
+	// 用户全协议通用：任何入站上的 client 都是「全部有套餐的可用用户」，不再按
+	// 入站协议去匹配 users.protocol（那样 hy2 入站永远显示 0，而实际它上面有 105 个）。
+	// shadowsocks 例外（历史行为：它的人数在订阅里走另一条路）。
 	clientCount := int64(0)
 	if ib.Protocol != "shadowsocks" {
-		clientCount = userCounts[ib.Protocol]
+		for _, n := range userCounts {
+			clientCount += n
+		}
 	}
 
 	var sniffing any
