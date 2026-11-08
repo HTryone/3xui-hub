@@ -19,10 +19,10 @@ const fmtDate = (s) => {
   return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-// 分组与排序口径：
-//   - 组内：按 sort 升序、id 兜底（后台「组内拖拽 / 字母排序」改的就是 sort 字段）
-//   - 组间：按「组内最小 sort」升序 —— 管理员设的 sort 是全局优先级，
-//     谁排在最前面，它的分类就排在最前面（而不是按分类名字母序，那会打乱管理员的安排）
+// 分组与排序口径（与管理端「分类排序」的存储语义一致）：
+//   管理端保存分类顺序时写入 sort = (组序)*100 + (组内位置)*10，
+//   即**组间顺序编码在 sort 里**（第1组 110/120…、第2组 210/220…）。
+//   因此：组内按 sort 升序 + id 兜底；组间按「组内最小 sort」升序。
 const groups = ref([])
 const groupDocs = (list) => {
   const map = new Map()

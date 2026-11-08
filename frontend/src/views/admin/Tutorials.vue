@@ -37,9 +37,11 @@ const load = async () => {
 }
 
 /**
- * 按分类分组展示（仅后台列表页，用户端 TutorialList 不变）。
- * - 组间：分类名拼音升序（localeCompare('zh-CN')，让「安卓系列」排在「iOS」前这类中文习惯生效）
+ * 按分类分组展示。
  * - 组内：sort 升序，再按 id 兜底，保证同 sort 值时顺序稳定不跳动
+ * - 组间：**按组内最小 sort 升序** —— 「分类排序」保存的是
+ *   sort = (组序)*100 + (组内位置)*10，组间顺序就编码在 sort 前缀里。
+ *   （此前这里用分类名拼音排，会把用户刚设的分类顺序冲掉，重新打开面板又变回字母序。）
  * 无分类的归到「默认」组，不丢数据。
  */
 const grouped = computed(() => {
@@ -50,11 +52,11 @@ const grouped = computed(() => {
     map.get(cat).push(t)
   }
   return Array.from(map.entries())
-    .map(([category, items]) => ({
-      category,
-      items: items.slice().sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || a.id - b.id),
-    }))
-    .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
+    .map(([category, items]) => {
+      const sorted = items.slice().sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || a.id - b.id)
+      return { category, items: sorted, minSort: sorted.length ? (sorted[0].sort ?? 0) : 0 }
+    })
+    .sort((a, b) => a.minSort - b.minSort)
 })
 
 /** 现有分类清单（分类输入框的 datalist 建议；去重 + 排除空）。 */
