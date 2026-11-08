@@ -130,17 +130,22 @@
                 <label class="email-label">收件人（邮箱或用户 ID）</label>
                 <Input v-model="batch.single_query" placeholder="a@example.com 或 12" />
               </div>
-              <template v-else>
+              <template v-else-if="batch.mode === 'filter'">
                 <div>
                   <label class="email-label">用户状态</label>
                   <Select v-model="batch.user_status" :options="userStatusOptions" />
                 </div>
                 <div>
-                  <label class="email-label">限定套餐（可选）</label>
-                  <Select v-model="batch.plan_id" :options="batchPlanOptions" />
+                  <label class="email-label">限定套餐（可多选，不选=不限）</label>
+                  <MultiSelect v-model="batch.plan_ids" :options="batchPlanOptions" placeholder="不限套餐" />
                 </div>
               </template>
             </div>
+
+            <!-- 全部：说明单独一行，纯文字，避免被网格挤变形 -->
+            <p v-if="batch.mode === 'all'" class="email-all-note email-mt">
+              发送给<strong>所有已启用的用户</strong>（含未购买套餐 / 已过期 / 已超量，不含被封禁的账号）。
+            </p>
 
             <div class="email-mt">
               <label class="email-label">邮件标题</label>
@@ -469,17 +474,21 @@
             <label class="email-label">收件人（邮箱或用户 ID）</label>
             <Input v-model="schedule.config.single_query" placeholder="a@example.com 或 12" />
           </div>
-          <template v-else>
+          <template v-else-if="schedule.config.mode === 'filter'">
             <div>
               <label class="email-label">用户状态</label>
               <Select v-model="schedule.config.user_status" :options="userStatusOptions" />
             </div>
             <div>
-              <label class="email-label">限定套餐（可选）</label>
-              <Select v-model="schedule.config.plan_id" :options="batchPlanOptions" />
+              <label class="email-label">限定套餐（可多选，不选=不限）</label>
+              <MultiSelect v-model="schedule.config.plan_ids" :options="batchPlanOptions" placeholder="不限套餐" />
             </div>
           </template>
         </div>
+
+        <p v-if="schedule.config.mode === 'all'" class="email-all-note email-mt">
+          发送给<strong>所有已启用的用户</strong>（含未购买套餐 / 已过期 / 已超量，不含被封禁的账号）。
+        </p>
 
         <div class="email-mt">
           <label class="email-label">邮件标题</label>
@@ -617,6 +626,7 @@ import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
+import MultiSelect from '@/components/ui/MultiSelect.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Icon from '@/components/ui/Icon.vue'
 import Modal from '@/components/ui/Modal.vue'
@@ -1080,10 +1090,10 @@ const saveNotifyCfg = async () => {
 
 // ============ 批量发信 ============
 const batch = ref({
-  mode: 'filter',        // filter=按条件群发 / single=单发
+  mode: 'filter',        // all=全部注册用户 / filter=按条件群发 / single=单发
   subject: '',
   body: '',
-  plan_id: '',
+  plan_ids: [],          // 限定套餐（可多选），空 = 不限
   user_status: 'normal',
   single_query: '',
 })
@@ -1206,7 +1216,8 @@ const onBatchSend = async () => {
   try {
     const res = await adminApi.batchSendEmail({
       ...batch.value,
-      plan_id: batch.value.plan_id || null,
+      plan_id: null,
+      plan_ids: (batch.value.plan_ids || []).map(Number),
     })
     batchResult.value = res
     toast.success(`已加入发送队列，共 ${res.total} 封`)
@@ -1226,7 +1237,7 @@ const schedule = ref({
   config: {
     mode: 'filter',
     user_status: 'normal',
-    plan_id: '',
+    plan_ids: [],
     single_query: '',
     subject: '',
     body: '',
@@ -1246,11 +1257,9 @@ const loadSchedule = async () => {
     schedule.value.time = data.time || '09:00'
     const c = data.config || {}
     schedule.value.config = {
-      // 'all' 在下拉里没有对应项（旧默认值），归一为「按条件群发」显示；
-      // 后端对 all/filter 的处理本来就相同（都按 user_status 过滤）
-      mode: c.mode === 'single' ? 'single' : 'filter',
+      mode: c.mode === 'single' ? 'single' : (c.mode === 'all' ? 'all' : 'filter'),
       user_status: c.user_status || 'normal',
-      plan_id: c.plan_id || '',
+      plan_ids: Array.isArray(c.plan_ids) ? c.plan_ids : (c.plan_id ? [c.plan_id] : []),
       single_query: c.single_query || '',
       subject: c.subject || '',
       body: c.body || '',
@@ -1267,7 +1276,7 @@ const buildSchedulePayload = () => ({
   time: schedule.value.time,
   config: {
     ...schedule.value.config,
-    plan_id: schedule.value.config.plan_id || null,
+    plan_ids: (schedule.value.config.plan_ids || []).map(Number),
   },
 })
 
@@ -1328,14 +1337,14 @@ const recipientOptions = [
 ]
 
 const sendModeOptions = [
+  { label: '全部（所有已启用用户）', value: 'all' },
   { label: '按条件群发', value: 'filter' },
   { label: '单发（指定一个人）', value: 'single' },
 ]
 
 const userStatusOptions = [
   { label: '正常（未过期、未超量）', value: 'normal' },
-  { label: '流量超量', value: 'over' },
-  { label: '已过期', value: 'expired' },
+  { label: '已耗尽（过期或超量）', value: 'depleted' },
 ]
 
 const logTypeOptions = [
@@ -1352,11 +1361,10 @@ const logStatusOptions = [
   { label: '失败', value: 'failed' },
 ]
 
-// 批量发信「限定套餐」：与套餐下拉同源
-const batchPlanOptions = computed(() => [
-  { label: '全部套餐', value: '' },
-  ...planOptions.value.map((p) => ({ label: p.name, value: p.id })),
-])
+// 批量发信「限定套餐」（多选）：不再有「全部套餐」占位项 —— 不选即「不限」
+const batchPlanOptions = computed(() =>
+  planOptions.value.map((p) => ({ label: p.name, value: p.id })),
+)
 
 const logSceneText = {
   traffic_exhausted: '流量用尽',
@@ -1480,6 +1488,8 @@ html.dark .email-warn-note { color: #fbbf24; }
 
 .email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); }
 .email-hint code { background: var(--bg-hover); padding: 0 4px; border-radius: var(--radius-sm); font-size: var(--text-xs); }
+/* 「全部」发送方式的说明：单独一行纯文字，正常换行 */
+.email-all-note { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; margin: 0; }
 .email-template { width: 100%; padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-input); color: var(--text-primary); font-family: monospace; font-size: var(--text-sm); resize: vertical; line-height: 1.6; }
 .email-template:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-muted); }
 .email-test-row { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }

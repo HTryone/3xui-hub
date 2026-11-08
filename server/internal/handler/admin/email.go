@@ -507,7 +507,7 @@ func (d *MailDomain) mailBatchSend(c *gin.Context) {
 	v.field("body", "required", "string", "max:65535")
 	v.field("mode", "required", "in:all,filter,single")
 	v.field("plan_id", "nullable", "integer")
-	v.field("user_status", "nullable", "in:normal,over,expired")
+	v.field("user_status", "nullable", "in:all,normal,depleted")
 	v.field("single_query", "nullable", "string", "max:255")
 	if !v.passes() {
 		if err := v.storeFailure(); err != nil {
@@ -674,12 +674,15 @@ func (d *MailDomain) resolveRecipients(ctx context.Context, data map[string]any,
 	}
 
 	filter := MailRecipientFilter{UserStatus: "normal"}
-	if s, ok := inputString(data["user_status"]); ok && s != "" {
-		filter.UserStatus = s
-	}
-	if val, ok := data["plan_id"]; ok && val != nil {
-		id := inputInt(val)
-		filter.PlanID = &id
+	if mode == "all" {
+		// 全部注册用户：不加任何条件（不看套餐 / 状态），直接全量。
+		filter.UserStatus = "all"
+	} else {
+		if s, ok := inputString(data["user_status"]); ok && s != "" {
+			filter.UserStatus = s
+		}
+		// 限定套餐支持多选：plan_ids 数组优先，兼容旧的单值 plan_id。
+		filter.PlanIDs = parsePlanIDs(data)
 	}
 	users, err := d.store.MailRecipients(ctx, filter, d.now().UTC())
 	if err != nil {
@@ -693,6 +696,29 @@ func (d *MailDomain) resolveRecipients(ctx context.Context, data map[string]any,
 
 // errNoMailRecipient 对齐 MailBatchService::ERR_NO_RECIPIENT。
 var errNoMailRecipient = fmt.Errorf("no_recipient")
+
+// parsePlanIDs 解析「限定套餐」：优先 plan_ids（数组，多选），兼容旧单值 plan_id。
+// 空数组 / 空值 → nil（不限套餐）。
+func parsePlanIDs(data map[string]any) []int64 {
+	if raw, ok := data["plan_ids"]; ok && raw != nil {
+		if arr, ok := raw.([]any); ok {
+			out := make([]int64, 0, len(arr))
+			for _, v := range arr {
+				if v == nil {
+					continue
+				}
+				out = append(out, inputInt(v))
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	if val, ok := data["plan_id"]; ok && val != nil {
+		return []int64{inputInt(val)}
+	}
+	return nil
+}
 
 // rateLimitConfig 对齐 MailBatchService::rateLimitConfig（「限制」页全局配置）。
 func (d *MailDomain) rateLimitConfig(ctx context.Context) (bool, int) {
@@ -943,7 +969,7 @@ func (d *MailDomain) mailSaveScheduleConfig(c *gin.Context) {
 	})
 	checkSub("user_status", "", func(val any) (bool, string) {
 		s, ok := inputString(val)
-		if !ok || !containsString([]string{"normal", "over", "expired"}, s) {
+		if !ok || !containsString([]string{"normal", "depleted"}, s) {
 			return false, "The selected config.user_status is invalid."
 		}
 		return true, ""

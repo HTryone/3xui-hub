@@ -120,8 +120,9 @@ type MailLogFilter struct {
 
 // MailRecipientFilter 是批量发信的收件人筛选（mode=all|filter）。
 type MailRecipientFilter struct {
-	PlanID     *int64
-	UserStatus string // normal|over|expired，空按 normal
+	// PlanIDs 限定套餐（可多选）；空 = 不限套餐。
+	PlanIDs    []int64
+	UserStatus string // all（全部已启用用户）|normal（正常：未过期且未超量）|depleted（已耗尽：过期或超量）；空按 normal
 }
 
 // MailBatchProgress 是一个批次的发送进度（GET /admin-api/email/batch-progress）。
