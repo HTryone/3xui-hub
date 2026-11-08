@@ -5,7 +5,7 @@
  * 无套餐 = 没有流量、不可用。
  * 列表分页：每页 50 条，页码走 ?page=（刷新/切页回来不丢页）。
  */
-import { ref, computed, watch, onMounted, onActivated, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
@@ -388,9 +388,68 @@ const trafficDisplay = (u) => {
   return '无流量'
 }
 
-onMounted(() => { load(); loadPlans() })
-onActivated(() => { load(); loadPlans() })
-onUnmounted(stopSyncWatch)
+// ── 静默轮询 ──────────────────────────────────────────────
+// 目的：agent 每 5s 就把流量推上来落库，但本页只在「进入/切回」时拉一次，
+// 盯着看数字永远是旧的。这里每 15s 旁路刷一次当前页，**不置 loading、不 abort 在飞请求**，
+// 避免表格闪骨架或打断用户正在进行的翻页。
+//
+// 与主加载（load → usePagedList.fetchPage）的区别：直接调接口覆盖 users.value，
+// 不动 pagination/cursor 状态 —— 页码没变，分页元信息也不需要考虑重算。
+const SILENT_POLL_MS = 15000
+let silentTimer = null
+let silentInFlight = false
+
+const silentRefresh = async () => {
+  // 有弹窗/弹层、正在搜索输入、正在同步、主加载中、上一轮还没回来、页面在后台 → 跳过本轮。
+  // 跳过不是错误：下一轮自然接着跑。
+  if (
+    silentInFlight ||
+    document.hidden ||
+    modalOpen.value ||
+    detailOpen.value ||
+    saving.value ||
+    syncingAll.value ||
+    loading.value ||
+    searchTimer
+  ) return
+
+  silentInFlight = true
+  try {
+    const q = searchQuery.value.trim()
+    const pageAt = page.value
+    const res = await adminApi.listUsers({ page: pageAt, ...(q ? { search: q } : {}) })
+    // 期间用户翻页/搜索变了就丢弃这次结果，避免用旧页数据覆盖新页
+    if (res && page.value === pageAt && searchQuery.value.trim() === q) {
+      users.value = res
+    }
+  } catch {
+    /* 静默失败：下一轮重试，不打扰正在看页面的人 */
+  } finally {
+    silentInFlight = false
+  }
+}
+
+const startSilentPoll = () => {
+  stopSilentPoll()
+  silentTimer = window.setInterval(silentRefresh, SILENT_POLL_MS)
+}
+const stopSilentPoll = () => {
+  if (silentTimer) {
+    window.clearInterval(silentTimer)
+    silentTimer = null
+  }
+}
+
+// 页面可见性：切到后台停表（省请求），切回立即拉一次再续表
+const onVisibility = () => {
+  if (document.hidden) stopSilentPoll()
+  else { silentRefresh(); startSilentPoll() }
+}
+
+onMounted(() => { load(); loadPlans(); startSilentPoll(); document.addEventListener('visibilitychange', onVisibility) })
+onActivated(() => { load(); loadPlans(); startSilentPoll() })
+onDeactivated(stopSilentPoll)
+onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListener('visibilitychange', onVisibility) })
 </script>
 
 <template>

@@ -460,6 +460,10 @@ const createResetOrder = async () => {
 onMounted(() => {
   loadNodes();
   loadSubscriptionConfig();
+  // 每次进入/切回仪表盘刷一次最新流量：/api/me 平时只在登录路由守卫里拉一次，
+  // 之后不点「同步流量」就一直是旧值。这里补一次轻量刷新（不轮询，避免给所有在线用户
+  // 高频打接口）；失败静默，页面沿用 store 里的旧数据即可。
+  auth.fetchMe().catch(() => {});
 });
 
 onUnmounted(() => {
@@ -508,6 +512,10 @@ onUnmounted(() => {
           </template>
         </p>
         <div class="db-traffic-actions">
+          <!-- 用户端「同步流量」按钮暂时隐藏（用户 2026-11-08 定）：
+               页面进入时已自动刷新一次流量，这个按钮多余；且它会给用户反复
+               触发 traffic_sync 任务的机会（每个用户都能建一条），容易被用来
+               刷任务挤占队列。要恢复就删掉这段注释标记。
           <button
             type="button"
             class="db-sync-btn uu-press"
@@ -517,6 +525,7 @@ onUnmounted(() => {
             <UserIcon name="refresh" :size="16" :spin="syncing" />
             {{ syncLabel }}
           </button>
+          -->
           <button
             v-if="user.plan_id && isPeriod"
             type="button"

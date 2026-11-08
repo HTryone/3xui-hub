@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -101,7 +102,17 @@ func (e *UserExtras) Register(r gin.IRouter) {
 //
 // 走 task.Service.FindOrCreateTrafficSync(nodeIDs, "user", uid, uid)：按用户去重在途
 // 任务，Create 拆 items 后 Dispatch 派发 SyncNodeTrafficJob（meta.user_id 只同步本用户）。
+//
+// ⚠️ 开关 USER_SYNC_TRAFFIC_ENABLED（默认 false=关闭）：用户端「同步流量」入口已于
+// 2026-11-08 隐藏（Dashboard.vue），这里同步把接口堵上，防止有人直接构造请求反复建
+// traffic_sync 任务刷爆队列。管理员端 /admin-api/sync-traffic 不受影响，仍可正常用。
+// 需要恢复时在 .env 加 USER_SYNC_TRAFFIC_ENABLED=true 并重启服务。
 func (e *UserExtras) handleSyncTraffic(c *gin.Context) {
+	if !userSyncTrafficEnabled() {
+		fail(c, "该功能已关闭", 403)
+		return
+	}
+
 	u := currentUser(c)
 
 	nodeIDs, err := e.enabledNodeIDs(c.Request.Context())
@@ -163,6 +174,20 @@ func (e *UserExtras) handleSyncTrafficStatus(c *gin.Context) {
 	}
 
 	success(c, jo("task_id", taskID, "status", status))
+}
+
+// userSyncTrafficEnabled 是「用户端同步流量」功能开关。
+//
+// 默认关闭（false）：环境变量 USER_SYNC_TRAFFIC_ENABLED 只有显式写成 true/1/on
+// 才开放。放在环境变量而不是 site_configs，是为了**不改数据库、不加后台 UI**
+// 就能一键关停 —— 真要开放时改 .env 重启一次即可。
+func userSyncTrafficEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("USER_SYNC_TRAFFIC_ENABLED"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleInviteMe 对齐 ApiDiscountController::myInvite（老 PHP 版逐字段复刻）。
