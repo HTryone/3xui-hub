@@ -12,7 +12,7 @@
  *   - 导入后后端会自动补跑迁移 + 重启队列 worker，结果都在响应的 notice 里；
  *   - 收尾失败时数据已经进库了，后端返回 500 + 原文，别用统一文案盖掉。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -44,6 +44,36 @@ const fallbackAppUrl = ref('')
 const confirmingReplace = ref(false)
 // 最近一次导入的结果（后端原文）。留在页面上，不被几秒就消失的 toast 吞掉
 const importResult = ref(null)
+
+// ---- 自动备份开关 ----
+// 只管每天的定时备份任务（db-backup）。后端键 sched_db-backup_enabled，与调度器共用：
+// 关掉后 db-backup 定时任务不跑、系统状态页也不显示它；手动导出 / 导入不受影响。
+const autoEnabled = ref(true)
+const autoToggling = ref(false)
+
+const loadBackupSettings = async () => {
+  try {
+    const res = await adminApi.getBackupSettings()
+    autoEnabled.value = !!res?.auto_enabled
+  } catch (e) {
+    // 读取失败不阻塞页面，按开启处理
+  }
+}
+
+const toggleAuto = async () => {
+  if (autoToggling.value) return
+  const next = !autoEnabled.value
+  autoToggling.value = true
+  try {
+    await adminApi.updateBackupSettings({ auto_enabled: next })
+    autoEnabled.value = next
+    toast.success(next ? '自动备份已开启' : '自动备份已关闭，定时备份不再执行')
+  } catch (e) {
+    toast.error(e.message || '保存失败')
+  } finally {
+    autoToggling.value = false
+  }
+}
 
 const MODE_LABEL = { merge: '合并导入', overwrite: '替换导入' }
 
@@ -96,6 +126,7 @@ watch(appKeyDiffers, (differs) => {
 // （样式在文件末尾的非 scoped 块里），背景点击交给 :persistent，取消按钮直接 disabled。
 watch(importing, (v) => document.body.classList.toggle('bk-importing', v))
 onBeforeUnmount(() => document.body.classList.remove('bk-importing'))
+onMounted(loadBackupSettings)
 
 const exportDb = async () => {
   exporting.value = true
@@ -237,9 +268,31 @@ const tableLabel = (t) => ({
   <div class="bk">
     <h1 class="bk-title">备份</h1>
 
+    <!-- 自动备份开关：只管每天的定时备份任务（db-backup），不影响下面手动导出/导入 -->
     <Card>
+      <div class="bk-switch-row">
+        <div class="bk-switch-text">
+          <span class="bk-switch-label">自动备份</span>
+          <span class="bk-switch-desc">
+            关闭后每天的定时备份不再执行，「定时任务」列表里也不再显示它。手动导出 / 导入不受影响。
+          </span>
+        </div>
+        <label class="bk-switch">
+          <input
+            type="checkbox"
+            class="bk-switch-input"
+            :checked="autoEnabled"
+            :disabled="autoToggling"
+            @change="toggleAuto"
+          />
+          <span class="bk-switch-slider"></span>
+        </label>
+      </div>
+    </Card>
+
+    <Card style="margin-top: var(--space-4);">
       <h2 class="bk-section-title">导出数据库</h2>
-      <p class="bk-info">下载当前数据库和 APP_KEY（zip），用于备份或迁移到其他服务器。备份里不含本机的数据库密码、队列、邮件等配置。</p>
+      <p class="bk-info">下载<strong>整库</strong>（mysqldump 全表）+ APP_KEY 打包成 zip，用于备份或迁移到其他服务器。包含用户、套餐、订单、节点入站，以及<strong>邮箱账号池（smtp_accounts）、SMTP/站点等所有配置（site_configs）、WARP 账号</strong>等全部数据；不含本机数据库密码、队列进程、.env 里除 APP_KEY 以外的项。加密字段（如邮箱密码、节点凭据）靠 zip 里的 APP_KEY 才能解开。</p>
       <Button variant="primary" size="sm" :loading="exporting" @click="exportDb">
         <Icon name="order" :size="16" /> 导出备份
       </Button>
@@ -451,6 +504,72 @@ const tableLabel = (t) => ({
   margin: 0 0 var(--space-4);
   font-size: var(--text-sm);
   color: var(--text-secondary);
+}
+/* 自动备份开关（滑动式） */
+.bk-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.bk-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.bk-switch-label {
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.bk-switch-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.bk-switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 27px;
+  flex-shrink: 0;
+}
+.bk-switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.bk-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--switch-off, #d1d5db);
+  border-radius: 14px;
+  transition: 0.3s;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.bk-switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 21px;
+  width: 21px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--switch-knob, #fff);
+  border-radius: 50%;
+  transition: 0.3s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+.bk-switch-input:checked + .bk-switch-slider {
+  background: var(--switch-on, #2563eb);
+}
+.bk-switch-input:checked + .bk-switch-slider::before {
+  transform: translateX(21px);
+}
+.bk-switch-input:disabled + .bk-switch-slider {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .bk-diff-table {
   width: 100%;

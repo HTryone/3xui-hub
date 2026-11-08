@@ -10,6 +10,7 @@ package admin
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -89,13 +90,46 @@ type BackupStore interface {
 	TableCounts(ctx context.Context, tables []string) (map[string]int64, error)
 }
 
+// BackupSettings 读写备份的开关（site_configs 单键）。
+//
+// 复用 admin sqlStore 的 SiteConfigMany / SiteConfigSetMany（签名一致，直接注入）。
+type BackupSettings interface {
+	SiteConfigMany(ctx context.Context, keys []string) (map[string]string, error)
+	SiteConfigSetMany(ctx context.Context, kv []KV) error
+}
+
+// backupAutoEnabledKey 是「自动备份」总开关的 site_configs 键。
+//
+// 与调度器统一开关共用同一个键：关掉它 = 定时任务 db-backup 不跑（调度器读它），
+// 系统状态页也不显示它。缺省 = 开启（老库不受影响）。手动导出 / 导入不受它影响。
+const backupAutoEnabledKey = "sched_db-backup_enabled"
+
+// backupAutoEnabled 读「自动备份」开关；缺省开启（页面初始化开关状态用）。
+func (d *BackupDomain) backupAutoEnabled(ctx context.Context) (bool, error) {
+	if d.settings == nil {
+		return true, nil // 没注入 = 默认开启（兼容测试/无库场景）
+	}
+	values, err := d.settings.SiteConfigMany(ctx, []string{backupAutoEnabledKey})
+	if err != nil {
+		return true, err
+	}
+	switch strings.ToLower(strings.TrimSpace(values[backupAutoEnabledKey])) {
+	case "0", "false", "off", "no":
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
 // BackupDeps 是备份域的依赖清单。
 type BackupDeps struct {
-	Store   BackupStore
-	Tools   BackupTools
-	Zip     BackupZip
-	Post    BackupPostImport
-	Files   BackupFileStore
+	Store BackupStore
+	Tools BackupTools
+	Zip   BackupZip
+	Post  BackupPostImport
+	Files BackupFileStore
+	// Settings 读写「自动备份」开关（site_configs）；nil = 不做开关限制。
+	Settings BackupSettings
 	// DB 是导出/导入用的 MySQL 连接配置（来自 config/database.php）。
 	DB BackupDBConfig
 	// EnvPath 是本机 .env 路径（BackupEnvService 的 $envPath）。
@@ -107,15 +141,16 @@ type BackupDeps struct {
 
 // BackupDomain 是备份域的 HTTP 入口。
 type BackupDomain struct {
-	store BackupStore
-	tools BackupTools
-	zip   BackupZip
-	post  BackupPostImport
-	files BackupFileStore
-	db    BackupDBConfig
-	env   *BackupEnvService
-	now   func() time.Time
-	logger loggerLike
+	store    BackupStore
+	tools    BackupTools
+	zip      BackupZip
+	post     BackupPostImport
+	files    BackupFileStore
+	settings BackupSettings
+	db       BackupDBConfig
+	env      *BackupEnvService
+	now      func() time.Time
+	logger   loggerLike
 
 	// envNotice 是本次导入 .env 恢复的提示（给前端显示）。
 	envNotice *string
@@ -143,15 +178,16 @@ func NewBackupDomain(d BackupDeps) *BackupDomain {
 		envPath = ".env"
 	}
 	return &BackupDomain{
-		store:  d.Store,
-		tools:  d.Tools,
-		zip:    d.Zip,
-		post:   post,
-		files:  d.Files,
-		db:     d.DB,
-		env:    NewBackupEnvService(envPath, d.Files, logger),
-		now:    now,
-		logger: logger,
+		store:    d.Store,
+		tools:    d.Tools,
+		zip:      d.Zip,
+		post:     post,
+		files:    d.Files,
+		settings: d.Settings,
+		db:       d.DB,
+		env:      NewBackupEnvService(envPath, d.Files, logger),
+		now:      now,
+		logger:   logger,
 	}
 }
 
@@ -164,7 +200,7 @@ func NewBackupDomain(d BackupDeps) *BackupDomain {
 type goBackupPost struct{}
 
 func (goBackupPost) RunPendingMigrations(context.Context) (int, error) { return 0, nil }
-func (goBackupPost) RestartQueueWorkers(context.Context) error        { return nil }
+func (goBackupPost) RestartQueueWorkers(context.Context) error         { return nil }
 
 // ---- 预览记录（backup_preview.json）----
 

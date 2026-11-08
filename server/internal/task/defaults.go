@@ -404,13 +404,21 @@ type SQLLookups struct {
 	DB *sql.DB
 }
 
-// MailNotifyAnyEnabled 对齐 MailNotifyService::anyEnabled()：
-// notify_{traffic_exhausted,traffic_almost,expiring,expired}_enabled 任一 == '1'。
+// MailNotifyAnyEnabled 判断「邮件自动通知」定时任务当前该不该跑。
+//
+// ⚠️ 判据必须与 runMailNotifyScan 的实际扫描范围**逐字一致**：那条任务只扫
+//
+//	流量即将用尽 / 套餐即将到期 / 套餐已到期 三个场景（commands.go runMailNotifyScan）。
+//
+// 「流量用尽」(traffic_exhausted) 不在定时扫描里 —— 它是用户超量被封流量时由
+// collector.ban 的 notifyTrafficExhausted 即时发的（系统触发），不属于这条任务。
+//
+// 因此这里只数这三个键。若把 traffic_exhausted 也算进来，会出现
+// 「只开了流量用尽 → 页面显示这条任务在跑，但它其实什么都不扫」的错位。
 func (l *SQLLookups) MailNotifyAnyEnabled(ctx context.Context) (bool, error) {
-	// PHP：SiteConfig::getValue("notify_{$scene}_enabled") === '1'，未配置 → false。
 	const q = "SELECT COUNT(*) FROM site_configs WHERE " +
-		"`key` IN ('notify_traffic_exhausted_enabled','notify_traffic_almost_enabled'," +
-		"'notify_expiring_enabled','notify_expired_enabled') AND value = '1'"
+		"`key` IN ('notify_traffic_almost_enabled','notify_expiring_enabled'," +
+		"'notify_expired_enabled') AND value = '1'"
 	var n int
 	if err := l.DB.QueryRowContext(ctx, q).Scan(&n); err != nil {
 		return false, err
@@ -433,10 +441,18 @@ func (l *SQLLookups) ThirdPartyFetchEnabled(ctx context.Context) (bool, error) {
 	return l.exists(ctx, "SELECT 1 FROM third_party_subs WHERE enabled = 1 LIMIT 1")
 }
 
-// WarpRotateEnabled 对齐：exists NodeWarpAccount（auto_rotate_hours>0 && enabled）。
+// WarpRotateEnabled 对齐 console.php。
+//
+// ⚠️ 判据必须与 runXrayWarpRotate 的实际查询**逐字一致**（含 n.enabled=1），
+// 否则会出现「页面显示这条任务在跑、实际一台都不跑」的错位：
+//   - 账户已启用（wa.enabled=1）且配了间隔（auto_rotate_hours>0）
+//   - 且所属节点本身是启用的（n.enabled=1）
+//
+// 系统状态页的条件判断（task.ConditionChecker）也复用本函数，三处同源。
 func (l *SQLLookups) WarpRotateEnabled(ctx context.Context) (bool, error) {
 	return l.exists(ctx,
-		"SELECT 1 FROM node_warp_accounts WHERE auto_rotate_hours > 0 AND enabled = 1 LIMIT 1")
+		"SELECT 1 FROM node_warp_accounts wa JOIN nodes n ON n.id = wa.node_id "+
+			"WHERE wa.auto_rotate_hours > 0 AND wa.enabled = 1 AND n.enabled = 1 LIMIT 1")
 }
 
 // OutboundSubsEnabled 对齐：exists XrayOutboundSubscription（enabled）。

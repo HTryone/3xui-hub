@@ -41,6 +41,7 @@ var operationLogActionMap = []struct{ prefix, desc string }{
 	{"admin-api/backup/export", "导出备份"},
 	{"admin-api/backup/import", "导入备份"},
 	{"admin-api/backup/preview", "预览备份"},
+	{"admin-api/backup/settings", "自动备份开关"},
 	{"admin-api/payments", "管理支付"},
 	{"admin-api/email", "配置邮箱"},
 	{"admin-api/site-settings", "修改站点设置"},

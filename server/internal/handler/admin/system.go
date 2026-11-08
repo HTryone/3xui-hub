@@ -86,9 +86,28 @@ func (d *SystemDomain) systemStatus(c *gin.Context) {
 }
 
 // taskStatuses 对齐 SystemStatusController::taskStatuses。
+//
+// 两类任务不显示：
+//   - 被开关关掉的（sched_<name>_enabled 为关）；
+//   - 条件不满足的（when 判 false，比如没开定时换 IP 的 WARP、没有启用的出站订阅）。
+//
+// 两者都与调度器的实际行为一致：调度器那边这些任务也确实不会执行，列表里再挂着只会误导。
 func (d *SystemDomain) taskStatuses(ctx context.Context) (*jsObj, error) {
+	disabled, err := d.store.DisabledTaskNames(ctx)
+	if err != nil {
+		return nil, err
+	}
 	events := make(jsArr, 0, len(d.schedule))
 	for _, ev := range d.schedule {
+		if disabled[ev.Command] {
+			continue
+		}
+		if d.condition != nil {
+			hold, cerr := d.condition(ctx, ev.Command)
+			if cerr == nil && !hold {
+				continue // 条件不满足 = 不跑，隐藏
+			}
+		}
 		last, err := d.store.ScheduledTaskRunLast(ctx, ev.Command)
 		if err != nil {
 			return nil, err

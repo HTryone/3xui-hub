@@ -270,6 +270,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 		Tools: admin.NewOSBackupTools(),
 		Zip:   admin.NewOSBackupZip(),
 		Files: admin.NewOSBackupFiles(),
+		// 自动备份开关读写 site_configs（键 sched_db-backup_enabled，与调度器共用）。
+		Settings: adminStore,
 		DB: admin.BackupDBConfig{
 			Host:     cfg.DB.Host,
 			Port:     cfg.DB.Port,
@@ -286,11 +288,14 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// geo 目录必须与上面 assetHandler 的 geoRoot 同一个，否则「更新写 A、分发读 B」，
 	// 节点下载到的文件与指令里的 sha256 对不上，每次同步都失败。
 	geoService := admin.NewGeodataService(db, envOr("GEODATA_DIR", filepath.Join("..", "assets", "geo")), nil)
+	// 系统状态页要与调度器共用同一套 when 条件（条件不满足的任务不跑、也不显示）。
+	taskLookups := &task.SQLLookups{DB: db}
 	systemDomain := admin.NewSystemDomain(admin.SystemDeps{
 		Store:     admin.NewSystemSQLStore(db),
 		Geo:       geoService,
 		MailQueue: mailDomain,                // 监控页「排队中/运行中/失败」读内存队列水位，不读恒 0 的 jobs 表
 		TaskQueue: taskQueueStater{q: queue}, // 节点任务队列同理：这条队列也不落表
+		Condition: task.ConditionChecker(taskLookups),
 		Logger:    logger,
 	})
 	systemDomain.Register(adminGroup)

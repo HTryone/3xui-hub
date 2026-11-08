@@ -25,6 +25,56 @@ func (d *BackupDomain) Register(r gin.IRouter) {
 	r.GET("/backup/export", d.backupExport)
 	r.POST("/backup/preview", d.backupPreview)
 	r.POST("/backup/import", d.backupImport)
+	// 自动备份开关（读写同一个 site_configs 键，调度器与系统状态页共用）
+	r.GET("/backup/settings", d.backupSettings)
+	r.POST("/backup/settings", d.updateBackupSettings)
+}
+
+// ---- 自动备份开关 ----
+
+// backupSettings 对齐 GET /admin-api/backup/settings → {auto_enabled}。
+func (d *BackupDomain) backupSettings(c *gin.Context) {
+	enabled, err := d.backupAutoEnabled(ctxOf(c))
+	if err != nil {
+		d.failServer(c, "读取备份开关", err)
+		return
+	}
+	d.success(c, jo("auto_enabled", enabled))
+}
+
+// updateBackupSettings 对齐 POST /admin-api/backup/settings。
+//
+// 只控制「每天的定时备份」这一条调度任务（db-backup）：
+//   - 关掉 = 定时任务不跑，系统状态页的「定时任务」列表也不显示它；
+//   - 手动导出 / 导入**不受影响**，一直可用。
+func (d *BackupDomain) updateBackupSettings(c *gin.Context) {
+	input := jsonInput(c)
+	v := newValidator(ctxOf(c), input)
+	v.field("auto_enabled", "required", "boolean")
+	if !v.passes() {
+		d.failValidation(c, v.summary())
+		return
+	}
+	if d.settings == nil {
+		d.fail(c, "备份开关未接入", 500)
+		return
+	}
+
+	enabled := inputBool(input["auto_enabled"])
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+	if err := d.settings.SiteConfigSetMany(ctxOf(c), []KV{{Key: backupAutoEnabledKey, Value: &value}}); err != nil {
+		d.failServer(c, "保存备份开关", err)
+		return
+	}
+
+	msg := "自动备份已关闭：定时备份不再执行"
+	if enabled {
+		msg = "自动备份已开启"
+	}
+	d.success(c, jo("auto_enabled", enabled), msg)
 }
 
 // ---- 响应封装 ----
@@ -131,6 +181,8 @@ func (d *BackupDomain) consumePreviewRecord(tmpDir, uploadPath string) string {
 // ---- export ----
 
 // backupExport 对齐 GET /admin-api/backup/export（zip 附件下载）。
+//
+// 手动导出始终可用 —— 「自动备份」开关只管定时任务 db-backup，与手动导出无关。
 func (d *BackupDomain) backupExport(c *gin.Context) {
 	filename := "controlhub-backup-" + d.now().UTC().Format("20060102150405") + ".zip"
 	tmpDir, err := d.files.TmpDir()
@@ -176,6 +228,8 @@ func (d *BackupDomain) backupExport(c *gin.Context) {
 // ---- preview ----
 
 // backupPreview 对齐 POST /admin-api/backup/preview（multipart 上传）。
+//
+// 手动导入（预览 + 导入）始终可用，与「自动备份」开关无关。
 func (d *BackupDomain) backupPreview(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -319,15 +373,15 @@ const (
 )
 
 type sqlCountState struct {
-	phase   int
-	table   string
-	name    string
-	quoted  bool
-	depth   int
-	inStr   bool
-	escape  bool
-	word    string
-	counts  map[string]int64
+	phase  int
+	table  string
+	name   string
+	quoted bool
+	depth  int
+	inStr  bool
+	escape bool
+	word   string
+	counts map[string]int64
 }
 
 func newSQLCountState() *sqlCountState {
@@ -475,6 +529,8 @@ func (d *BackupDomain) calculateDiffFromSql(ctx context.Context, sqlPath string)
 // ---- import ----
 
 // backupImport 对齐 POST /admin-api/backup/import。
+//
+// 手动导入始终可用，与「自动备份」开关无关。
 func (d *BackupDomain) backupImport(c *gin.Context) {
 	data := jsonInput(c)
 	v := newValidator(ctxOf(c), data)

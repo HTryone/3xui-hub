@@ -133,10 +133,10 @@ func (s *systemSQLStore) OperationLogPage(ctx context.Context, f AuditLogFilter,
 
 func scanScheduledRun(row interface{ Scan(...any) error }) (*ScheduledTaskRun, error) {
 	var (
-		r      ScheduledTaskRun
-		errT   sql.NullString
-		dur    sql.NullInt64
-		ranAt  sql.NullTime
+		r     ScheduledTaskRun
+		errT  sql.NullString
+		dur   sql.NullInt64
+		ranAt sql.NullTime
 	)
 	if err := row.Scan(&r.Command, &r.Status, &errT, &dur, &ranAt); err != nil {
 		return nil, err
@@ -179,6 +179,46 @@ func (s *systemSQLStore) ScheduledTaskRunsRecent(ctx context.Context, limit int6
 		out = append(out, *r)
 	}
 	return out, rows.Err()
+}
+
+// DisabledTaskNames 返回被开关关掉的定时任务名（sched_<name>_enabled 为关）。
+//
+// 与 task.NewSQLToggle 用同一套键与判定：键不存在 = 开启，不在这里出现。
+func (s *systemSQLStore) DisabledTaskNames(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT `key`, value FROM site_configs WHERE `key` LIKE 'sched\\_%\\_enabled'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var k string
+		var v sql.NullString
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		if !taskToggleOff(v.String) {
+			continue
+		}
+		// key = sched_<name>_enabled → 取出 <name>
+		name := strings.TrimSuffix(strings.TrimPrefix(k, "sched_"), "_enabled")
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out, rows.Err()
+}
+
+// taskToggleOff 判断开关配置值是否表示关闭（与 task 包同一口径）。
+func taskToggleOff(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "off", "no":
+		return true
+	default:
+		return false
+	}
 }
 
 // WorkerHeartbeat 对齐 Cache::get('controlhub:worker-heartbeat')。

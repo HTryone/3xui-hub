@@ -13,16 +13,16 @@ import (
 
 // OperationLogRow 是 operation_logs 一行（系统状态/审计页用）。
 type OperationLogRow struct {
-	ID         uint64
-	Type       string
-	ActorName  *string
-	Action     string
-	Method     *string
-	Path       *string
-	Status     *int64
-	Error      *string
-	IP         *string
-	CreatedAt  *time.Time
+	ID        uint64
+	Type      string
+	ActorName *string
+	Action    string
+	Method    *string
+	Path      *string
+	Status    *int64
+	Error     *string
+	IP        *string
+	CreatedAt *time.Time
 }
 
 // AuditLogFilter 是审计日志的筛选（GET /admin-api/audit-logs）。
@@ -78,6 +78,11 @@ type SystemStore interface {
 	ScheduledTaskRunLast(ctx context.Context, command string) (*ScheduledTaskRun, error)
 	ScheduledTaskRunsRecent(ctx context.Context, limit int64) ([]ScheduledTaskRun, error)
 
+	// DisabledTaskNames 返回被 site_configs 开关关掉的定时任务名集合
+	// （键形如 sched_<任务名>_enabled，值为 0/false/off/no 视为关闭）。
+	// 系统状态页据此把关闭的任务从列表里隐藏，与调度器用同一个键。
+	DisabledTaskNames(ctx context.Context) (map[string]bool, error)
+
 	// WorkerHeartbeat 对齐 Cache::get('controlhub:worker-heartbeat')。
 	WorkerHeartbeat(ctx context.Context) (*time.Time, error)
 	// QueueCounts 返回 pending / running / failed。
@@ -109,14 +114,14 @@ type TaskQueueCounter interface {
 
 // PHPStatus 是 PHP 运行时体检结果（php2shell CVE 判定）。
 type PHPStatus struct {
-	Checked  bool
-	Version  string
-	SAPI     string
-	Patched  bool
-	FixedIn  *string
+	Checked   bool
+	Version   string
+	SAPI      string
+	Patched   bool
+	FixedIn   *string
 	Mitigated bool
-	IniFile  string
-	Error    string
+	IniFile   string
+	Error     string
 }
 
 // PHPStatusAuditor 对齐 PhpRuntimeAuditor::audit（只读、不执行 shell 的接缝）。
@@ -191,8 +196,11 @@ type SystemDeps struct {
 	TaskQueue TaskQueueCounter
 	// Schedule 是定时任务定义（PHP Laravel Schedule 的静态副本；测试可注入）。
 	Schedule []ScheduledEvent
-	Now      func() time.Time
-	Logger   loggerLike
+	// Condition 判断带条件任务当前是否成立（nil = 全部按成立处理，不隐藏任何任务）。
+	// 与调度器共用同一套 when 条件实现（task.ConditionChecker）。
+	Condition func(ctx context.Context, command string) (bool, error)
+	Now       func() time.Time
+	Logger    loggerLike
 }
 
 // SystemDomain 是系统域的 HTTP 入口。
@@ -203,6 +211,7 @@ type SystemDomain struct {
 	mailQueue MailQueueCounter
 	taskQueue TaskQueueCounter
 	schedule  []ScheduledEvent
+	condition func(ctx context.Context, command string) (bool, error)
 	now       func() time.Time
 	logger    loggerLike
 }
@@ -235,6 +244,7 @@ func NewSystemDomain(d SystemDeps) *SystemDomain {
 		mailQueue: d.MailQueue,
 		taskQueue: d.TaskQueue,
 		schedule:  sched,
+		condition: d.Condition,
 		now:       now,
 		logger:    logger,
 	}

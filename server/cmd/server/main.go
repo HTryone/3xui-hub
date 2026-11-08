@@ -437,6 +437,9 @@ func startScheduler(ctx context.Context, app *httpx.App, db *sql.DB, col *collec
 		Now:  time.Now,
 		Logf: logger.Printf,
 		DB:   db,
+		// 统一任务开关：site_configs 里 sched_<任务名>_enabled，缺省开。
+		// 关掉的任务整轮不跑，也不写运行记录（系统状态页也不显示）。
+		Toggle: task.NewSQLToggle(db),
 	})
 
 	if err := sched.Register(task.DefaultJobs(task.Deps{

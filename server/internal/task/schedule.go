@@ -46,6 +46,8 @@ type Scheduler struct {
 	// db 用于写运行记录（scheduled_task_runs）与 worker 心跳（cache 表）；
 	// nil（测试/无库场景）则只跑任务不落记录，不影响调度本身。
 	db *sql.DB
+	// toggle 是「某条任务是否被开关关掉」的判断（nil = 全部开启）。
+	toggle ToggleFunc
 
 	mu   sync.Mutex
 	busy map[string]bool // name → 上一轮还在跑
@@ -61,6 +63,8 @@ type Options struct {
 	Location *time.Location
 	// DB 用于写 scheduled_task_runs 运行记录与 worker 心跳（nil 则跳过落库）。
 	DB *sql.DB
+	// Toggle 判断某条任务是否启用（nil = 全部启用）。关掉的任务整轮跳过、也不写运行记录。
+	Toggle ToggleFunc
 }
 
 // NewScheduler 构造调度器。时区固定 UTC（PHP 全项目口径）。
@@ -82,10 +86,11 @@ func NewScheduler(opts Options) *Scheduler {
 		cron: cron.New(cron.WithLocation(loc), cron.WithParser(
 			cron.NewParser(cron.Minute|cron.Hour|cron.Dom|cron.Month|cron.Dow|cron.Descriptor),
 		)),
-		logf: logf,
-		now:  now,
-		busy: map[string]bool{},
-		db:   opts.DB,
+		logf:   logf,
+		now:    now,
+		busy:   map[string]bool{},
+		db:     opts.DB,
+		toggle: opts.Toggle,
 	}
 }
 
@@ -109,8 +114,18 @@ func (s *Scheduler) Register(jobs ...Job) error {
 	return nil
 }
 
-// tick 是一次调度触发：when 条件 + withoutOverlapping + 执行。
+// tick 是一次调度触发：开关 + when 条件 + withoutOverlapping + 执行。
 func (s *Scheduler) tick(ctx context.Context, j Job) {
+	// 统一开关：site_configs 里 sched_<name>_enabled 为关 → 整条任务不跑（不记运行记录）。
+	if s.toggle != nil {
+		on, err := s.toggle(ctx, j.Name)
+		if err != nil {
+			s.logf("[schedule] %s 读取开关失败，本轮按开启处理: %v", j.Name, err)
+		} else if !on {
+			return
+		}
+	}
+
 	// Laravel 的 ->when() 在触发时求值，条件为 false 整条跳过。
 	if j.When != nil {
 		ok, err := j.When(ctx)

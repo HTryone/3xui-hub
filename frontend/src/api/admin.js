@@ -154,6 +154,9 @@ export const adminApi = {
 
   // 备份
   backupExport: () => client.get('/admin-api/backup/export', { responseType: 'blob' }),
+  // 自动备份开关（关掉 = 定时备份停跑 + 备份功能整体停用）
+  getBackupSettings: () => client.get('/admin-api/backup/settings'),
+  updateBackupSettings: (data) => client.post('/admin-api/backup/settings', data),
   backupPreview: (formData) => client.post('/admin-api/backup/preview', formData),
   // 导入 = 导库 + 补跑迁移 + 重启队列 worker，几十秒到几分钟都正常，单独放宽到 10 分钟
   // （只放宽这一个请求，client.js 的全局 15 秒是给普通接口的，别动）。
