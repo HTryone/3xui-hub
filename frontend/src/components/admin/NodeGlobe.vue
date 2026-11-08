@@ -445,23 +445,4 @@ defineExpose({ focusRegion })
   </div>
 </template>
 
-<style scoped>
-.ng {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1 1 auto;
-  /* 卡片已收窄（右栏放「最近用户」），放开宽度上限让球尽量吃满可用空间 */
-  max-width: 560px;
-}
-.ng-canvas {
-  width: 100%;
-  height: 340px;
-  touch-action: pan-y;
-  cursor: grab;
-  outline-offset: 2px;
-}
-.ng-canvas:active {
-  cursor: grabbing;
-}
-</style>
+<style scoped src="@/assets/styles/components/admin/NodeGlobe.css"></style>

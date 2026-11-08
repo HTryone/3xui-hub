@@ -20,25 +20,4 @@ const theme = useThemeStore()
   </button>
 </template>
 
-<style scoped>
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
-}
-.theme-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.theme-toggle:focus-visible {
-  outline: none;
-  box-shadow: var(--glow-accent);
-}
-</style>
+<style scoped src="@/assets/styles/components/ui/ThemeToggle.css"></style>

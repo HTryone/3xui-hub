@@ -162,11 +162,11 @@ onActivated(load)
       <h2 class="st-section-title">管理员账户</h2>
       <p v-if="admin" class="st-info">当前用户名：<strong>{{ admin.username }}</strong></p>
       <div class="st-form">
-        <label class="st-field">
+        <label class="ch-field">
           <span>新用户名</span>
           <Input v-model="usernameForm.username" placeholder="至少 3 位" />
         </label>
-        <label class="st-field">
+        <label class="ch-field">
           <span>当前密码（验证身份）</span>
           <Input v-model="usernameForm.password" type="password" placeholder="输入当前密码" />
         </label>
@@ -182,15 +182,15 @@ onActivated(load)
     <Card style="margin-top: var(--space-4);">
       <h2 class="st-section-title">修改密码</h2>
       <div class="st-form">
-        <label class="st-field">
+        <label class="ch-field">
           <span>原密码</span>
           <Input v-model="passwordForm.old_password" type="password" placeholder="输入当前密码" />
         </label>
-        <label class="st-field">
+        <label class="ch-field">
           <span>新密码</span>
           <Input v-model="passwordForm.new_password" type="password" placeholder="至少 6 位" />
         </label>
-        <label class="st-field">
+        <label class="ch-field">
           <span>确认新密码</span>
           <Input v-model="passwordForm.confirm_password" type="password" placeholder="再输一次" />
         </label>
@@ -246,79 +246,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-.st-title {
-  margin: 0 0 var(--space-5);
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.st-section-title {
-  margin: 0 0 var(--space-3);
-  font-size: var(--text-md);
-  font-weight: var(--font-semibold);
-}
-.st-info {
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.st-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  max-width: 400px;
-}
-.st-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.st-actions {
-  padding-top: var(--space-2);
-}
-.st-tfa-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-.st-tfa-setup {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.st-tfa-qr {
-  padding: var(--space-3);
-  background: white;
-  border-radius: var(--radius-md);
-  display: inline-block;
-  width: fit-content;
-}
-.st-tfa-qr img {
-  display: block;
-  width: 200px;
-  height: 200px;
-}
-.st-tfa-secret {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  background: var(--bg-input);
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
-  user-select: all;
-}
-.st-tfa-verify {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  max-width: 300px;
-}
-.st-tfa-disable {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  max-width: 300px;
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Settings.css"></style>

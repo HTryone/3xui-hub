@@ -420,7 +420,7 @@ onMounted(load)
                   <td class="gc-note" :title="g.note || ''">{{ g.note || '—' }}</td>
                   <td class="gc-dim">{{ g.created_at || '—' }}</td>
                   <td>
-                    <div class="gc-actions">
+                    <div class="ch-actions-4">
                       <button class="gc-icon-btn gc-icon-btn--danger" :disabled="pendingId === g.id" title="删除（彻底移除，不可恢复）" @click="remove(g)">
                         <Icon name="trash" :size="16" />
                       </button>
@@ -468,7 +468,7 @@ onMounted(load)
               <td class="gc-note" :title="g.note || ''">{{ g.note || '—' }}</td>
               <td class="gc-dim">{{ g.created_at || '—' }}</td>
               <td>
-                <div class="gc-actions">
+                <div class="ch-actions-4">
                   <button
                     class="gc-icon-btn gc-icon-btn--danger"
                     :disabled="pendingId === g.id"
@@ -505,31 +505,31 @@ onMounted(load)
 
     <Modal v-model="createOpen" title="生成余额兑换码" width="480px">
       <div class="gc-form">
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">数量（1-{{ MAX_COUNT }}）</span>
           <Input v-model="createForm.count" type="number" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">面值（元）</span>
           <Input v-model="createForm.amount" placeholder="例如 10 = 每个码 10 元" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">名称（可选，便于区分批次）</span>
           <Input v-model="createForm.name" placeholder="例如 双十一活动" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">过期时间（可选，留空=永久）</span>
           <Input v-model="createForm.expiresAt" type="datetime-local" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">归档到文件夹（可选）</span>
           <Select v-model="createForm.folderId" :options="folderOptions" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">或新建文件夹（填了就用这个名字）</span>
           <Input v-model="createForm.folderName" placeholder="如：双十一活动（留空则用上面的选择）" maxlength="60" />
         </label>
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">备注（可选）</span>
           <Input v-model="createForm.note" placeholder="仅后台可见" />
         </label>
@@ -556,7 +556,7 @@ onMounted(load)
     <!-- 文件夹新建 / 改名 -->
     <Modal v-model="folderOpen" :title="folderEditId ? '文件夹改名' : '新建文件夹'" width="420px">
       <div class="gc-form">
-        <label class="gc-field">
+        <label class="ch-field-6">
           <span class="gc-label">文件夹名（最多 60 字）</span>
           <Input v-model="folderName" placeholder="如：双十一活动" maxlength="60" @keyup.enter="submitFolder" />
         </label>
@@ -606,355 +606,4 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.gc {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.gc-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.gc-title {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-.gc-sub {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.gc-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.gc-bulkbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  margin: 0 0 10px;
-  border: 1px solid var(--accent-muted, rgba(13, 148, 136, 0.24));
-  border-radius: 10px;
-  background: var(--card, #fff);
-}
-.gc-bulkbar-info {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--accent, #0d9488);
-}
-.gc-bulkbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-.gc-check-cell {
-  width: 36px;
-  text-align: center;
-  padding-right: 0;
-}
-.gc-check-cell input[type='checkbox'] {
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-
-.gc-code {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.gc-num {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.gc-dim {
-  color: var(--text-muted);
-  font-size: 13px;
-  white-space: nowrap;
-}
-.gc-status {
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--bg-hover);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.gc-status--active {
-  background: var(--success-muted);
-  color: var(--success);
-}
-.gc-status--used {
-  background: var(--info-muted);
-  color: var(--info);
-}
-.gc-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.gc-icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.gc-icon-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.gc-icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.gc-icon-btn--danger:hover {
-  background: var(--danger-muted);
-  color: var(--danger);
-}
-.gc-note {
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-.gc-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: 24px 8px;
-}
-
-.gc-pager {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.gc-pager-info {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.gc-pager-btns {
-  display: flex;
-  gap: 8px;
-}
-
-.gc-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.gc-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.gc-label {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-/* 生成结果：等宽字体一行一码，窄屏内滚动不破版 */
-.gc-created {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border-radius: 12px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-}
-.gc-created-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.gc-created-list {
-  margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-secondary);
-}
-
-/* 面值列排序：列头可点，有箭头提示当前方向 */
-.gc-sortable {
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-}
-/* 箭头与文字横排：Icon 是内联 SVG，直接与文字混排会被基线挤到下一行、把表头撑高 */
-.gc-sort-th {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  white-space: nowrap;
-}
-.gc-sortable:hover {
-  color: var(--text-primary);
-}
-.gc-sort-icon {
-  flex: none;
-  opacity: 0.35;
-}
-.gc-sort-icon.is-active {
-  opacity: 1;
-  color: var(--accent);
-}
-
-/* 文件夹行（对齐优惠码分组） */
-.gc-folders {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.gc-folder {
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  overflow: hidden;
-}
-.gc-folder-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--bg-elevated);
-}
-.gc-folder-row.is-open {
-  border-bottom: 1px solid var(--border-subtle);
-}
-.gc-folder-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: left;
-  padding: 0;
-}
-.gc-folder-name {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gc-folder-count {
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--bg-hover);
-  color: var(--text-muted);
-}
-.gc-folder-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.gc-folder-body {
-  padding: 4px 8px 8px;
-  /* 文件夹内的表格有 min-width:820px，窄屏必须能横向滑动；否则右边的
-     「操作」等列会被直接裁掉、看不见也点不到（展开文件夹时踩过）。 */
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-.gc-folder-tip {
-  margin: 12px 8px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.gc-table--folder {
-  min-width: 820px;
-}
-.gc-flat-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-secondary);
-  margin: 4px 0 8px;
-}
-.gc-delete-tip {
-  margin: 0;
-  font-size: 14px;
-  color: var(--text-primary);
-  line-height: 1.6;
-}
-.gc-radio {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.gc-radio input {
-  margin-top: 3px;
-  accent-color: var(--accent);
-}
-.gc-radio em {
-  font-style: normal;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.gc-radio.is-danger {
-  color: var(--danger);
-}
-.gc-danger-text {
-  color: var(--danger) !important;
-}
-
-@media (max-width: 720px) {
-  .gc-folder-name {
-    max-width: 130px;
-  }
-  .gc-folder-body {
-    max-height: none;
-    overflow-y: visible;
-  }
-  .gc-table--folder {
-    min-width: 0;
-  }
-  .gc-note {
-    max-width: 120px;
-  }
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Giftcards.css"></style>

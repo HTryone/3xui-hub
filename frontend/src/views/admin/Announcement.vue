@@ -93,7 +93,7 @@ const onSave = async () => {
 
 <template>
   <div class="ann-page">
-    <h1 class="ann-title">公告与联系</h1>
+    <h1 class="ch-page-title-semi">公告与联系</h1>
 
     <Card class="ann-card">
       <template #header><h2>登录公告</h2></template>
@@ -141,72 +141,4 @@ const onSave = async () => {
   </div>
 </template>
 
-<style scoped>
-.ann-page { max-width: 640px; }
-.ann-title { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }
-.ann-card { margin-bottom: var(--space-5); }
-.ann-card h2 { font-size: var(--text-base); font-weight: var(--font-semibold); }
-.ann-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); }
-.ann-textarea { width: 100%; padding: var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-page); color: var(--text-primary); font-size: var(--text-sm); resize: vertical; line-height: 1.6; font-family: inherit; box-sizing: border-box; }
-.ann-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-muted); }
-.ann-save-wrap { margin-top: var(--space-4); display: flex; justify-content: flex-end; }
-@media (max-width: 640px) { .ann-save-wrap { justify-content: stretch; } .ann-save-wrap > button { width: 100%; } }
-
-/* 反馈与联系列表 */
-.ann-fb-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-/* 窄屏：一行放不下 6 个元素，拆两行（标题+类型 / URL+操作） */
-@media (max-width: 640px) {
-  .ann-fb-row {
-    flex-wrap: wrap;
-  }
-  .ann-fb-title { flex: 1 1 calc(60% - 8px); }
-  .ann-fb-type { width: auto; flex: 0 0 calc(40% - 8px); }
-  .ann-fb-url { flex: 1 1 100%; order: 3; }
-  .ann-fb-row .ann-fb-move:first-of-type { order: 4; margin-left: auto; }
-  .ann-fb-row .ann-fb-del { order: 6; }
-}
-.ann-fb-title { flex: 1.1; }
-.ann-fb-type {
-  padding: 8px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-page);
-  color: var(--text-primary);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  flex: 0 0 auto;
-}
-.ann-fb-url { flex: 1.6; }
-.ann-fb-move,
-.ann-fb-del {
-  width: 30px;
-  height: 36px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-page);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 13px;
-  transition: all 0.2s;
-  flex: 0 0 auto;
-}
-.ann-fb-move:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-.ann-fb-move:disabled { opacity: 0.4; cursor: default; }
-.ann-fb-del:hover { color: var(--danger); border-color: var(--danger); }
-.ann-fb-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin: var(--space-2) 0 var(--space-3);
-}
-.ann-fb-legacy-hint {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Announcement.css"></style>

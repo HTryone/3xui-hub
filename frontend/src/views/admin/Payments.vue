@@ -248,13 +248,13 @@ onActivated(load)
 <template>
   <div class="pay">
     <div class="pay-head">
-      <h1 class="pay-title">支付配置</h1>
+      <h1 class="ch-page-title">支付配置</h1>
       <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建配置</Button>
     </div>
 
     <Card padding="false">
       <div class="pay-table-wrap">
-        <table class="pay-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -275,14 +275,14 @@ onActivated(load)
               <td class="pay-url">{{ p.gateway }}</td>
               <td><Badge :variant="p.enabled ? 'success' : 'danger'" dot>{{ p.enabled ? '启用' : '禁用' }}</Badge></td>
               <td>
-                <div class="pay-actions">
+                <div class="ch-actions">
                   <Button variant="ghost" size="sm" @click="openEdit(p)"><Icon name="edit" :size="14" /></Button>
                   <Button variant="ghost" size="sm" @click="remove(p)"><Icon name="trash" :size="14" /></Button>
                 </div>
               </td>
             </tr>
             <tr v-if="!payments.length">
-              <td colspan="7" class="pay-empty">暂无支付配置</td>
+              <td colspan="7" class="ch-empty">暂无支付配置</td>
             </tr>
           </tbody>
         </table>
@@ -290,7 +290,7 @@ onActivated(load)
     </Card>
 
     <Modal v-model="modalOpen" :title="editing ? '编辑支付配置' : '新建支付配置'" width="560px">
-      <div class="pay-form">
+      <div class="ch-form">
         <label class="pay-field">
           <span>配置名称</span>
           <Input v-model="form.name" placeholder="如：微信支付" />
@@ -319,7 +319,7 @@ onActivated(load)
           <span>回调地址（留空使用系统默认）</span>
           <Input v-model="form.notify_url" mono placeholder="留空则自动生成" />
         </label>
-        <label class="pay-field pay-field-row">
+        <label class="pay-field ch-field-row">
           <input v-model="form.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -332,95 +332,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-.pay-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-.pay-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.pay-table-wrap {
-  overflow-x: auto;
-}
-.pay-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.pay-table th,
-.pay-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.pay-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.pay-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.pay-url {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pay-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.pay-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.pay-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.pay-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-/* 窄屏（手机）：两列表单压得太窄，单列显示。 */
-@media (max-width: 767px) {
-  .pay-grid {
-    grid-template-columns: 1fr;
-  }
-}
-.pay-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.pay-field-row {
-  flex-direction: row;
-  align-items: center;
-}
-.pay-desc {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.pay-grid { align-items: start; }
-.pay-grid > .pay-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/Payments.css"></style>

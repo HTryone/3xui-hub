@@ -1,0 +1,63 @@
+/* ============================================================
+   公共数据表格类 .ch-table（跨页复用）
+   ------------------------------------------------------------
+   来源：合并 13+ 个后台页面各自复制的 `<页>-table` 基础规则。
+   这些页面此前各写一份、数值一致：
+     - 基础：width:100% / border-collapse:collapse / font-size:text-sm
+     - th,td：padding space-3 space-4 / 左对齐 / 底分隔线 / nowrap
+     - th：小号 muted 文字、medium 字重
+     - tbody tr:hover：bg-hover
+   现在收敛到一处：页面模板只挂 class="ch-table"，不再各自复制 CSS。
+
+   本文件**自包含**（不依赖 main.css 里那份「逐个列类名」的增强规则）：
+   末行去分隔线、hover 过渡都写在这里，保证与迁移前视觉效果逐像素一致。
+
+   与 base/main.css 的 .admin-table 是两套不同设计（.admin-table 为
+   8px padding + 灰底表头，供少数新页面用），互不影响、并存。
+   表格外层横向滚动用 .admin-table-wrap 或页面自有 *-table-wrap。
+   ============================================================ */
+
+.ch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.ch-table th,
+.ch-table td {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.ch-table th {
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
+  font-size: var(--text-xs);
+}
+
+.ch-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.ch-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+/* 末行去分隔线：否则表格底部多一条悬空横线（与迁移前一致） */
+.ch-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* 需要「整表无 hover 高亮」的页面（原本就没有 hover 规则）：
+   在 <table> 上加 class="ch-table ch-table--flat" 即可，与迁移前行为一致。 */
+.ch-table--flat tbody tr:hover {
+  background: transparent;
+}
+
+/* 需要「末行保留分隔线」的页面（原本末行就带 border，未参与 main.css 的
+   去线增强）：在 <table> 上加 class="ch-table ch-table--nolasthide" 即可。 */
+.ch-table--nolasthide tbody tr:last-child td {
+  border-bottom: 1px solid var(--border-subtle);
+}

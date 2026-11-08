@@ -881,7 +881,7 @@ const removeSub = async (s) => {
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">xray 出站</h1>
+      <h1 class="ch-page-title">xray 出站</h1>
       <div class="an-head-actions">
         <template v-if="tab === 'outbounds'">
           <Button variant="secondary" size="sm" :disabled="!nodeId" @click="importOpen = true">
@@ -898,7 +898,7 @@ const removeSub = async (s) => {
         </template>
       </div>
     </div>
-    <p class="an-desc">
+    <p class="ch-desc">
       <template v-if="tab === 'outbounds'">
         出站 = 流量出口。直连节点用内置 direct 即可；需要「中转 / 换出口 IP」时建自定义出站，再配合「路由」把流量导过去。
       </template>
@@ -917,7 +917,7 @@ const removeSub = async (s) => {
 
     <Card v-if="tab === 'outbounds'" padding="false">
       <div class="an-table-wrap">
-        <table class="an-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>标识</th>
@@ -938,7 +938,7 @@ const removeSub = async (s) => {
               <td class="mono">{{ formatBytes(ob.upload) }} / {{ formatBytes(ob.download) }}</td>
               <td><Badge :variant="ob.enabled ? 'success' : 'warning'" dot>{{ ob.enabled ? '启用' : '停用' }}</Badge></td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button size="sm" variant="secondary" :loading="testingId === ob.id" @click="test(ob)">测试</Button>
                   <Button
                     size="sm"
@@ -956,7 +956,7 @@ const removeSub = async (s) => {
               </td>
             </tr>
             <tr v-if="!loading && outbounds.length === 0">
-              <td colspan="7" class="an-empty">{{ nodeId ? '还没有自定义出站（内置 direct 直连已可用）' : '请先在上方选择一个 xray 节点' }}</td>
+              <td colspan="7" class="ch-empty">{{ nodeId ? '还没有自定义出站（内置 direct 直连已可用）' : '请先在上方选择一个 xray 节点' }}</td>
             </tr>
           </tbody>
         </table>
@@ -966,7 +966,7 @@ const removeSub = async (s) => {
     <!-- 订阅（服务器池）-->
     <Card v-if="tab === 'subscriptions'" padding="false">
       <div class="an-table-wrap">
-        <table class="an-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>备注</th>
@@ -994,7 +994,7 @@ const removeSub = async (s) => {
                 <Badge v-if="!s.enabled" variant="warning" class="an-badge-gap">已停用</Badge>
               </td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button size="sm" variant="secondary" :loading="refreshingId === s.id" @click="refreshSub(s)">刷新</Button>
                   <Button size="sm" variant="ghost" @click="openSubEdit(s)"><Icon name="edit" :size="16" /></Button>
                   <Button size="sm" variant="ghost" @click="removeSub(s)"><Icon name="trash" :size="16" /></Button>
@@ -1002,7 +1002,7 @@ const removeSub = async (s) => {
               </td>
             </tr>
             <tr v-if="!subsLoading && subs.length === 0">
-              <td colspan="8" class="an-empty">{{ nodeId ? '还没有出站订阅（点右上「新建订阅」接入服务器池）' : '请先在上方选择一个 xray 节点' }}</td>
+              <td colspan="8" class="ch-empty">{{ nodeId ? '还没有出站订阅（点右上「新建订阅」接入服务器池）' : '请先在上方选择一个 xray 节点' }}</td>
             </tr>
           </tbody>
         </table>
@@ -1017,7 +1017,7 @@ const removeSub = async (s) => {
     <template v-if="tab === 'outbounds'">
     <!-- 新建 / 编辑 -->
     <Modal v-model="modalOpen" :title="editing ? `编辑出站 ${editing.tag}` : (isRelaySource ? '新建中转出口（本站服务器）' : '新建出站')" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <!-- 目标来源：仅新建时可选；编辑走结构化表单（中转出站编辑意义有限，引导到列表重删） -->
         <template v-if="!editing">
           <label class="an-field">
@@ -1238,11 +1238,11 @@ const removeSub = async (s) => {
               </label>
             </div>
             <div class="an-grid">
-              <label class="an-field-row">
+              <label class="ch-check-row">
                 <input v-model="form.xhttp_no_sse_header" type="checkbox" />
                 <span>noSSEHeader（禁用 SSE 头）</span>
               </label>
-              <label class="an-field-row">
+              <label class="ch-check-row">
                 <input v-model="form.xhttp_padding_obfs_mode" type="checkbox" />
                 <span>Padding 混淆模式</span>
               </label>
@@ -1306,7 +1306,7 @@ const removeSub = async (s) => {
               <span>请求头（每行一个，Key: Value）</span>
               <textarea v-model="form.xhttp_headers" class="an-textarea" rows="3" placeholder="X-Custom: value" />
             </label>
-            <label class="an-field-row">
+            <label class="ch-check-row">
               <input v-model="form.xhttp_xmux_enabled" type="checkbox" />
               <span>连接复用（XMUX）</span>
             </label>
@@ -1401,7 +1401,7 @@ const removeSub = async (s) => {
             <span>备注（可选）</span>
             <Input v-model="form.remark" placeholder="如：香港中转" />
           </label>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="form.enabled" type="checkbox" />
             <span>启用</span>
           </label>
@@ -1442,7 +1442,7 @@ const removeSub = async (s) => {
 
     <!-- 从链接导入 -->
     <Modal v-model="importOpen" title="从分享链接导入出站" width="520px">
-      <div class="an-form">
+      <div class="ch-form">
         <label class="an-field">
           <span>粘贴链接（vless:// vmess:// trojan:// ss:// socks:// http://）</span>
           <textarea v-model="importLink" class="an-textarea" rows="3" placeholder="vmess://.... / vless://...." />
@@ -1473,7 +1473,7 @@ const removeSub = async (s) => {
 
     <!-- 订阅 新建 / 编辑 -->
     <Modal v-model="subModalOpen" :title="subEditing ? '编辑订阅' : '新建出站订阅'" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <label class="an-field">
           <span>订阅地址（仅 http/https；指向内网/保留地址会被拒绝）</span>
           <Input v-model="subForm.url" placeholder="https://example.com/sub?token=..." />
@@ -1493,12 +1493,12 @@ const removeSub = async (s) => {
             <span>刷新间隔（秒，≥60）</span>
             <Input v-model.number="subForm.update_interval" type="number" placeholder="600" />
           </label>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="subForm.prepend" type="checkbox" />
             <span>前置注入（排在自定义出站之前）</span>
           </label>
         </div>
-        <label class="an-field-row">
+        <label class="ch-check-row">
           <input v-model="subForm.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -1511,183 +1511,4 @@ const removeSub = async (s) => {
   </div>
 </template>
 
-<style scoped>
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-head-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-.an-desc {
-  margin: 0 0 var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.an-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-}
-.an-tabs {
-  display: flex;
-  gap: var(--space-1);
-}
-.an-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: var(--space-2) var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  cursor: pointer;
-}
-.an-tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--accent, var(--color-primary, #6366f1));
-}
-.an-badge-gap {
-  margin-left: var(--space-1);
-}
-.an-suberr {
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.an-suberr p {
-  margin: 0 0 var(--space-1);
-}
-.an-table-wrap {
-  overflow-x: auto;
-}
-.an-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.an-table th,
-.an-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.an-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.an-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.an-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.an-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
-@media (max-width: 767px) {
-  .an-grid,
-  .an-grid-3 {
-    grid-template-columns: 1fr;
-  }
-}
-.an-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.an-field-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.an-advanced-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  cursor: pointer;
-  padding: 0;
-}
-.an-advanced {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.an-textarea {
-  width: 100%;
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  resize: vertical;
-}
-.an-preview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  background: var(--bg-input);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-}
-.an-warp-hint {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-input);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.an-preview-row {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-.an-preview-row span {
-  color: var(--text-muted);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.an-grid { align-items: start; }
-.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/XrayOutbounds.css"></style>

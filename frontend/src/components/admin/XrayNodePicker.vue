@@ -79,21 +79,4 @@ defineExpose({ reload: load })
   </div>
 </template>
 
-<style scoped>
-.xnp {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.xnp-label {
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
-.xnp-select {
-  min-width: 240px;
-}
-.xnp-empty {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-</style>
+<style scoped src="@/assets/styles/components/admin/XrayNodePicker.css"></style>

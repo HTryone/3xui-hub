@@ -1,0 +1,130 @@
+.an-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.an-head-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.an-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.an-tabs {
+  display: flex;
+  gap: var(--space-1);
+}
+.an-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.an-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent, var(--color-primary, #6366f1));
+}
+.an-badge-gap {
+  margin-left: var(--space-1);
+}
+.an-suberr {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.an-suberr p {
+  margin: 0 0 var(--space-1);
+}
+.an-table-wrap {
+  overflow-x: auto;
+}
+
+.an-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
+@media (max-width: 767px) {
+  .an-grid,
+  .an-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+.an-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.an-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 0;
+}
+.an-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.an-textarea {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  resize: vertical;
+}
+.an-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.an-warp-hint {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.an-preview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.an-preview-row span {
+  color: var(--text-muted);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
+.an-grid { align-items: start; }
+.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }

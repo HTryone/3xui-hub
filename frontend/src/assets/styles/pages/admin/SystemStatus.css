@@ -1,0 +1,85 @@
+.sys { display: flex; flex-direction: column; gap: var(--space-4); }
+.sys-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+}
+
+.sys-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-4); border-bottom: 1px solid var(--border-subtle);
+}
+.sys-card-title { margin: 0; font-size: var(--text-base); font-weight: var(--font-semibold); }
+.sys-metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3); padding: var(--space-4);
+}
+.sys-metric { display: flex; flex-direction: column; gap: var(--space-1); }
+.sys-metric-label { font-size: var(--text-xs); color: var(--text-muted); }
+.sys-metric-value { font-size: var(--text-base); font-weight: var(--font-medium); }
+.sys-danger { color: var(--color-danger, #dc2626); }
+.sys-failed {
+  padding: 0 var(--space-4) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
+}
+.sys-failed-title { font-size: var(--text-xs); color: var(--text-muted); font-weight: var(--font-medium); }
+.sys-failed-item {
+  display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); flex-wrap: wrap;
+}
+.sys-failed-name { flex: 1; min-width: 120px; }
+.sys-failed-meta { font-size: var(--text-xs); color: var(--text-muted); }
+.sys-table-wrap { overflow-x: auto; }
+
+/* 任务名：只做悬浮提示，不动表格外观（不加下划线/不变色），鼠标移上去指针提示可查 */
+.sys-task-name.is-help {
+  cursor: help;
+}
+
+/* 悬浮说明卡片 */
+.sys-task-tip {
+  position: fixed;
+  z-index: 1200;
+  max-width: 340px;
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, .28));
+  pointer-events: none; /* 鼠标穿过，避免抖动 */
+}
+.sys-task-tip-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+.sys-task-tip-body {
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.ch-table td.sys-err-cell { max-width: 280px; white-space: normal; }
+/* 状态列带失败原因：允许折行，别让长错误把整表顶出屏幕 */
+.ch-table td.sys-status-cell { white-space: normal; max-width: 420px; }
+
+.sys-muted { color: var(--text-muted); }
+.sys-path { color: var(--text-muted); font-size: var(--text-xs); }
+.sys-recent {
+  padding: 0 var(--space-4) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);
+}
+.sys-recent-title { font-size: var(--text-xs); color: var(--text-muted); font-weight: var(--font-medium); }
+.sys-recent-item { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-sm); }
+/* 失败的那一次运行整行淡红打底 + 左侧色条：翻「最近运行记录」时不用逐条读状态徽章 */
+.sys-recent-item.is-failed {
+  background: var(--danger-muted);
+  border-left: 3px solid var(--danger);
+  padding-left: var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.sys-recent-cmd { flex: 1; min-width: 100px; }
+.sys-recent-meta { font-size: var(--text-xs); color: var(--text-muted); }
+/* 失败原因可能上千字（后端截断到 1000 字），折叠显示，点开看全文 */
+.sys-recent-err { flex-basis: 100%; font-size: var(--text-xs); }
+.sys-progress {
+  width: 90px; height: 4px; border-radius: 2px; background: var(--bg-hover);
+  overflow: hidden; margin-bottom: 4px;
+}
+.sys-progress span { display: block; height: 100%; background: var(--accent); }
+.mono { font-family: var(--font-mono); font-size: var(--text-sm); }

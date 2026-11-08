@@ -1,0 +1,36 @@
+.al { max-width: 1280px; }
+.al-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-3); margin-bottom: var(--space-4); flex-wrap: wrap;
+}
+
+.al-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+.al-tools { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.al-sel { width: 120px; }
+/* 二级筛选的选项文案更长（「3x-ui 写回失败」），单开一档宽度 */
+.al-sel-action { width: 150px; }
+.al-search { width: 220px; }
+.al-note {
+  margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs); color: var(--text-muted);
+  background: var(--bg-hover); border-radius: var(--radius-sm);
+}
+
+/* 漂移 / 写回失败这类「要人看」的行：左侧色条 + 淡底，扫一眼就能从系统事件里挑出来。
+   颜色只作辅助，方向另有角标（.al-type-cell 里的 Badge），不靠颜色单独表意。 */
+.ch-table tbody tr.al-row-danger { background: var(--danger-muted); }
+.ch-table tbody tr.al-row-warning { background: var(--warning-muted); }
+.ch-table tbody tr.al-row-danger td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+.ch-table tbody tr.al-row-warning td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
+.al-type-cell { display: inline-flex; align-items: center; gap: var(--space-1); }
+
+.al-table-wrap { overflow-x: auto; }
+
+/* 报错列：给足宽度 + 允许折行。与用户列表同款口径 —— 列宽由这一列自己定，
+   屏幕放不下时整表横向滚动（.al-table-wrap 已 overflow-x:auto），
+   不再用 max-width:320px 把长报错挤成竖排。 */
+.ch-table td.al-err-cell { width: 420px; min-width: 420px; max-width: 480px; white-space: normal; }
+.ch-table td.al-action-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.al-path { color: var(--text-muted); font-size: var(--text-xs); margin-left: 6px; }
+.al-dim { color: var(--text-muted); }
+

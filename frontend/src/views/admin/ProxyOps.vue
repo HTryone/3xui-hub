@@ -274,7 +274,7 @@ onMounted(() => {
   <div class="po">
     <div class="po-head">
       <div>
-        <h1 class="po-title">代理运营</h1>
+        <h1 class="ch-page-title--mb">代理运营</h1>
         <p class="po-sub">谁买了代理、还剩多少、什么时候到期、该不该停 —— 都在这一页。</p>
       </div>
       <Button variant="ghost" size="sm" :loading="loading" @click="load"><Icon name="refresh" :size="15" /> 刷新</Button>
@@ -391,7 +391,7 @@ onMounted(() => {
               </tr>
             </template>
             <tr v-if="!accounts.length">
-              <td colspan="6" class="po-empty">
+              <td colspan="6" class="ch-empty-sm">
                 还没有卖出住宅代理。卖出后（用户付款并成功开号）会自动出现在这里。
               </td>
             </tr>
@@ -467,7 +467,7 @@ onMounted(() => {
       />
 
       <Card v-if="!socksGroups.length" class="po-card">
-        <p class="po-empty">还没有卖出共享 socks。</p>
+        <p class="ch-empty-sm">还没有卖出共享 socks。</p>
       </Card>
     </template>
 
@@ -504,7 +504,7 @@ onMounted(() => {
               </td>
             </tr>
             <tr v-if="!pendingOrders.length">
-              <td colspan="6" class="po-empty">没有待补开的订单，一切正常。</td>
+              <td colspan="6" class="ch-empty-sm">没有待补开的订单，一切正常。</td>
             </tr>
           </tbody>
         </table>
@@ -551,68 +551,4 @@ onMounted(() => {
   </div>
 </template>
 
-<style scoped>
-.po { max-width: 1180px; }
-.po-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
-.po-title { margin: 0 0 4px; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.po-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
-
-.po-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin-bottom: var(--space-3); }
-.po-stat {
-  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
-  padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle);
-  border-radius: 12px; background: #fff; cursor: pointer; font-family: inherit; text-align: left;
-}
-.po-stat.active { border-color: var(--accent); }
-.po-stat-n { font-size: var(--text-xl); font-weight: var(--font-bold); }
-.po-stat-l { font-size: var(--text-xs); color: var(--text-muted); }
-.po-warn { color: #d97706; }
-.po-dim { color: var(--text-muted); font-size: var(--text-xs); }
-.po-danger { color: #dc2626; }
-
-.po-tabs { display: flex; gap: 4px; margin-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
-.po-tab {
-  padding: 8px 14px; border: none; background: transparent; cursor: pointer;
-  font-size: var(--text-sm); color: var(--text-muted); font-family: inherit;
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
-}
-.po-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); font-weight: var(--font-medium); }
-.po-tab-n { color: var(--text-muted); font-size: var(--text-xs); }
-
-.po-card { margin-bottom: var(--space-4); }
-.po-tip { margin: var(--space-3) var(--space-4); color: var(--text-muted); font-size: var(--text-xs); line-height: 1.6; }
-.po-filter {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
-  padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-subtle);
-}
-.po-filter-sel { width: 130px; }
-.po-search {
-  height: 32px; padding: 0 12px; border: 1px solid var(--border-subtle);
-  border-radius: 8px; font-size: var(--text-sm); font-family: inherit; outline: none; width: 220px;
-}
-.po-search:focus { border-color: var(--accent); }
-.po-table-wrap { overflow-x: auto; }
-.po-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-.po-table th, .po-table td {
-  padding: var(--space-3) var(--space-4); text-align: left; vertical-align: top;
-  border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
-}
-.po-table th { color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs); }
-.po-table tbody tr:last-child td { border-bottom: none; }
-.po-user { font-weight: var(--font-medium); }
-.po-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.po-empty { text-align: center; color: var(--text-muted); font-size: var(--text-sm); padding: var(--space-6); }
-
-.po-sock-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-2); }
-.po-sock-name { font-weight: var(--font-medium); }
-
-.po-ips { background: var(--bg-hover); }
-.po-ip-list { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.po-ip { font-size: var(--text-xs); }
-
-.po-cred { display: flex; flex-direction: column; gap: var(--space-2); }
-.po-cred-row { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-sm); }
-.po-cred-row .po-dim { width: 56px; flex: 0 0 56px; }
-.po-foot { display: flex; justify-content: flex-end; gap: var(--space-2); width: 100%; }
-.po-move { display: flex; flex-direction: column; gap: var(--space-3); }
-</style>
+<style scoped src="@/assets/styles/pages/admin/ProxyOps.css"></style>

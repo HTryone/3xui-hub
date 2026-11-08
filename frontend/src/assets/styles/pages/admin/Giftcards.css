@@ -1,0 +1,350 @@
+.gc {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.gc-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.gc-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.gc-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gc-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin: 0 0 10px;
+  border: 1px solid var(--accent-muted, rgba(13, 148, 136, 0.24));
+  border-radius: 10px;
+  background: var(--card, #fff);
+}
+.gc-bulkbar-info {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent, #0d9488);
+}
+.gc-bulkbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.gc-check-cell {
+  width: 36px;
+  text-align: center;
+  padding-right: 0;
+}
+.gc-check-cell input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.gc-code {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.gc-num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.gc-dim {
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.gc-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.gc-status--active {
+  background: var(--success-muted);
+  color: var(--success);
+}
+.gc-status--used {
+  background: var(--info-muted);
+  color: var(--info);
+}
+
+.gc-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.gc-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.gc-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.gc-icon-btn--danger:hover {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+.gc-note {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.gc-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 24px 8px;
+}
+
+.gc-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.gc-pager-info {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.gc-pager-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.gc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.gc-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 生成结果：等宽字体一行一码，窄屏内滚动不破版 */
+.gc-created {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.gc-created-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.gc-created-list {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 面值列排序：列头可点，有箭头提示当前方向 */
+.gc-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+/* 箭头与文字横排：Icon 是内联 SVG，直接与文字混排会被基线挤到下一行、把表头撑高 */
+.gc-sort-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.gc-sortable:hover {
+  color: var(--text-primary);
+}
+.gc-sort-icon {
+  flex: none;
+  opacity: 0.35;
+}
+.gc-sort-icon.is-active {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* 文件夹行（对齐优惠码分组） */
+.gc-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+/* 同优惠码页：文件夹分组不再自画一层框（外层已有卡片），
+   改成扁平折叠分区；overflow 必须 visible，否则内表横向滑不动。 */
+.gc-folder {
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+}
+.gc-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+}
+.gc-folder-row.is-open {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.gc-folder-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+.gc-folder-name {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gc-folder-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+.gc-folder-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.gc-folder-body {
+  padding: 4px 8px 8px; background: transparent;
+  /* 文件夹内的表格有 min-width:820px，窄屏必须能横向滑动；否则右边的
+     「操作」等列会被直接裁掉、看不见也点不到（展开文件夹时踩过）。 */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.gc-folder-tip {
+  margin: 12px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.gc-table--folder {
+  min-width: 820px;
+}
+.gc-flat-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin: 4px 0 8px;
+}
+.gc-delete-tip {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+.gc-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.gc-radio input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.gc-radio em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.gc-radio.is-danger {
+  color: var(--danger);
+}
+.gc-danger-text {
+  color: var(--danger) !important;
+}
+
+@media (max-width: 720px) {
+  .gc-folder-name {
+    max-width: 130px;
+  }
+  .gc-folder-row { padding: 8px 0; }
+  /* 唯一的一层横向滚动放在 folder-body 上 */
+  .gc-folder-body {
+    padding: 4px 0 8px;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+  }
+  .gc-table--folder {
+    min-width: 0;
+  }
+  .gc-note {
+    max-width: 120px;
+  }
+}

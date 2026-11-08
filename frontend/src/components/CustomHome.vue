@@ -220,13 +220,4 @@ onBeforeUnmount(removeCss)
   </div>
 </template>
 
-<style scoped>
-.ch-custom-home {
-  /* 自定义内容只在首页出现，不允许撑出横向滚动 */
-  max-width: 100%;
-  overflow-x: hidden;
-}
-.ch-custom-home > div {
-  min-height: 100vh;
-}
-</style>
+<style scoped src="@/assets/styles/components/CustomHome.css"></style>

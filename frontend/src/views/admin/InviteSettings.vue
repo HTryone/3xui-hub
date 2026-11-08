@@ -96,7 +96,7 @@ onMounted(load)
   <div class="iv">
     <div class="iv-head">
       <div>
-        <h1 class="iv-title">邀请机制</h1>
+        <h1 class="ch-page-title--mb">邀请机制</h1>
         <p class="iv-sub">用户邀请好友后双方拿到的折扣规则，以及优惠码校验的防穷举限流。</p>
       </div>
       <Button variant="primary" size="sm" :loading="saving" :success="saved" @click="save">保存设置</Button>
@@ -175,23 +175,4 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.iv { max-width: 900px; }
-.iv-head {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: var(--space-3); margin-bottom: var(--space-4);
-}
-.iv-title { margin: 0 0 4px; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.iv-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
-.iv-card { margin-bottom: var(--space-4); }
-.iv-section { margin: 0 0 var(--space-3); font-size: var(--text-base); font-weight: var(--font-semibold); }
-.iv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-4); }
-.iv-field { display: flex; flex-direction: column; gap: 6px; }
-.iv-label { font-size: var(--text-sm); }
-.iv-tip { color: var(--text-muted); font-size: var(--text-xs); line-height: 1.5; }
-.iv-tip-block { margin: 0 0 var(--space-3); }
-.iv-switch { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--text-muted); }
-
-/* 标签统一两行高度：长说明换行时不把同行输入框挤下去 */
-.iv-grid > .iv-field > .iv-label { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/InviteSettings.css"></style>

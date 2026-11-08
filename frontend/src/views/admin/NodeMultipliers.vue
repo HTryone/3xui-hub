@@ -151,7 +151,7 @@ onActivated(load)
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">流量倍率</h1>
+      <h1 class="ch-page-title">流量倍率</h1>
     </div>
 
     <p class="an-hint">
@@ -161,7 +161,7 @@ onActivated(load)
 
     <Card>
       <div class="an-original">
-        <label class="an-field an-original-field">
+        <label class="ch-field an-original-field">
           <span>原始倍率</span>
           <Input v-model="originalInput" type="number" step="0.01" min="1" max="100" mono placeholder="1.0" />
         </label>
@@ -170,7 +170,7 @@ onActivated(load)
             保存
           </Button>
         </div>
-        <label class="an-field an-toggle">
+        <label class="ch-field an-toggle">
           <span class="an-toggle-row">
             <input type="checkbox" :checked="showMultiplier" :disabled="savingToggle" @change="toggleDisplay" />
             <span>用户端展示节点倍率</span>
@@ -226,14 +226,14 @@ onActivated(load)
     </Card>
 
     <Modal v-model="modalOpen" :title="`设置倍率 · ${editing?.name || ''}`" width="440px">
-      <div class="an-form">
+      <div class="ch-form">
         <p class="an-muted">
           当前来源：<strong>{{ editing && isInherited(editing) ? '继承' : '单独设置' }}</strong>
           <template v-if="editing && isInherited(editing)">
             ，生效倍率 {{ effective(editing) }}
           </template>
         </p>
-        <label class="an-field">
+        <label class="ch-field">
           <span>节点倍率（留空 = 改回继承原始倍率）</span>
           <Input v-model="editInput" type="number" step="0.01" min="1" max="100" mono placeholder="留空即继承" />
         </label>
@@ -249,168 +249,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-/* 页面根容器限宽：宽屏下表格不再被拉满视口（AdminLayout 的 .al-content 无宽度约束，不冲突） */
-.an {
-  max-width: 1100px;
-}
-/* 表格卡片与上方配置卡片留出间距，避免两张卡边框贴死 */
-.an-table-card {
-  margin-top: var(--space-4);
-}
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-hint {
-  margin: 0 0 var(--space-4);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-/* 配置卡片：输入框 / 保存按钮 / 开关同一行同一视觉轴 */
-.an-original {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-5);
-  flex-wrap: wrap;
-}
-/* 输入框固定 160px（Input 组件 width:100%，由本列宽决定） */
-.an-original-field {
-  width: 160px;
-  flex: 0 0 auto;
-}
-.an-original-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  /* label(约21px)+gap(4px) 之后是 36px 的输入框，其中心约 43px；按钮 32px 高，
-     下移 27px 让按钮中心(27+16=43px)与输入框中心对齐 */
-  padding-top: 27px;
-}
-/* 说明文字限宽，避免把按钮列撑到卡片 1/3 宽 */
-.an-original-side .an-muted {
-  max-width: 240px;
-}
-.an-toggle {
-  margin-left: auto;
-  /* checkbox 中心对齐输入框中心：实测比输入框低 5px，下移 32px 对齐 */
-  padding-top: 32px;
-}
-.an-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--text-primary);
-}
-.an-toggle-row input[type='checkbox'] {
-  cursor: pointer;
-}
-.an-table-wrap {
-  overflow-x: auto;
-}
-.an-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.an-table th,
-.an-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-/* 操作列右对齐（空态行保持居中） */
-.an-table th:last-child,
-.an-table td:last-child:not(.an-empty) {
-  text-align: right;
-}
-/* 最后一行去掉下边框，消除表格底部的多余空行感 */
-.an-table tbody tr:last-child td {
-  border-bottom: none;
-}
-.an-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.an-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.an-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-1);
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.an-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.an-muted {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  margin: 0;
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-@media (max-width: 768px) {
-  .an-head {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-2);
-  }
-  .an-original {
-    align-items: flex-end;
-    gap: var(--space-3);
-  }
-  /* 输入框占满剩余宽度，与保存按钮同一行 */
-  .an-original-field {
-    width: auto;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  /* side 让位：按钮/说明直接参与外层 flex，说明可换行到下一行 */
-  .an-original-side {
-    display: contents;
-    padding-top: 0;
-  }
-  .an-original-side .ch-btn {
-    flex: 0 0 auto;
-  }
-  .an-original-side .an-muted {
-    max-width: none;
-    flex: 1 1 100%;
-  }
-  /* 开关左对齐，去掉桌面端的右推与顶部对齐补偿 */
-  .an-toggle {
-    flex: 1 1 100%;
-    margin-left: 0;
-    min-width: 0;
-    padding-top: 0;
-  }
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/NodeMultipliers.css"></style>

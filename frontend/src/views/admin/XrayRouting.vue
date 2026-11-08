@@ -520,7 +520,7 @@ const conditionSummary = (r) => {
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">xray 路由</h1>
+      <h1 class="ch-page-title">xray 路由</h1>
       <div class="an-head-actions">
         <Button
           variant="secondary"
@@ -541,7 +541,7 @@ const conditionSummary = (r) => {
         </Button>
       </div>
     </div>
-    <p class="an-desc">
+    <p class="ch-desc">
       按「域名 / IP / 端口 / 协议」把流量导向指定出站。系统已内置「阻私有网段 / 阻 BT」基础规则，无需手动添加。
     </p>
 
@@ -584,7 +584,7 @@ const conditionSummary = (r) => {
         </Button>
       </div>
       <div class="an-table-wrap">
-        <table class="an-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>tag</th>
@@ -605,7 +605,7 @@ const conditionSummary = (r) => {
               <td class="mono">{{ b.fallback_tag || '—' }}</td>
               <td><Badge :variant="b.enabled ? 'success' : 'warning'" dot>{{ b.enabled ? '启用' : '停用' }}</Badge></td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button size="sm" variant="ghost" @click="openBalancerEdit(b)"><Icon name="edit" :size="16" /></Button>
                   <Button size="sm" variant="ghost" @click="removeBalancer(b)"><Icon name="trash" :size="16" /></Button>
                 </div>
@@ -623,7 +623,7 @@ const conditionSummary = (r) => {
 
     <Card padding="false">
       <div class="an-table-wrap">
-        <table class="an-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>备注</th>
@@ -661,7 +661,7 @@ const conditionSummary = (r) => {
               </td>
               <td><Badge :variant="r.enabled ? 'success' : 'warning'" dot>{{ r.enabled ? '启用' : '停用' }}</Badge></td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button size="sm" variant="ghost" @click="openEdit(r)"><Icon name="edit" :size="16" /></Button>
                   <Button size="sm" variant="ghost" @click="remove(r)"><Icon name="trash" :size="16" /></Button>
                 </div>
@@ -688,7 +688,7 @@ const conditionSummary = (r) => {
 
     <!-- 新建 / 编辑 -->
     <Modal v-model="modalOpen" :title="editing ? '编辑路由规则' : '新建路由规则'" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <label class="an-field">
           <span>域名（每行一条；支持 domain: / full: / keyword: / regexp: / geosite: 前缀）</span>
           <textarea v-model="form.domains" class="an-textarea" rows="3" placeholder="domain:example.com&#10;geosite:cn" />
@@ -730,7 +730,7 @@ const conditionSummary = (r) => {
         <button type="button" class="an-relay-entry" @click="newRelayOutbound">
           <Icon name="plus" :size="14" /> 新建中转出口（本站服务器）
         </button>
-        <label class="an-field-row">
+        <label class="ch-check-row">
           <input v-model="form.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -743,7 +743,7 @@ const conditionSummary = (r) => {
 
     <!-- 新建 / 编辑 负载均衡 -->
     <Modal v-model="balancerModalOpen" :title="editingBalancer ? '编辑负载均衡' : '新建负载均衡'" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <div class="an-grid">
           <label class="an-field">
             <span>tag（唯一，路由规则用它引用）</span>
@@ -773,7 +773,7 @@ const conditionSummary = (r) => {
             <Input v-model="balancerForm.remark" placeholder="如：香港三线" />
           </label>
         </div>
-        <label class="an-field-row">
+        <label class="ch-check-row">
           <input v-model="balancerForm.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -786,7 +786,7 @@ const conditionSummary = (r) => {
 
     <!-- 路由测试器 -->
     <Modal v-model="testerOpen" title="路由测试（模拟匹配）" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <div class="an-grid">
           <label class="an-field">
             <span>域名</span>
@@ -829,250 +829,4 @@ const conditionSummary = (r) => {
   </div>
 </template>
 
-<style scoped>
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-head-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-.an-desc {
-  margin: 0 0 var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.an-toolbar {
-  display: flex;
-  align-items: center;
-  margin-bottom: var(--space-3);
-}
-.an-block {
-  margin-bottom: var(--space-4);
-}
-.an-block-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-.an-subtitle {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-md);
-  font-weight: var(--font-semibold);
-}
-.an-mb0 {
-  margin-bottom: 0;
-}
-.an-hintbox {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-input);
-  border-radius: var(--radius-md);
-}
-.an-table-wrap {
-  overflow-x: auto;
-}
-.an-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.an-table th,
-.an-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.an-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.an-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.an-clip {
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.an-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.an-target-cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-}
-/* 延时列：本身就是按钮（点一下测这条），所以按「可点的小胶囊」做，
-   而不是再塞一个图标按钮把列宽撑开。 */
-.an-latency {
-  min-width: 56px;
-  padding: 2px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  cursor: pointer;
-  transition: border-color 0.15s var(--ease-out, ease), color 0.15s var(--ease-out, ease);
-}
-.an-latency:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.an-latency:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-.an-latency--ok {
-  border-color: var(--success);
-  color: var(--success);
-}
-.an-latency--fail {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-.an-latency--testing {
-  border-style: dashed;
-  color: var(--text-muted);
-}
-.an-preview {
-  margin-top: var(--space-3);
-}
-.an-preview-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  text-align: left;
-}
-.an-preview-toggle:hover {
-  color: var(--text-primary);
-}
-.an-preview-body {
-  margin: 0;
-  padding: 0 var(--space-4) var(--space-4);
-  max-height: 320px;
-  overflow: auto;
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  color: var(--text-muted);
-  white-space: pre;
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-  white-space: normal;
-}
-.an-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
-@media (max-width: 767px) {
-  .an-grid,
-  .an-grid-3 {
-    grid-template-columns: 1fr;
-  }
-}
-.an-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.an-field-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.an-textarea {
-  width: 100%;
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  resize: vertical;
-}
-.an-muted-sm {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  white-space: normal;
-}
-.an-relay-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-input);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-md);
-  color: var(--accent);
-  font-size: var(--text-xs);
-  cursor: pointer;
-  transition: border-color 0.15s var(--ease-out, ease);
-}
-.an-relay-entry:hover {
-  border-color: var(--accent);
-}
-.an-result {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--bg-input);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-}
-.an-result-line {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.an-grid { align-items: start; }
-.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/XrayRouting.css"></style>

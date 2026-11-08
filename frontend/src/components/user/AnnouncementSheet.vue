@@ -36,37 +36,4 @@ const dismissForever = () => {
   </BottomSheet>
 </template>
 
-<style scoped>
-.as-content {
-  margin: 0;
-  font-size: 15px;
-  line-height: 1.7;
-  color: var(--lbl2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 46vh;
-  overflow-y: auto;
-}
-.as-ok {
-  width: 100%;
-  padding: 14px;
-  border: none;
-  border-radius: 16px;
-  background: var(--blue);
-  color: #fff;
-  font-size: 17px;
-  font-weight: 600;
-  font-family: inherit;
-}
-.as-close {
-  width: 100%;
-  padding: 14px;
-  border: none;
-  border-radius: 16px;
-  background: var(--fill3);
-  color: var(--lbl1);
-  font-size: 17px;
-  font-weight: 600;
-  font-family: inherit;
-}
-</style>
+<style scoped src="@/assets/styles/components/user/AnnouncementSheet.css"></style>

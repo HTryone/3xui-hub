@@ -1371,12 +1371,12 @@ const clientLabel = (ib) => {
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">xray 入站</h1>
+      <h1 class="ch-page-title">xray 入站</h1>
       <Button variant="primary" size="sm" :disabled="!nodeId" @click="openCreate">
         <Icon name="plus" :size="16" /> 新建入站
       </Button>
     </div>
-    <p class="an-desc">
+    <p class="ch-desc">
       入站 = 客户端连接的协议入口（协议 / 端口 / 传输 / 安全层）。Reality 密钥由面板生成并随配置下发，节点零操作。
     </p>
 
@@ -1440,7 +1440,7 @@ const clientLabel = (ib) => {
                 <Badge :variant="ib.enabled ? 'success' : 'warning'" dot>{{ ib.enabled ? '启用' : '停用' }}</Badge>
               </td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button
                     v-if="ib.protocol === 'hysteria'"
                     size="sm"
@@ -1457,7 +1457,7 @@ const clientLabel = (ib) => {
               </td>
             </tr>
             <tr v-if="!loading && inbounds.length === 0">
-              <td colspan="10" class="an-empty">{{ nodeId ? '该节点还没有入站 —— 点右上角「新建入站」开始' : '请先在上方选择一个 xray 节点' }}</td>
+              <td colspan="10" class="ch-empty">{{ nodeId ? '该节点还没有入站 —— 点右上角「新建入站」开始' : '请先在上方选择一个 xray 节点' }}</td>
             </tr>
           </tbody>
         </table>
@@ -1465,7 +1465,7 @@ const clientLabel = (ib) => {
     </Card>
 
     <Modal v-model="modalOpen" :title="editing ? `编辑入站 ${editing.tag}` : '新建入站'" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <div class="an-grid">
           <label class="an-field">
             <span>协议</span>
@@ -1587,7 +1587,7 @@ const clientLabel = (ib) => {
                   <Input v-model="form.spider_x" placeholder="/" />
                 </label>
               </div>
-              <label class="an-field-row">
+              <label class="ch-check-row">
                 <input v-model="form.show" type="checkbox" />
                 <span>show（调试：REALITY 日志打印握手细节）</span>
               </label>
@@ -1720,11 +1720,11 @@ const clientLabel = (ib) => {
             </label>
           </div>
           <div class="an-grid">
-            <label class="an-field-row">
+            <label class="ch-check-row">
               <input v-model="form.xhttp_no_sse_header" type="checkbox" />
               <span>noSSEHeader（禁用 SSE 头）</span>
             </label>
-            <label class="an-field-row">
+            <label class="ch-check-row">
               <input v-model="form.xhttp_padding_obfs_mode" type="checkbox" />
               <span>Padding 混淆模式</span>
             </label>
@@ -1788,7 +1788,7 @@ const clientLabel = (ib) => {
             <span>请求头（每行一个，Key: Value）</span>
             <textarea v-model="form.xhttp_headers" class="an-textarea" rows="3" placeholder="X-Custom: value" />
           </label>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="form.xhttp_xmux_enabled" type="checkbox" />
             <span>连接复用（XMUX）</span>
           </label>
@@ -1999,7 +1999,7 @@ const clientLabel = (ib) => {
               placeholder="客户端 obfs-password 要填同一个"
             />
           </label>
-          <label v-if="editing && editing.hy_salamander_password_set" class="an-field-row">
+          <label v-if="editing && editing.hy_salamander_password_set" class="ch-check-row">
             <input v-model="form.hy_salamander_clear" type="checkbox" />
             <span>清除已设置的密码（保存后不再启用 salamander 混淆）</span>
           </label>
@@ -2061,11 +2061,11 @@ const clientLabel = (ib) => {
           </p>
 
           <div class="an-section-title"><span>TLS 高级开关</span></div>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="form.hy_reject_unknown_sni" type="checkbox" />
             <span>拒绝未知 SNI（客户端填的 SNI 与证书不匹配就不握手）</span>
           </label>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="form.hy_session_resumption" type="checkbox" />
             <span>会话恢复（复用 TLS 会话，减少重复握手开销）</span>
           </label>
@@ -2174,7 +2174,7 @@ const clientLabel = (ib) => {
         </template>
 
         <!-- 嗅探（issue #39）：默认对齐现状；不改则行为无感 -->
-        <label class="an-field-row">
+        <label class="ch-check-row">
           <input v-model="form.sniffing_enabled" type="checkbox" />
           <span>嗅探（识别 HTTP/TLS/QUIC 流量，用于路由匹配与回源改写）</span>
         </label>
@@ -2188,12 +2188,12 @@ const clientLabel = (ib) => {
               </label>
             </div>
           </div>
-          <label class="an-field-row">
+          <label class="ch-check-row">
             <input v-model="form.sniffing_route_only" type="checkbox" />
             <span>仅用于路由（routeOnly）——嗅探结果不改写回源地址</span>
           </label>
         </template>
-        <label class="an-field-row">
+        <label class="ch-check-row">
           <input v-model="form.enabled" type="checkbox" />
           <span>启用（停用后从节点配置中移除）</span>
         </label>
@@ -2427,375 +2427,4 @@ const clientLabel = (ib) => {
   </div>
 </template>
 
-<style scoped>
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-desc {
-  margin: 0 0 var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.an-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-/* 勾选列：窄列 + 右侧不留白，避免把表格撑宽 */
-.an-check-cell {
-  width: 36px;
-  padding-right: 0 !important;
-}
-.an-check-cell input {
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-/* 批量操作条：只在有勾选时出现，靠右 */
-.an-bulk {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-}
-.an-bulk-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.an-bulk-clear {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 15px;
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-}
-.an-bulk-clear:hover { color: var(--text); }
-.an-table-wrap {
-  overflow-x: auto;
-}
-.an-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.an-table th,
-.an-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.an-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.an-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.an-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.an-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。
-   .an-grid-3（Reality 参数三列）同样并到单列。 */
-@media (max-width: 767px) {
-  .an-grid,
-  .an-grid-3 {
-    grid-template-columns: 1fr;
-  }
-}
-.an-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.an-field-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.an-sniff-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-.an-sniff-opts label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.an-section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--text-primary);
-  margin-top: var(--space-1);
-}
-.an-hint {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-/* 表格里的次要信息（如 HY2 的跳跃区间） */
-.an-hop {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-/* 跳跃区间：起点框 – 终点框，「-」写死在中间（用户只填数字） */
-.an-hop-range {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.an-hop-range > * {
-  flex: 1;
-  min-width: 0;
-}
-.an-hop-dash {
-  flex: none;
-  color: var(--text-muted);
-  user-select: none;
-  /* 用半角连字符渲染，视觉上短横居中 */
-  font-family: var(--font-mono);
-}
-/* ── 端口跳跃面板 ── */
-.an-hop-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-hop-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-.an-hop-ok {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-}
-.an-hop-dim {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-.an-hop-error {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--danger, #e5484d);
-  word-break: break-word;
-}
-.an-hop-status {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.an-hop-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-}
-.an-hop-row > span:first-child {
-  min-width: 88px;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.an-hop-rules {
-  margin: 0;
-  padding-left: var(--space-4);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  word-break: break-all;
-}
-/* ── Reality 高级参数折叠区 ── */
-.an-adv {
-  margin-top: var(--space-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.an-adv-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  text-align: left;
-}
-.an-adv-toggle:hover {
-  color: var(--text-primary);
-}
-.an-adv-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-top: 1px solid var(--border-subtle);
-}
-.an-grid-3 {
-  grid-template-columns: 1fr 1fr 1fr;
-}
-.an-textarea {
-  width: 100%;
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  resize: vertical;
-}
-/* ── Reality 目标检测弹窗 ── */
-.an-section-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-.an-scan {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-scan-tip {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  line-height: 1.7;
-}
-.an-scan-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.an-scan-bar :deep(.ch-input) {
-  flex: 1;
-  min-width: 0;
-}
-.an-scan-error {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--warning-muted);
-  color: var(--warning);
-  font-size: var(--text-xs);
-}
-.an-scan-table {
-  max-height: 46vh;
-  overflow: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.an-scan-table .an-table {
-  font-size: var(--text-xs);
-}
-.an-scan-table .an-table th,
-.an-scan-table .an-table td {
-  padding: var(--space-2) var(--space-3);
-}
-.an-scan-table .an-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg-surface);
-}
-.an-scan-table tbody tr.is-picked {
-  background: var(--accent-muted);
-}
-.an-scan-check {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.an-scan-check:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
-}
-.an-scan-reason,
-.an-scan-dim {
-  display: block;
-  margin-top: 2px;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  white-space: normal;
-}
-.an-scan-warn {
-  margin-left: var(--space-1);
-  color: var(--warning);
-  font-size: var(--text-xs);
-}
-.an-scan-tag {
-  margin-left: var(--space-1);
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--accent-muted);
-  color: var(--accent);
-  font-size: var(--text-xs);
-}
-.an-scan-empty {
-  margin: 0;
-  padding: var(--space-6);
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.an-grid { align-items: start; }
-.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/XrayInbounds.css"></style>

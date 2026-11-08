@@ -455,7 +455,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
 <template>
   <div class="au">
     <div class="au-head">
-      <h1 class="au-title">用户</h1>
+      <h1 class="ch-page-title">用户</h1>
       <div class="au-head-right">
         <Input v-model="searchQuery" placeholder="搜索 ID/邮箱/Token..." class="au-search" />
         <Button variant="secondary" size="sm" :disabled="syncingAll" @click="syncAllTraffic"><Icon name="refresh" :size="16" /> {{ syncingAll ? '同步中...' : '同步流量' }}</Button>
@@ -465,7 +465,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
 
     <Card padding="false">
       <div class="au-table-wrap">
-        <table class="au-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>ID</th>
@@ -494,7 +494,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
               <td>{{ u.expired_at ? new Date(u.expired_at).toLocaleDateString() : '永久' }}</td>
               <td><Badge :variant="u.enabled ? 'success' : 'danger'" dot>{{ u.enabled ? '启用' : '禁用' }}</Badge></td>
               <td>
-                <div class="au-actions">
+                <div class="ch-actions">
                   <Button variant="ghost" size="sm" title="查看/复制 Token" @click="viewDetail(u)"><Icon name="copy" :size="14" /></Button>
                   <Button variant="ghost" size="sm" title="编辑" @click="openEdit(u)"><Icon name="edit" :size="14" /></Button>
                   <Button v-if="u.plan_type === 'period'" variant="ghost" size="sm" title="重置当月流量" @click="resetTraffic(u)"><Icon name="refresh" :size="14" /></Button>
@@ -504,13 +504,13 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="7" class="au-empty">
+              <td colspan="7" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!users.length">
-              <td colspan="7" class="au-empty">
+              <td colspan="7" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无用户</template>
               </td>
@@ -531,12 +531,12 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
     />
 
     <Modal v-model="modalOpen" :title="editing ? '编辑用户' : '新建用户'" width="480px">
-      <div class="au-form">
-        <label class="au-field">
+      <div class="ch-form">
+        <label class="ch-field">
           <span>邮箱</span>
           <Input v-model="form.email" placeholder="user@example.com" />
         </label>
-        <label class="au-field">
+        <label class="ch-field">
           <span>套餐模板</span>
           <Select v-model="form.plan_id" :options="planOptions" />
         </label>
@@ -552,7 +552,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
             <p>有效期：永久</p>
           </template>
         </div>
-        <label class="au-field au-field-row">
+        <label class="ch-field ch-field-row">
           <input v-model="form.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -651,12 +651,12 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
 
     <!-- 管理员重置用户密码 -->
     <Modal v-model="pwdOpen" title="修改用户密码" width="420px">
-      <div class="au-form">
-        <label class="au-field">
+      <div class="ch-form">
+        <label class="ch-field">
           <span>新密码</span>
           <Input v-model="pwdForm.password" type="password" placeholder="至少 6 位" />
         </label>
-        <label class="au-field">
+        <label class="ch-field">
           <span>确认新密码</span>
           <Input v-model="pwdForm.confirm" type="password" placeholder="再次输入新密码" />
         </label>
@@ -670,7 +670,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
 
     <!-- 重置订阅：确认（说明旧链接立即失效）→ 成功后展示新链接 -->
     <Modal v-model="subResetOpen" title="重置订阅" width="480px">
-      <div v-if="!subResetResult" class="au-form">
+      <div v-if="!subResetResult" class="ch-form">
         <div class="au-sub-warn">
           <Icon name="warning" :size="16" />
           <div>
@@ -683,7 +683,7 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
           </div>
         </div>
       </div>
-      <div v-else class="au-form">
+      <div v-else class="ch-form">
         <div class="au-sub-ok">
           <Icon name="check" :size="16" />
           <span>已重置，旧链接已失效。把下面的新订阅地址发给用户：</span>
@@ -707,209 +707,4 @@ onUnmounted(() => { stopSyncWatch(); stopSilentPoll(); document.removeEventListe
   </div>
 </template>
 
-<style scoped>
-.au-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-  gap: var(--space-3);
-}
-.au-head-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-.au-search {
-  width: 220px;
-}
-.au-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.au-table-wrap {
-  overflow-x: auto;
-}
-.au-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.au-table th,
-.au-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.au-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.au-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.au-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.au-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.au-muted {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.au-traffic-cell {
-  font-size: var(--text-xs);
-}
-.au-proxy-badge { margin-left: 6px; }
-.au-proxy-box {
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  border: 1px dashed var(--border-subtle);
-  border-radius: 10px;
-  background: var(--bg-hover);
-}
-.au-proxy-title {
-  display: flex; flex-direction: column; gap: 2px;
-  font-size: var(--text-sm); font-weight: var(--font-medium); margin-bottom: 6px;
-}
-.au-proxy-note { font-weight: 400; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.5; }
-.au-proxy-list { display: flex; flex-direction: column; gap: 6px; }
-.au-proxy-line { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); flex-wrap: wrap; }
-.au-proxy-sku { font-size: var(--text-xs); }
-.au-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.au-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.au-field-row {
-  flex-direction: row;
-  align-items: center;
-}
-
-.au-plan-preview {
-  background: var(--bg-hover);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-}
-.au-plan-preview p {
-  margin: 0;
-  line-height: 1.8;
-}
-.au-detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.au-detail-loading {
-  color: var(--text-muted);
-  text-align: center;
-  padding: var(--space-4);
-}
-.au-detail-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-.au-detail-row-stack {
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-.au-detail-label {
-  min-width: 80px;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-/* 标签里带按钮时（如「订阅地址 + 重置」），按钮要贴着文字、不要被 min-width 撑开 */
-.au-detail-label-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-.au-detail-value {
-  flex: 1;
-  word-break: break-all;
-}
-.au-detail-code {
-  flex: 1 1 100%;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  word-break: break-all;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  color: var(--text-secondary);
-}
-.au-detail-hint {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-.au-pwd-hint {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-.au-sub-warn,
-.au-sub-ok {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  line-height: 1.7;
-}
-.au-sub-warn {
-  background: var(--bg-hover);
-  border: 1px solid var(--warning);
-  color: var(--text-secondary);
-}
-.au-sub-warn :deep(svg) { color: var(--warning); flex-shrink: 0; margin-top: 2px; }
-.au-sub-ok {
-  background: var(--bg-hover);
-  border: 1px solid var(--success);
-  color: var(--text-secondary);
-  align-items: center;
-}
-.au-sub-ok :deep(svg) { color: var(--success); flex-shrink: 0; }
-.au-sub-warn p { margin: 0 0 var(--space-1); }
-.au-sub-warn p:last-child { margin: 0; }
-.au-sub-warn ul { margin: 0 0 var(--space-1); padding-left: 1.2em; }
-.au-sub-warn li { margin-bottom: 2px; }
-.au-sub-url-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-.au-detail-hint code {
-  font-family: var(--font-mono);
-  background: var(--bg-hover);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Users.css"></style>

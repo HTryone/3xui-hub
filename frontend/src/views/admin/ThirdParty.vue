@@ -152,7 +152,7 @@ onActivated(load)
 <template>
   <div class="tp">
     <div class="tp-head">
-      <h1 class="tp-title">第三方线路</h1>
+      <h1 class="ch-page-title">第三方线路</h1>
       <div class="tp-head-actions">
         <label class="tp-master" :class="{ off: !masterEnabled }">
           <span class="tp-switch" :class="{ on: masterEnabled, saving: masterSaving }">
@@ -217,7 +217,7 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="!items.length">
-              <td colspan="7" class="tp-empty">暂无第三方线路，点右上角「新增线路」接入</td>
+              <td colspan="7" class="ch-empty">暂无第三方线路，点右上角「新增线路」接入</td>
             </tr>
           </tbody>
         </table>
@@ -225,12 +225,12 @@ onActivated(load)
     </Card>
 
     <Modal v-model="modalOpen" :title="editing ? `编辑线路 · ${editing.name}` : '新增第三方线路'" width="480px">
-      <div class="tp-form">
-        <label class="tp-field">
+      <div class="ch-form">
+        <label class="ch-field">
           <span>备注名</span>
           <Input v-model="form.name" placeholder="如：机场A" />
         </label>
-        <label class="tp-field">
+        <label class="ch-field">
           <span>订阅链接</span>
           <Input v-model="form.url" placeholder="https://…（订阅地址，含机场 token）" />
           <span class="tp-muted">链接含机场 token，仅管理端可见；拉取与节点注入均在本面板内完成。</span>
@@ -250,186 +250,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-.tp {
-  max-width: 1100px;
-}
-.tp-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-3);
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-.tp-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.tp-head-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-}
-.tp-master {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  cursor: pointer;
-  user-select: none;
-}
-.tp-master.off {
-  color: var(--text-muted);
-}
-/* 总开关：iOS 风格 toggle（原生 checkbox 视觉隐藏，track/knob 纯 CSS 绘制） */
-.tp-switch {
-  position: relative;
-  display: inline-block;
-  width: 40px;
-  height: 22px;
-  flex: 0 0 auto;
-}
-.tp-switch input[type='checkbox'] {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.tp-switch input[type='checkbox']:disabled {
-  cursor: not-allowed;
-}
-.tp-switch-track {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: var(--switch-off);
-  transition: background 0.2s ease;
-  pointer-events: none;
-}
-.tp-switch-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--switch-knob);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  transition: transform 0.2s ease;
-}
-.tp-switch.on .tp-switch-track {
-  background: var(--switch-on);
-}
-.tp-switch.on .tp-switch-knob {
-  transform: translateX(18px);
-}
-.tp-switch.saving {
-  opacity: 0.6;
-}
-.tp-hint {
-  margin: 0 0 var(--space-4);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  max-width: 720px;
-  line-height: 1.6;
-}
-.tp-table-card {
-  margin-top: 0;
-}
-.tp-table-wrap {
-  overflow-x: auto;
-}
-.tp-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.tp-table th,
-.tp-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.tp-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-.tp-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.tp-table tbody tr:last-child td {
-  border-bottom: none;
-}
-.tp-url {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tp-err {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-xs);
-  color: #f87171;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tp-table td:last-child {
-  text-align: right;
-}
-.tp-table td input[type='checkbox'] {
-  cursor: pointer;
-}
-.tp-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-1);
-}
-.tp-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.tp-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.tp-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.tp-field-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-}
-.tp-field-row input[type='checkbox'] {
-  cursor: pointer;
-}
-.tp-muted {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/ThirdParty.css"></style>

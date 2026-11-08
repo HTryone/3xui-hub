@@ -40,16 +40,4 @@ const toggle = () => {
   </span>
 </template>
 
-<style scoped>
-/* 根节点改成 normal：父级（表格 td）多是 nowrap，展开后不能挤成一行横到底 */
-.ex { display: inline-block; max-width: 100%; white-space: normal; word-break: break-word; }
-.ex-text--clickable { cursor: pointer; }
-/* 展开后保留后端原文里的换行（多行堆栈） */
-.ex--open .ex-text { white-space: pre-wrap; }
-.ex--danger .ex-text, .ex--danger .ex-btn { color: var(--danger); }
-.ex-btn {
-  margin-left: 4px; padding: 0; border: 0; background: none;
-  font: inherit; font-size: var(--text-xs); color: var(--accent);
-  cursor: pointer; text-decoration: underline;
-}
-</style>
+<style scoped src="@/assets/styles/components/ui/ExpandText.css"></style>

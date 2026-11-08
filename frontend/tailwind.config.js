@@ -1,7 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: 'class',
-  content: ['src/**/*.{vue,js}'],
+  // 注意：必须包含 css —— 抽取到 assets/styles/pages|components 下的样式里
+  // 也直接用了 Tailwind 工具类（inline-flex / underline / transition 等），
+  // 只扫 vue/js 会漏掉这些类，导致抽取后样式丢失。
+  content: ['src/**/*.{vue,js,css}'],
   theme: {
     extend: {
       colors: {

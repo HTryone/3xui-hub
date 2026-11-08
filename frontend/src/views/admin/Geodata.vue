@@ -114,7 +114,7 @@ onActivated(load)
 
     <Card padding="false">
       <div class="gd-table-wrap">
-        <table class="gd-table">
+        <table class="ch-table ch-table--flat ch-table--nolasthide">
           <thead>
             <tr><th>文件</th><th>大小</th><th>更新时间</th><th>SHA256</th><th>状态</th></tr>
           </thead>
@@ -129,7 +129,7 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="!loading && files.length === 0">
-              <td colspan="5" class="gd-empty">暂无数据。</td>
+              <td colspan="5" class="ch-empty">暂无数据。</td>
             </tr>
           </tbody>
         </table>
@@ -142,7 +142,7 @@ onActivated(load)
         <p class="gd-desc">最近一次分发的执行结果；节点离线时排队等待，上线后自动执行。</p>
       </div>
       <div class="gd-table-wrap">
-        <table class="gd-table">
+        <table class="ch-table ch-table--flat ch-table--nolasthide">
           <thead>
             <tr><th>节点</th><th>状态</th><th>结果</th><th>时间</th></tr>
           </thead>
@@ -157,7 +157,7 @@ onActivated(load)
               <td class="gd-dim">{{ fmtTime(n.finished_at) }}</td>
             </tr>
             <tr v-if="!loading && nodes.length === 0">
-              <td colspan="4" class="gd-empty">还没有 xray 节点。</td>
+              <td colspan="4" class="ch-empty">还没有 xray 节点。</td>
             </tr>
           </tbody>
         </table>
@@ -166,75 +166,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-.gd {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.gd-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-.gd-title {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-xl);
-}
-.gd-desc {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  max-width: 760px;
-  line-height: 1.6;
-}
-.gd-actions {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-.gd-sub {
-  padding: var(--space-4) var(--space-4) 0;
-}
-.gd-sub h2 {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-base);
-  color: var(--text-primary);
-}
-.gd-table-wrap {
-  overflow-x: auto;
-}
-.gd-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.gd-table th,
-.gd-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.gd-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.gd-dim {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.gd-result {
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.gd-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Geodata.css"></style>

@@ -361,7 +361,7 @@ onMounted(() => {
 <template>
   <div class="ps">
     <div class="ps-head">
-      <h1 class="ps-title">代理商品</h1>
+      <h1 class="ch-page-title">代理商品</h1>
       <Button variant="primary" size="sm" @click="openCreateProduct">
         <Icon name="plus" :size="16" /> 新建商品
       </Button>
@@ -409,7 +409,7 @@ onMounted(() => {
       <p v-if="p.subtitle" class="ps-sub">{{ p.subtitle }}</p>
 
       <div class="ps-table-wrap">
-        <table class="ps-table">
+        <table class="ch-table ch-table--flat">
           <thead>
             <tr>
               <th>规格</th>
@@ -441,14 +441,14 @@ onMounted(() => {
                 <Badge :variant="sku.is_active ? 'success' : 'warning'">{{ sku.is_active ? '启用' : '停用' }}</Badge>
               </td>
               <td>
-                <div class="ps-actions">
+                <div class="ch-actions-4">
                   <Button size="sm" variant="ghost" @click="openEditSku(sku)"><Icon name="edit" :size="15" /></Button>
                   <Button size="sm" variant="ghost" @click="removeSku(sku)"><Icon name="trash" :size="15" /></Button>
                 </div>
               </td>
             </tr>
             <tr v-if="!p.skus?.length">
-              <td colspan="10" class="ps-empty">还没有规格 —— 点右上「加规格」填价格和库存</td>
+              <td colspan="10" class="ch-empty-sm">还没有规格 —— 点右上「加规格」填价格和库存</td>
             </tr>
           </tbody>
         </table>
@@ -456,7 +456,7 @@ onMounted(() => {
     </Card>
 
     <Card v-if="!products.length && !loading" class="ps-card">
-      <p class="ps-empty">还没有代理商品 —— 点右上角「新建商品」开始</p>
+      <p class="ch-empty-sm">还没有代理商品 —— 点右上角「新建商品」开始</p>
     </Card>
 
     <!-- 手工 socks 货源 -->
@@ -479,7 +479,7 @@ onMounted(() => {
       </p>
 
       <div class="ps-table-wrap">
-        <table class="ps-table">
+        <table class="ch-table ch-table--flat">
           <thead>
             <tr>
               <th>备注</th>
@@ -502,14 +502,14 @@ onMounted(() => {
                 <Badge :variant="s.is_active ? 'success' : 'warning'">{{ s.is_active ? '启用' : '停用' }}</Badge>
               </td>
               <td>
-                <div class="ps-actions">
+                <div class="ch-actions-4">
                   <Button size="sm" variant="ghost" @click="openEditSock(s)">编辑</Button>
                   <Button size="sm" variant="ghost" @click="removeSock(s)"><Icon name="trash" :size="15" /></Button>
                 </div>
               </td>
             </tr>
             <tr v-if="!socks.length">
-              <td colspan="7" class="ps-empty">还没有 socks 货源 —— 点右上「批量导入」粘贴</td>
+              <td colspan="7" class="ch-empty-sm">还没有 socks 货源 —— 点右上「批量导入」粘贴</td>
             </tr>
           </tbody>
         </table>
@@ -518,7 +518,7 @@ onMounted(() => {
 
     <!-- 商品弹窗 -->
     <Modal v-model="productOpen" :title="productEditing ? '编辑商品' : '新建代理商品'" width="520px">
-      <div class="ps-form">
+      <div class="ch-form">
         <label class="ps-field">
           <span class="ps-label">商品名（对外展示）</span>
           <Input v-model="productForm.name" placeholder="例如：美国住宅代理" maxlength="100" />
@@ -550,7 +550,7 @@ onMounted(() => {
 
     <!-- 规格弹窗 -->
     <Modal v-model="skuOpen" :title="skuEditing ? '编辑规格' : '新增规格'" width="560px">
-      <div class="ps-form">
+      <div class="ch-form">
         <label class="ps-field">
           <span class="ps-label">规格名</span>
           <Input v-model="skuForm.name" placeholder="例如：100G / 30天" maxlength="100" />
@@ -626,7 +626,7 @@ onMounted(() => {
 
     <!-- 导入 socks -->
     <Modal v-model="importOpen" title="批量导入 socks" width="560px">
-      <div class="ps-form">
+      <div class="ch-form">
         <label class="ps-field">
           <span class="ps-label">粘贴列表（一行一条）</span>
           <textarea
@@ -649,7 +649,7 @@ socks5://user2:pass2@1.2.3.4:1080"
 
     <!-- 编辑 socks -->
     <Modal v-model="sockOpen" title="编辑 socks" width="520px">
-      <div class="ps-form">
+      <div class="ch-form">
         <div class="ps-grid">
           <label class="ps-field">
             <span class="ps-label">备注名</span>
@@ -695,70 +695,4 @@ socks5://user2:pass2@1.2.3.4:1080"
   </div>
 </template>
 
-<style scoped>
-.ps { padding: var(--space-1) 0 var(--space-6); max-width: 1150px; }
-.ps-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: var(--space-2); gap: var(--space-2); flex-wrap: wrap;
-}
-.ps-title { margin: 0; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.ps-hint {
-  margin: 0 0 var(--space-4); color: var(--text-secondary); font-size: var(--text-sm);
-  max-width: 820px; line-height: 1.6;
-}
-.ps-switch-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4);
-  border: 1px dashed var(--border-subtle); border-radius: 10px; background: var(--bg-hover);
-}
-.ps-switch-bar.is-on { border-style: solid; border-color: var(--accent); }
-.ps-switch-text { display: flex; flex-direction: column; gap: 2px; }
-.ps-card { margin-bottom: var(--space-4); }
-.ps-card-head {
-  display: flex; align-items: center; gap: var(--space-2);
-  font-size: var(--text-sm); font-weight: var(--font-bold); width: 100%;
-}
-.ps-head-tools { margin-left: auto; display: flex; gap: 4px; }
-.ps-count { color: var(--text-muted); font-weight: 400; font-size: var(--text-xs); }
-.ps-sub { margin: 0; padding: var(--space-3) var(--space-4) 0; color: var(--text-muted); font-size: var(--text-sm); }
-.ps-tip {
-  margin: 0; padding: var(--space-3) var(--space-4) 0;
-  color: var(--text-muted); font-size: var(--text-xs); line-height: 1.6;
-}
-
-.ps-table-wrap { overflow-x: auto; }
-.ps-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-.ps-table th, .ps-table td {
-  padding: var(--space-3) var(--space-4); text-align: left;
-  border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
-}
-.ps-table th { color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs); }
-.ps-table tbody tr:last-child td { border-bottom: none; }
-.ps-name { font-weight: var(--font-medium); }
-.ps-region {
-  margin-left: 6px; padding: 1px 6px; border-radius: 999px;
-  background: var(--bg-hover); color: var(--text-muted); font-size: var(--text-xs);
-}
-.ps-dim { color: var(--text-muted); font-size: var(--text-xs); }
-.ps-empty { text-align: center; color: var(--text-muted); font-size: var(--text-sm); padding: var(--space-6); }
-.ps-actions { display: flex; align-items: center; gap: 4px; }
-
-.ps-form { display: flex; flex-direction: column; gap: var(--space-3); }
-.ps-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-.ps-field { display: flex; flex-direction: column; gap: 6px; }
-.ps-label { font-size: var(--text-sm); color: var(--text-primary); }
-.ps-check { display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); }
-.ps-foot { display: flex; gap: var(--space-2); justify-content: flex-end; width: 100%; }
-.ps-textarea {
-  padding: 9px 12px; border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;
-  font-size: var(--text-sm); font-family: inherit; outline: none; resize: vertical;
-  background: #fff; color: var(--text-primary); width: 100%; box-sizing: border-box;
-}
-.ps-textarea:focus { border-color: var(--accent); }
-.ps-textarea.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
-code { font-family: var(--font-mono); font-size: 0.92em; }
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.ps-grid { align-items: start; }
-.ps-grid > .ps-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/ProxyStore.css"></style>

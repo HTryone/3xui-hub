@@ -102,7 +102,7 @@ describe('SystemStatus.vue — 最近运行记录的状态与失败原因', () =
 describe('SystemStatus.vue — 定时任务表的上次运行状态', () => {
   it('失败任务标红并展示折叠后的错误，可展开全文', async () => {
     const w = await mountPage()
-    const row = w.findAll('.sys-table tbody tr').find((tr) => tr.text().includes('traffic-sync'))
+    const row = w.findAll('.ch-table tbody tr').find((tr) => tr.text().includes('traffic-sync'))
     const cell = row.find('.sys-status-cell')
 
     expect(cell.text()).toContain('失败')
@@ -114,7 +114,7 @@ describe('SystemStatus.vue — 定时任务表的上次运行状态', () => {
 
   it('成功任务显示正常且不渲染报错', async () => {
     const w = await mountPage()
-    const row = w.findAll('.sys-table tbody tr').find((tr) => tr.text().includes('ban-check'))
+    const row = w.findAll('.ch-table tbody tr').find((tr) => tr.text().includes('ban-check'))
     const cell = row.find('.sys-status-cell')
 
     expect(cell.text()).toContain('正常')

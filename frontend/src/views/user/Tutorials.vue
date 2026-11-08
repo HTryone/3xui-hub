@@ -66,7 +66,4 @@ onMounted(async () => {
   </div>
 </template>
 
-<style scoped>
-.td { display: flex; flex-direction: column; gap: 20px; }
-.td-empty { margin: 0; padding: 16px; font-size: 14px; color: var(--lbl3); }
-</style>
+<style scoped src="@/assets/styles/pages/user/Tutorials.css"></style>

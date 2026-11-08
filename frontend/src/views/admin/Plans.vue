@@ -203,13 +203,13 @@ onActivated(load)
 <template>
   <div class="pl">
     <div class="pl-head">
-      <h1 class="pl-title">套餐</h1>
+      <h1 class="ch-page-title">套餐</h1>
       <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建套餐</Button>
     </div>
 
     <Card padding="false">
       <div class="pl-table-wrap">
-        <table class="pl-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -243,7 +243,7 @@ onActivated(load)
                 </template>
               </td>
               <td>
-                <div class="pl-actions">
+                <div class="ch-actions">
                   <Button variant="ghost" size="sm" @click="openEdit(p)"><Icon name="edit" :size="14" /></Button>
                   <Button v-if="p.is_active" variant="ghost" size="sm" title="下架" @click="deactivate(p)"><Icon name="eye-off" :size="14" /></Button>
                   <Button v-else variant="ghost" size="sm" title="上架" @click="activate(p)"><Icon name="refresh" :size="14" /></Button>
@@ -251,13 +251,13 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="6" class="pl-empty">
+              <td colspan="6" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!plans.length">
-              <td colspan="6" class="pl-empty">
+              <td colspan="6" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无套餐</template>
               </td>
@@ -277,20 +277,20 @@ onActivated(load)
     />
 
     <Modal v-model="modalOpen" :title="editing ? '编辑套餐' : '新建套餐'" width="520px">
-      <div class="pl-form">
-        <label class="pl-field">
+      <div class="ch-form">
+        <label class="ch-field">
           <span>套餐名称</span>
           <Input v-model="form.name" placeholder="如：月度100G" />
         </label>
-        <label class="pl-field">
+        <label class="ch-field">
           <span>价格（元，0 表示免费）</span>
           <Input v-model="form.price" type="number" mono placeholder="0" />
         </label>
-        <label v-if="form.type === 'period' && !pureThird" class="pl-field">
+        <label v-if="form.type === 'period' && !pureThird" class="ch-field">
           <span>重置流量价格（元，0 表示免费）</span>
           <Input v-model="form.reset_price" type="number" mono placeholder="0" />
         </label>
-        <label class="pl-field">
+        <label class="ch-field">
           <span>类型</span>
           <Select v-model="form.type" :options="typeOptions" :disabled="!!editing || pureThird" />
           <span v-if="editing && !pureThird" class="pl-hint">类型不可修改</span>
@@ -298,22 +298,22 @@ onActivated(load)
         </label>
 
         <template v-if="form.type === 'period'">
-          <label class="pl-field">
+          <label class="ch-field">
             <span>周期月数</span>
             <Input v-model="form.months" type="number" mono placeholder="3" />
           </label>
-          <label v-if="!pureThird" class="pl-field">
+          <label v-if="!pureThird" class="ch-field">
             <span>每月流量上限（GB）</span>
             <Input v-model="form.monthly_traffic_gb" type="number" mono placeholder="100" />
           </label>
-          <label v-if="!pureThird" class="pl-field">
+          <label v-if="!pureThird" class="ch-field">
             <span>周期总流量上限（GB）</span>
             <div class="pl-auto-value">{{ (Number(form.monthly_traffic_gb) || 0) * (Number(form.months) || 1) }} GB（自动计算）</div>
           </label>
         </template>
 
         <template v-else>
-          <label class="pl-field">
+          <label class="ch-field">
             <span>总流量上限（GB）</span>
             <Input v-model="form.total_traffic_gb" type="number" mono placeholder="500" />
           </label>
@@ -353,124 +353,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-.pl-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-.pl-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.pl-table-wrap {
-  overflow-x: auto;
-}
-.pl-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.pl-table th,
-.pl-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.pl-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.pl-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.pl-price {
-  font-family: var(--font-mono);
-  font-weight: var(--font-medium);
-  color: var(--accent);
-}
-.pl-rules {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-.pl-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.pl-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.pl-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.pl-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-
-.pl-hint {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-.pl-auto-value {
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  padding: 10px 14px;
-  font-size: var(--text-base);
-  font-family: var(--font-mono);
-}
-/* 节点来源：本地开关 + 第三方多选，分区与流量字段隔开 */
-.pl-nodes {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.pl-nodes-title {
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--text-primary);
-}
-.pl-sub-label {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-.pl-nodes-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.pl-nodes-row input[type='checkbox'] {
-  cursor: pointer;
-}
-.pl-link {
-  color: var(--accent);
-  text-decoration: none;
-}
-.pl-link:hover {
-  text-decoration: underline;
-}
-.pl-warn {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: #f87171;
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Plans.css"></style>

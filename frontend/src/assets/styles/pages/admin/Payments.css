@@ -1,0 +1,50 @@
+.pay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.pay-table-wrap {
+  overflow-x: auto;
+}
+.pay-url {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pay-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+/* 窄屏（手机）：两列表单压得太窄，单列显示。 */
+@media (max-width: 767px) {
+  .pay-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.pay-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.pay-desc {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
+.pay-grid { align-items: start; }
+.pay-grid > .pay-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }

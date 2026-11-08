@@ -105,13 +105,13 @@ onMounted(load)
               <td class="afr-dim afr-time">{{ r.created_at || '—' }}</td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="6" class="afr-empty">
+              <td colspan="6" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!list.length">
-              <td colspan="6" class="afr-empty">
+              <td colspan="6" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>还没有返佣记录，好友下单后这里会出现流水</template>
               </td>
@@ -132,77 +132,4 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.afr {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.afr-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.afr-title {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-.afr-sub {
-  margin: 0;
-  max-width: 640px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-}
-
-.afr-email {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.afr-order {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.afr-amount {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.afr-dim {
-  color: var(--text-muted);
-  font-size: 13px;
-  white-space: nowrap;
-}
-.afr-time {
-  font-variant-numeric: tabular-nums;
-}
-.afr-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-
-@media (max-width: 720px) {
-  .afr-head > :first-child {
-    width: 100%;
-  }
-  .afr-email {
-    max-width: 140px;
-  }
-  .afr-order {
-    max-width: 120px;
-  }
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/AffiliateRebates.css"></style>

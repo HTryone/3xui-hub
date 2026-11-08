@@ -1,0 +1,141 @@
+.bp {
+  border-radius: 24px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bp-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bp-head-main {
+  min-width: 0;
+}
+.bp-label {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--lbl3);
+}
+.bp-amount {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--lbl1);
+}
+.bp-recharge {
+  flex: none;
+  height: 34px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.bp-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bp-logs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.bp-logs-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lbl3);
+}
+.bp-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--fill4);
+  color: var(--lbl2);
+  font-size: 12px;
+  font-family: inherit;
+}
+.bp-empty {
+  margin: 0;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--lbl3);
+}
+.bp-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.bp-log {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--border-glass);
+}
+.bp-list .bp-log:first-child {
+  border-top: none;
+}
+.bp-log-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.bp-log-type {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--lbl1);
+}
+.bp-log-note {
+  font-size: 12px;
+  color: var(--lbl3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bp-log-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.bp-log-amt {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.bp-log-amt.is-in {
+  color: var(--green);
+}
+.bp-log-amt.is-out {
+  color: var(--red);
+}
+.bp-log-time {
+  font-size: 12px;
+  color: var(--lbl3);
+}
+
+@media (max-width: 360px) {
+  .bp-amount {
+    font-size: 26px;
+  }
+}

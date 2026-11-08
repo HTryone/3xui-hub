@@ -1,0 +1,54 @@
+.uu-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.uu-sheet {
+  width: 100%;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  border-radius: 24px;
+}
+.uu-sheet-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--lbl1);
+}
+.uu-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.uu-sheet-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.uu-sheet-enter-active,
+.uu-sheet-leave-active {
+  transition: opacity 0.28s ease;
+}
+.uu-sheet-enter-from,
+.uu-sheet-leave-to {
+  opacity: 0;
+}
+@media (min-width: 768px) {
+  .uu-sheet-overlay {
+    padding: 24px;
+  }
+  .uu-sheet {
+    max-height: calc(100dvh - 48px);
+  }
+}

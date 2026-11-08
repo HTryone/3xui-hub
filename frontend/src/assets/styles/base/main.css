@@ -108,6 +108,7 @@ input[type='radio'] {
 
 
 /* 各页表格的 hover 补上过渡，避免瞬时闪色 */
+.ch-table tbody tr,
 .au-table tbody tr,
 .pl-table tbody tr,
 .ord-table tbody tr,
@@ -122,6 +123,7 @@ input[type='radio'] {
 }
 
 /* 末行去分隔线：否则表格底部有一条悬空的多余横线 */
+.ch-table tbody tr:last-child td,
 .au-table tbody tr:last-child td,
 .pl-table tbody tr:last-child td,
 .ord-table tbody tr:last-child td,

@@ -12,10 +12,4 @@ import BalancePanel from '@/components/user/BalancePanel.vue'
   </div>
 </template>
 
-<style scoped>
-.bl {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-</style>
+<style scoped src="@/assets/styles/pages/user/Balance.css"></style>

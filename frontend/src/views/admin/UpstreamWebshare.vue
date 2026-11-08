@@ -444,7 +444,7 @@ onMounted(async () => {
 <template>
   <div class="ws">
     <div class="ws-head">
-      <h1 class="ws-title">Webshare</h1>
+      <h1 class="ch-page-title">Webshare</h1>
       <Button variant="primary" size="sm" @click="openCreateProvider">
         <Icon name="plus" :size="16" /> 添加账号
       </Button>
@@ -466,7 +466,7 @@ onMounted(async () => {
       </template>
 
       <div class="ws-table-wrap">
-        <table class="ws-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>备注名</th>
@@ -498,7 +498,7 @@ onMounted(async () => {
               <td class="mono">{{ p.account_count }}</td>
               <td class="ws-dim">{{ fmtDate(p.last_checked_at) }}</td>
               <td>
-                <div class="ws-actions">
+                <div class="ch-actions-4">
                   <Button size="sm" variant="ghost" :loading="testing" @click.stop="testProvider(p)">测试连接</Button>
                   <Button size="sm" variant="ghost" @click.stop="openEditProvider(p)"><Icon name="edit" :size="15" /></Button>
                   <Button size="sm" variant="ghost" @click.stop="removeProvider(p)"><Icon name="trash" :size="15" /></Button>
@@ -506,7 +506,7 @@ onMounted(async () => {
               </td>
             </tr>
             <tr v-if="!providers.length && !loadingProviders">
-              <td colspan="6" class="ws-empty">还没有账号 —— 点右上角「添加账号」填入 Webshare API Token</td>
+              <td colspan="6" class="ch-empty-sm">还没有账号 —— 点右上角「添加账号」填入 Webshare API Token</td>
             </tr>
           </tbody>
         </table>
@@ -526,7 +526,7 @@ onMounted(async () => {
       </template>
 
       <div class="ws-table-wrap">
-        <table class="ws-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>套餐 ID</th>
@@ -552,7 +552,7 @@ onMounted(async () => {
               <td class="mono">{{ plan.monthly_price != null ? `$${plan.monthly_price}` : '—' }}</td>
             </tr>
             <tr v-if="!plans.length && !loadingPlans">
-              <td colspan="7" class="ws-empty">
+              <td colspan="7" class="ch-empty-sm">
                 {{ selectedId ? '没有可用的套餐（只显示 status=active 的套餐）' : '先在上方选择一个账号' }}
               </td>
             </tr>
@@ -582,7 +582,7 @@ onMounted(async () => {
       </p>
 
       <div class="ws-table-wrap">
-        <table class="ws-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>地址:端口</th>
@@ -609,7 +609,7 @@ onMounted(async () => {
               </td>
             </tr>
             <tr v-if="!proxies.length && !loadingProxies">
-              <td colspan="7" class="ws-empty">
+              <td colspan="7" class="ch-empty-sm">
                 {{ selectedId ? '没有拉到代理 IP（套餐未分配代理，或上游暂无可用 IP）' : '先在上方选择一个账号' }}
               </td>
             </tr>
@@ -637,7 +637,7 @@ onMounted(async () => {
       </template>
 
       <div class="ws-table-wrap">
-        <table class="ws-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>标识</th>
@@ -670,7 +670,7 @@ onMounted(async () => {
               </td>
               <td class="ws-dim">{{ fmtDate(a.last_synced_at) }}</td>
               <td>
-                <div class="ws-actions">
+                <div class="ch-actions-4">
                   <Button size="sm" variant="ghost" @click="viewCredential(a)">凭据</Button>
                   <Button size="sm" variant="ghost" @click="pullUsage(a)">回采</Button>
                   <Button v-if="a.status === 'active'" size="sm" variant="ghost" @click="disableAccount(a)">停用</Button>
@@ -679,7 +679,7 @@ onMounted(async () => {
               </td>
             </tr>
             <tr v-if="!accounts.length && !loadingAccounts">
-              <td colspan="9" class="ws-empty">{{ selectedId ? '该账号下还没有子用户' : '先在上方选择一个账号' }}</td>
+              <td colspan="9" class="ch-empty-sm">{{ selectedId ? '该账号下还没有子用户' : '先在上方选择一个账号' }}</td>
             </tr>
           </tbody>
         </table>
@@ -711,11 +711,11 @@ onMounted(async () => {
     <!-- 账号弹窗 -->
     <Modal v-model="providerOpen" :title="providerEditing ? `编辑账号 ${providerEditing.name}` : '添加 Webshare 账号'" width="480px">
       <div class="ws-form">
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">备注名</label>
           <Input v-model="providerForm.name" placeholder="例如：主账号 / 备用账号" maxlength="64" />
         </div>
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">API Token{{ providerEditing ? '（留空 = 不修改）' : '' }}</label>
           <Input v-model="providerForm.api_token" type="password" mono placeholder="在 proxy.webshare.io/userapi/keys 生成" maxlength="512" />
           <p class="ws-tip">加密存储，接口不回明文；调用走 <code>Authorization: Token</code>。</p>
@@ -736,20 +736,20 @@ onMounted(async () => {
     <!-- 开号弹窗 -->
     <Modal v-model="accountOpen" title="开子用户" width="480px">
       <div class="ws-form">
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">标识（label，上游展示用）</label>
           <Input v-model="accountForm.label" placeholder="例如：用户 7 的代理" maxlength="64" />
         </div>
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">流量额度（GB，0 = 不限量）</label>
           <Input v-model.number="accountForm.proxy_limit" type="number" min="0" step="1" />
         </div>
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">并发线程数</label>
           <Input v-model.number="accountForm.max_thread_count" type="number" min="0" step="10" />
           <p class="ws-tip">上游 max_thread_count，0 = 用账号默认值。</p>
         </div>
-        <div class="ws-field">
+        <div class="ch-field-6">
           <label class="ws-label">绑定平台用户 ID（可选）</label>
           <Input v-model="accountForm.user_id" placeholder="留空 = 暂不绑定" />
           <p class="ws-tip">填了会把这条代理归到该用户名下，后续在用户侧展示。</p>
@@ -788,73 +788,4 @@ onMounted(async () => {
   </div>
 </template>
 
-<style scoped>
-.ws { padding: var(--space-1) 0 var(--space-6); max-width: 1100px; }
-.ws-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: var(--space-3); gap: var(--space-2); flex-wrap: wrap;
-}
-.ws-title { margin: 0; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.ws-hint {
-  margin: 0 0 var(--space-4); color: var(--text-secondary); font-size: var(--text-sm);
-  max-width: 760px; line-height: 1.6;
-}
-.ws-card { margin-bottom: var(--space-4); }
-.ws-card-head {
-  display: flex; align-items: center; gap: var(--space-2);
-  font-size: var(--text-sm); font-weight: var(--font-bold); width: 100%;
-}
-.ws-card-head button { margin-left: auto; }
-.ws-card-head button + button { margin-left: 0; }
-.ws-count { color: var(--text-muted); font-weight: 400; font-size: var(--text-xs); }
-/* header 里的筛选控件：靠右、限宽 */
-.ws-head-tools { margin-left: auto; width: 200px; }
-.ws-hint--inline {
-  margin: 0; padding: var(--space-3) var(--space-4) 0;
-  font-size: var(--text-xs); color: var(--text-muted); max-width: none;
-}
-.ws-asn { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-
-.ws-table-wrap { overflow-x: auto; }
-.ws-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-.ws-table th, .ws-table td {
-  padding: var(--space-3) var(--space-4); text-align: left;
-  border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
-}
-.ws-table th { color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs); }
-.ws-table tbody tr { cursor: pointer; }
-.ws-table tbody tr:hover { background: var(--bg-hover); }
-.ws-table tbody tr.is-selected { background: var(--bg-hover); }
-.ws-table tbody tr:last-child td { border-bottom: none; }
-.ws-name { font-weight: var(--font-medium); display: flex; align-items: center; gap: 6px; }
-.ws-dim { color: var(--text-muted); font-size: var(--text-xs); }
-.ws-error {
-  margin: 4px 0 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
-  color: var(--danger); font-size: var(--text-xs);
-}
-.ws-warn { color: var(--warning); font-size: var(--text-xs); }
-.ws-empty { text-align: center; color: var(--text-muted); font-size: var(--text-sm); padding: var(--space-6); }
-.ws-actions { display: flex; align-items: center; gap: 4px; }
-
-.ws-form { display: flex; flex-direction: column; gap: var(--space-4); }
-.ws-field { display: flex; flex-direction: column; gap: 6px; }
-.ws-label { font-size: var(--text-sm); color: var(--text-primary); }
-.ws-tip { margin: 0; font-size: var(--text-xs); color: var(--text-muted); line-height: 1.6; }
-.ws-check { display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--text-primary); }
-.ws-foot { display: flex; gap: var(--space-2); justify-content: flex-end; width: 100%; }
-
-.ws-cred {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: var(--space-3); border-radius: 10px;
-  background: var(--bg-hover);
-}
-.ws-cred-row { display: flex; align-items: center; gap: 10px; font-size: var(--text-sm); }
-.ws-cred-key { color: var(--text-muted); min-width: 56px; }
-
-.ws-list {
-  margin: 0; padding-left: 18px; color: var(--text-secondary);
-  font-size: var(--text-sm); line-height: 1.9;
-}
-.ws-link { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; }
-code { font-family: var(--font-mono); font-size: 0.92em; color: var(--text-primary); }
-</style>
+<style scoped src="@/assets/styles/pages/admin/UpstreamWebshare.css"></style>

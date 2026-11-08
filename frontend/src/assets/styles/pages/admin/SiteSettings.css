@@ -1,0 +1,39 @@
+.ss-title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  margin-bottom: var(--space-4);
+}
+.ss-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 600px;
+}
+.ss-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.ss-field span {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+.ss-textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  resize: vertical;
+  font-family: inherit;
+}
+.ss-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ss-actions {
+  padding-top: var(--space-2);
+}

@@ -44,7 +44,7 @@ const openCreate = async (wrapper) => {
 /** 生成弹窗里的输入框按 label 文案定位（Input 组件根节点是 .ch-input-wrap）。 */
 const fieldInput = (label) =>
   [...document.body.querySelectorAll('.ch-modal-card input')].find((i) =>
-    i.closest('.gc-field')?.textContent.includes(label),
+    i.closest('.ch-field-6')?.textContent.includes(label),
   )
 
 const clickFooter = (text) => {

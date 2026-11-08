@@ -1,0 +1,320 @@
+.dc { display: flex; flex-direction: column; gap: 20px; }
+
+.dc-card {
+  padding: 20px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,0.05);
+  box-shadow: 0 2px 12px -2px rgba(0,0,0,0.06);
+}
+.dc-card-head, .dc-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.dc-card-title { margin: 0; font-size: 15px; font-weight: 700; color: #1d1d1f; }
+.dc-title { margin: 0; font-size: 18px; font-weight: 800; color: #1d1d1f; }
+.dc-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 工具栏里的下拉框：限宽，与搜索框并排一行（Select 组件默认 width:100%，在工具栏里会独占整行） */
+.dc-tools :deep(.ch-select) { width: 132px; flex: 0 0 auto; }
+
+.dc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.dc-field { display: flex; flex-direction: column; gap: 6px; }
+.dc-label { font-size: 12px; font-weight: 600; color: #666; }
+/* 限流字段的说明小字（字段内 + 卡片底部那行总说明共用） */
+.dc-rate-tip { font-size: 11px; color: #999; line-height: 1.5; margin: 0; }
+.dc-input {
+  padding: 9px 12px;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  background: #fff;
+  color: #1d1d1f;
+  transition: border-color 0.2s;
+  width: 100%;
+  box-sizing: border-box;
+}
+.dc-input:focus { border-color: var(--accent); }
+/* 前缀固定显示大写，输入后即时反馈（后端也会再转一次） */
+.dc-prefix-input { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+
+/* 用户邮箱搜索框：与 .ch-select 同高，免得工具栏高低不齐 */
+.dc-search {
+  padding: 8px 14px;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 999px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: #1d1d1f;
+  outline: none;
+  width: 180px;
+}
+.dc-search:focus { border-color: var(--accent); }
+
+/* 按钮 */
+.dc-add-btn, .dc-ghost-btn, .dc-save-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(0,0,0,0.08); background: #fff; color: #1d1d1f;
+  cursor: pointer; transition: all 0.2s; font-family: inherit; white-space: nowrap;
+}
+.dc-ghost-btn--sm { padding: 4px 10px; font-size: 12px; }
+.dc-add-btn { background: var(--accent); color: var(--text-inverse); border-color: transparent; }
+.dc-add-btn:hover { background: var(--accent-hover); }
+.dc-save-btn { background: var(--accent); color: var(--text-inverse); border-color: transparent; }
+.dc-save-btn:hover { background: var(--accent-hover); }
+.dc-ghost-btn:hover { background: #f5f5f5; }
+.dc-add-btn:disabled, .dc-save-btn:disabled, .dc-ghost-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.dc-link-btn {
+  border: none; background: transparent; color: var(--accent); cursor: pointer;
+  font-size: 12px; font-family: inherit; padding: 0 2px;
+}
+.dc-link-btn:hover { text-decoration: underline; }
+
+/* 危险动作按钮（批量删除）：hover 才变红，平时跟幽灵按钮同款 */
+.dc-danger-btn:hover {
+  background: var(--danger-muted, #fef2f2);
+  border-color: rgba(220, 38, 38, 0.25);
+  color: var(--danger, #dc2626);
+}
+
+/* 文件夹 */
+.dc-folders { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+/* 文件夹分组不再自己画一层框：外层已有 .dc-card 卡片，
+   再套一层 border+bg 就是「方块套方块」。改成扁平的折叠分区，
+   只用一条分隔线区分标题与内容。overflow 必须 visible，
+   否则里面的超宽表格会被裁掉、滑不动。 */
+.dc-folder {
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+}
+.dc-folder-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; padding: 8px 12px;
+}
+.dc-folder-row.is-open { border-bottom: 1px solid rgba(0,0,0,0.06); }
+.dc-folder-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: none; background: transparent; cursor: pointer; padding: 4px 0;
+  font-family: inherit; font-size: 13px; font-weight: 600; color: #1d1d1f;
+}
+.dc-folder-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dc-folder-count {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: var(--bg-hover, #efefef); color: var(--text-muted, #666);
+}
+.dc-folder-matched {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: var(--warning-muted, #fef3c7); color: var(--warning, #b45309);
+}
+.dc-folder-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* issue #59：文件夹行只留一个勾选框 + 已勾选计数，按钮从 5 个降到 2 个图标 */
+.dc-folder-check {
+  width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent, #0d9488);
+  flex: 0 0 auto;
+}
+.dc-folder-check:disabled { cursor: not-allowed; opacity: 0.4; }
+.dc-folder-picked {
+  font-size: 11px; font-weight: 600; color: var(--accent, #0d9488);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+/* issue #59：文件夹内容内部滚动，展开多个也不会把整页拉成长蛇；
+   60vh 的阈值保证一屏内还能看到下一个文件夹的标题行 */
+.dc-folder-body {
+  padding: 4px 8px 8px; background: transparent;
+  max-height: 60vh; overflow-y: auto;
+}
+.dc-folder-tip { margin: 12px 8px; font-size: 12px; color: #999; }
+.dc-table--folder { min-width: 820px; }
+
+/* 批量操作条（issue #59）：勾选 > 0 时出现，吸附在顶栏下方常驻。
+   top 值 = AdminLayout 顶栏高度（padding 12×2 + 内容 32 + 边框 1），
+   z-index 低于顶栏（20），滚动时不会被顶栏盖住也不会盖住顶栏。 */
+.dc-bulkbar {
+  position: sticky;
+  top: 57px;
+  z-index: 10;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; margin: 0 0 10px;
+  border: 1px solid var(--accent-muted, rgba(13,148,136,0.24));
+  border-radius: 10px;
+  background: var(--card, #fff);
+  box-shadow: 0 2px 10px -2px rgba(0,0,0,0.08);
+}
+.dc-bulkbar-info { font-size: 12px; font-weight: 700; color: var(--accent, #0d9488); }
+.dc-bulkbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+/* 未归档平铺区标题条 */
+.dc-flat-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 4px 0 10px;
+}
+.dc-flat-title { font-size: 13px; font-weight: 700; color: #1d1d1f; }
+.dc-selected-info { font-size: 12px; color: #666; display: inline-flex; align-items: center; gap: 4px; }
+/* 右侧动作组：两个按钮必须贴在一起，只有一个 margin-left:auto（都写 auto 会把剩余空间平分，导出被挤到中间） */
+.dc-flat-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+/* 表格 */
+.dc-table-wrap { overflow-x: auto; }
+.dc-table { width: 100%; border-collapse: collapse; min-width: 900px; }
+.dc-table th {
+  height: 40px;
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.dc-table td {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+.dc-table tbody tr:hover { background: var(--bg-hover); }
+.dc-table tr:last-child td { border-bottom: none; }
+/* 勾选列：窄，只放一个 checkbox */
+.dc-check-cell { width: 36px; padding-right: 0; }
+.dc-check-cell input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
+.dc-code {
+  font-family: 'SF Mono', 'Fira Code', monospace; font-weight: 700;
+  letter-spacing: 0.03em; white-space: nowrap;
+}
+.dc-owner { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666; }
+.dc-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dc-dim { color: #999; font-size: 12px; white-space: nowrap; }
+.dc-note { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666; }
+.dc-empty { text-align: center; color: #999; font-size: 13px; padding: 40px; }
+
+/* 标签/状态一律走 tokens，浅色暗色自动跟随，不写死颜色 */
+.dc-tag {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: var(--bg-hover); color: var(--text-muted); white-space: nowrap;
+}
+.dc-tag--invite { background: var(--info-muted); color: var(--info); }
+.dc-tag--redeem { background: var(--success-muted); color: var(--success); }
+.dc-tag--admin { background: var(--warning-muted); color: var(--warning); }
+
+.dc-status {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: var(--bg-hover); color: var(--text-muted); white-space: nowrap;
+}
+.dc-status--active { background: var(--success-muted); color: var(--success); }
+.dc-status--used_up { background: var(--bg-hover); color: var(--text-muted); }
+.dc-status--expired { background: var(--danger-muted); color: var(--danger); }
+.dc-status--refreshed { background: var(--info-muted); color: var(--info); }
+
+.dc-icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px; border: none;
+  background: transparent; color: #666; cursor: pointer; transition: all 0.2s;
+}
+.dc-icon-btn:hover { background: #f0f0f0; }
+.dc-icon-btn--danger:hover { background: #fef2f2; color: #dc2626; }
+
+.dc-pager {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-top: 16px;
+}
+.dc-pager-info { font-size: 12px; color: #999; }
+.dc-pager-btns { display: flex; gap: 8px; }
+
+/* 弹窗表单 */
+.dc-form { display: flex; flex-direction: column; gap: 14px; }
+.dc-foot { display: flex; gap: 10px; justify-content: flex-end; width: 100%; }
+
+/* 删除文件夹弹窗：码的去向二选一（issue #59） */
+.dc-delete-tip { margin: 0; font-size: 13px; line-height: 1.7; color: #1d1d1f; }
+.dc-radio {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 11px; font-size: 13px; line-height: 1.5; cursor: pointer;
+  border: 1px solid rgba(0,0,0,0.08); border-radius: 10px;
+}
+.dc-radio input[type="radio"] { margin-top: 2px; flex: 0 0 auto; accent-color: var(--accent, #0d9488); }
+.dc-radio.is-danger { border-color: var(--danger, #dc2626); background: var(--danger-muted, #fef2f2); }
+.dc-radio em { font-style: normal; color: #999; }
+.dc-danger-text { color: var(--danger, #dc2626); }
+.dc-add-btn--danger { background: var(--danger, #dc2626); border-color: var(--danger, #dc2626); }
+
+/* 窄屏（issue #59）：手机上原来整页 0 断点 —— 文件夹行 5 个按钮挤成两行、
+   表格 10 列横滑很远、批量按钮在页面底部摸不到。 */
+@media (max-width: 640px) {
+  /* 手机端：外层卡片也去掉（小屏宽度宝贵），内容直接贴屏 */
+  .dc-card {
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .dc-folder-row { padding: 8px 0; }
+  .dc-folder-body {
+    padding: 4px 0 8px;
+    max-height: none;
+    /* 只横向滚，纵向交给页面：overflow-y 必须是 hidden（写 visible 会被算成 auto） */
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .dc-list-head { margin-bottom: 12px; }
+  .dc-tools { width: 100%; gap: 6px; }
+  .dc-tools :deep(.ch-select) { width: calc(50% - 3px); }
+  .dc-search { flex: 1 1 100%; }
+  .dc-folder-name { max-width: 130px; }
+  /* 手机上内滚与外滚会互相抢手势，文件夹内容交回整页滚动 */
+  .dc-folder-body { max-height: none; overflow-y: visible; }
+  /* 次要列收起：来源 / 持有用户 / 关联套餐 / 说明文字 */
+  .dc-col-opt { display: none; }
+  /* 关键：手机端不要 min-width:0 —— 那会把 9 列硬压进 375px，列全挤成一团、
+     右侧「操作」列既看不清也滑不到。保留一个可读最小宽度，交给 folder-body 横滑。 */
+  .dc-table, .dc-table--folder { min-width: 720px; }
+  .dc-table th, .dc-table td { padding: 8px 6px; font-size: 12px; }
+  .dc-owner { max-width: 100px; }
+  /* 批量操作条改吸底：拇指够得着，不会被页面划走 */
+  .dc-bulkbar {
+    position: fixed; left: 8px; right: 8px; top: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    margin: 0; z-index: 60;
+  }
+  /* 吸底条固定后不会占文档流高度，给页面留出它的位置，避免盖住最后一行的操作按钮 */
+  .dc:has(.dc-bulkbar) { padding-bottom: 76px; }
+  .dc-foot { flex-wrap: wrap; }
+  .dc-foot > * { flex: 1 1 auto; }
+}
+
+/* 暗色模式 */
+html.dark .dc-card { background: rgba(20,20,20,0.8); border-color: rgba(255,255,255,0.06); }
+html.dark .dc-card-title, html.dark .dc-title, html.dark .dc-flat-title, html.dark .dc-folder-toggle { color: #fff; }
+html.dark .dc-label { color: #999; }
+html.dark .dc-rate-tip { color: #777; }
+html.dark .dc-input, html.dark .dc-search { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); color: #e5e5e5; }
+html.dark .dc-ghost-btn { background: rgba(255,255,255,0.05); color: #e5e5e5; border-color: rgba(255,255,255,0.08); }
+html.dark .dc-ghost-btn:hover { background: rgba(255,255,255,0.1); }
+html.dark .dc-folder { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.08); }
+html.dark .dc-folder-row.is-open { border-color: rgba(255,255,255,0.08); }
+html.dark .dc-folder-body { background: transparent; }
+html.dark .dc-selected-info { color: #aaa; }
+html.dark .dc-owner, html.dark .dc-dim { color: #888; }
+html.dark .dc-note { color: #aaa; }
+html.dark .dc-icon-btn { color: #999; }
+html.dark .dc-icon-btn:hover { background: rgba(255,255,255,0.08); }
+
+/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
+.dc-grid { align-items: start; }
+.dc-grid > .dc-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }

@@ -1,0 +1,75 @@
+.pl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.pl-table-wrap {
+  overflow-x: auto;
+}
+
+.pl-price {
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+  color: var(--accent);
+}
+.pl-rules {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.pl-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.pl-auto-value {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  padding: 10px 14px;
+  font-size: var(--text-base);
+  font-family: var(--font-mono);
+}
+/* 节点来源：本地开关 + 第三方多选，分区与流量字段隔开 */
+.pl-nodes {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.pl-nodes-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+.pl-sub-label {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.pl-nodes-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.pl-nodes-row input[type='checkbox'] {
+  cursor: pointer;
+}
+.pl-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.pl-link:hover {
+  text-decoration: underline;
+}
+.pl-warn {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: #f87171;
+}

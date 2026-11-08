@@ -35,41 +35,4 @@ const pillStyle = computed(() => ({
   </div>
 </template>
 
-<style scoped>
-.uu-seg {
-  position: relative;
-  display: flex;
-  padding: 2px;
-  border-radius: 12px;
-  background: var(--fill3);
-  border: 1px solid var(--sep);
-}
-.uu-seg-track {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  border-radius: 10px;
-  background: var(--mat-regular);
-  border: 1px solid var(--border-glass);
-}
-.uu-seg-btn {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 13px;
-  font-weight: 400;
-  font-family: inherit;
-  color: var(--lbl3);
-  text-align: center;
-  white-space: nowrap;
-  transition: color 0.2s;
-}
-.uu-seg-btn--active {
-  font-weight: 600;
-  color: var(--lbl1);
-}
-</style>
+<style scoped src="@/assets/styles/components/user/SegControl.css"></style>

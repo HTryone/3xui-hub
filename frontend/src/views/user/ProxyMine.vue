@@ -221,36 +221,4 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.pm { max-width: 900px; }
-.pm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
-.pm-title { margin: 0 0 4px; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.pm-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
-.pm-card { margin-bottom: var(--space-4); }
-
-.pm-chead { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.pm-name { display: flex; align-items: center; gap: 8px; font-weight: var(--font-bold); font-size: var(--text-base); }
-
-.pm-rows { display: flex; flex-direction: column; gap: 8px; margin-top: var(--space-3); }
-.pm-row { display: flex; align-items: baseline; gap: var(--space-3); font-size: var(--text-sm); }
-.pm-label { flex: 0 0 56px; color: var(--text-muted); font-size: var(--text-sm); }
-.pm-mono { font-family: var(--font-mono); font-size: var(--text-sm); display: inline-flex; align-items: center; gap: 6px; word-break: break-all; }
-.pm-dim { color: var(--text-muted); font-size: var(--text-xs); }
-.pm-copy {
-  border: none; background: transparent; cursor: pointer; color: var(--text-muted);
-  display: inline-flex; align-items: center; padding: 2px;
-}
-.pm-copy:hover { color: var(--accent); }
-
-.pm-bar { display: inline-block; width: 90px; height: 4px; border-radius: 2px; background: var(--bg-hover); margin-left: 8px; vertical-align: middle; overflow: hidden; }
-.pm-bar i { display: block; height: 100%; background: var(--accent); }
-
-.pm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); }
-
-.pm-ips { margin-top: var(--space-3); border-top: 1px dashed var(--border-subtle); padding-top: var(--space-3); }
-.pm-ip-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
-.pm-ip { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-xs); }
-
-.pm-empty { margin: 0; color: var(--text-muted); font-size: var(--text-sm); text-align: center; padding: var(--space-4) 0; }
-.pm-link { color: var(--accent); text-decoration: none; margin-left: 4px; }
-</style>
+<style scoped src="@/assets/styles/pages/user/ProxyMine.css"></style>

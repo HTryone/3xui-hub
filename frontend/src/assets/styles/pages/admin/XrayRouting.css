@@ -1,0 +1,204 @@
+.an-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.an-head-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.an-toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+.an-block {
+  margin-bottom: var(--space-4);
+}
+.an-block-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.an-subtitle {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+  font-weight: var(--font-semibold);
+}
+.an-mb0 {
+  margin-bottom: 0;
+}
+.an-hintbox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+}
+.an-table-wrap {
+  overflow-x: auto;
+}
+
+.an-clip {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.an-target-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+/* 延时列：本身就是按钮（点一下测这条），所以按「可点的小胶囊」做，
+   而不是再塞一个图标按钮把列宽撑开。 */
+.an-latency {
+  min-width: 56px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease-out, ease), color 0.15s var(--ease-out, ease);
+}
+.an-latency:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.an-latency:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.an-latency--ok {
+  border-color: var(--success);
+  color: var(--success);
+}
+.an-latency--fail {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.an-latency--testing {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+.an-preview {
+  margin-top: var(--space-3);
+}
+.an-preview-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.an-preview-toggle:hover {
+  color: var(--text-primary);
+}
+.an-preview-body {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-4);
+  max-height: 320px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre;
+}
+.an-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: var(--space-6);
+  white-space: normal;
+}
+
+.an-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
+@media (max-width: 767px) {
+  .an-grid,
+  .an-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+.an-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.an-textarea {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  resize: vertical;
+}
+.an-muted-sm {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: normal;
+}
+.an-relay-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease-out, ease);
+}
+.an-relay-entry:hover {
+  border-color: var(--accent);
+}
+.an-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.an-result-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
+.an-grid { align-items: start; }
+.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }

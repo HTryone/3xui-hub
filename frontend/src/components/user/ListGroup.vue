@@ -18,30 +18,4 @@ defineProps({
   </div>
 </template>
 
-<style scoped>
-.lg {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.lg-label {
-  margin: 0;
-  padding: 0 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--lbl3);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.lg-card {
-  border-radius: 16px;
-  overflow: hidden;
-}
-.lg-footnote {
-  margin: 0;
-  padding: 0 16px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--lbl3);
-}
-</style>
+<style scoped src="@/assets/styles/components/user/ListGroup.css"></style>

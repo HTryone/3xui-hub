@@ -1,0 +1,400 @@
+.al-wrap {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg-base);
+}
+
+/* ===== 侧栏 ===== */
+.al-sidebar {
+  width: 256px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  /* 侧栏投影：与右侧内容分层，纯边框贴在一起显得平 */
+  box-shadow: 1px 0 3px -1px hsl(240 5.9% 10% / 0.06);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  transition: width 300ms var(--ease-out);
+  overflow: hidden;
+}
+html.dark .al-sidebar {
+  box-shadow: 1px 0 3px -1px hsl(0 0% 0% / 0.4);
+}
+.al-sidebar--collapsed {
+  width: 64px;
+}
+
+.al-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  flex-shrink: 0;
+}
+.al-brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+.al-brand-logo:has(img) {
+  background: transparent;
+}
+/* 收起态：64px 栏里 brand 区内边距收到 8px，logo 维持 32px 不被压缩 */
+.al-sidebar--collapsed .al-brand {
+  padding: var(--space-2);
+  justify-content: center;
+}
+.al-brand-logo--collapsed {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.al-brand-logo-img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+.al-brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.4;
+}
+.al-brand-name {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.al-brand-sub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+/* 搜索框 */
+.al-search {
+  position: relative;
+  padding: 0 var(--space-3) var(--space-2);
+  flex-shrink: 0;
+}
+.al-search-icon {
+  position: absolute;
+  left: calc(var(--space-3) + 10px);
+  top: 8px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.al-search-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3) 0 32px;
+  background: var(--bg-elevated);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+.al-search-input::placeholder {
+  color: var(--text-muted);
+}
+.al-search-input:focus {
+  border-color: var(--border-focus);
+}
+
+/* 导航 */
+/* 侧栏滚动条全部隐藏（菜单超高时仍可滚，只是不显示滚动条） */
+.al-nav, .al-sidebar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.al-nav::-webkit-scrollbar, .al-sidebar::-webkit-scrollbar {
+  display: none;
+}
+.al-nav {
+  flex: 1;
+  padding: 0 var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 子项不许被纵向压扁：展开「设置」10 项后内容超高，
+     若允许压缩，图标/文字会被挤变形（这就是点设置图标缩小的原因） */
+  min-height: 0;
+}
+.al-nav > * {
+  flex-shrink: 0;
+}
+.al-nav :deep(svg) {
+  flex: none;
+}
+.al-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  /* 图标不被 flex 压缩，避免文字长时把 svg 挤扁 */
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.al-sidebar--collapsed .al-nav-item {
+  justify-content: center;
+  padding: var(--space-2);
+  gap: 0;
+}
+.al-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.al-nav-item.router-link-exact-active {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+  /* 左侧 2px 指示条：比纯底色更容易一眼定位当前页 */
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+/* 折叠态没地方显示指示条，改用更明显的底色 */
+.al-sidebar--collapsed .al-nav-item.router-link-exact-active {
+  box-shadow: none;
+}
+.al-nav-item-btn {
+  width: 100%;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.al-nav-item-btn.is-open {
+  color: var(--text-primary);
+}
+/* 当前页所在的组：折叠状态下也要能看出「我在这组里」 */
+.al-nav-item-btn.is-current {
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+}
+.al-nav-arrow {
+  margin-left: auto;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.al-nav-sub {
+  padding-left: 36px;
+}
+.al-nav-sub-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+
+.al-nav-sub-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.al-nav-sub-item.router-link-exact-active {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+}
+/* 收起态：图标放大到 20px 并强制方形，避免 svg 在 flex 里被压扁 */
+/* 收起态（rail）：图标条，居中、无文字、无缩进 */
+.al-sidebar--collapsed .al-nav-rail {
+  justify-content: center;
+  padding: var(--space-2);
+  gap: 0;
+  min-height: 40px;
+}
+/* 图标锁死 20px 且不参与 flex 压缩（不然会被挤扁变形） */
+.al-nav-rail :deep(svg) {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+/* 组与组之间淡分隔线，否则一列图标分不清归属 */
+.al-nav-sep {
+  height: 1px;
+  margin: var(--space-2) var(--space-2);
+  background: var(--border-subtle);
+}
+.al-nav-empty {
+  margin: 0;
+  padding: var(--space-4) var(--space-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* 侧栏底部 */
+.al-sidebar-foot {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+.al-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.al-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ===== 主区 ===== */
+.al-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.al-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* sticky 顶栏的投影：滚动时内容从下方穿过，没有阴影会糊在一起 */
+  box-shadow: 0 1px 3px -1px hsl(240 5.9% 10% / 0.08);
+  backdrop-filter: saturate(180%) blur(8px);
+}
+html.dark .al-header {
+  box-shadow: 0 1px 3px -1px hsl(0 0% 0% / 0.5);
+}
+.al-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.al-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.al-menu-btn {
+  display: none;
+}
+.al-header-title {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.al-header-spacer {
+  flex: 1;
+}
+.al-content {
+  flex: 1;
+  padding: var(--space-4);
+  overflow-x: hidden;
+  min-width: 0;
+}
+.al-overlay {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .al-header {
+    padding: var(--space-4) var(--space-8);
+  }
+  .al-content {
+    padding: var(--space-6) var(--space-8);
+  }
+}
+
+@media (max-width: 767px) {
+  .al-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 900;
+    width: 256px;
+    transform: translateX(-100%);
+    transition: transform var(--duration-base) var(--ease-out);
+  }
+  .al-sidebar--collapsed {
+    width: 256px;
+  }
+  .al-sidebar--open {
+    transform: translateX(0);
+  }
+  /* 移动端抽屉固定 256px：永远展开显示文字，不走 rail 模式 */
+  .al-menu-btn {
+    display: inline-flex;
+  }
+  /* 移动端抽屉不需要「收起侧栏」按钮 */
+  .al-collapse-btn {
+    display: none;
+  }
+  .al-header-collapse {
+    display: none;
+  }
+  .al-logout-label {
+    display: none;
+  }
+  .al-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 800;
+  }
+  /* 窄屏贴边：内容区外层留白收到 0，卡片直接贴屏幕边框。
+     元素内部本来就有 padding，外面再留一圈纯属浪费手机屏幕宽度。 */
+  .al-content {
+    padding: 0;
+  }
+}

@@ -30,41 +30,4 @@ defineProps({
   </div>
 </template>
 
-<style scoped>
-.ch-card {
-  position: relative;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  padding: var(--space-6);
-  box-shadow: var(--shadow-md);
-  color: var(--text-primary);
-  /* 顶部 1px 高光：让卡片在纯白底上也有边界，不只靠边框 */
-  transition: box-shadow var(--duration-base) var(--ease-out),
-              transform var(--duration-base) var(--ease-out),
-              border-color var(--duration-base) var(--ease-out);
-}
-
-.ch-card--flush {
-  padding: 0;
-}
-
-/* 标题区与内容区的间距 */
-.ch-card-header {
-  margin-bottom: var(--space-4);
-}
-
-/* 可点击：悬浮时阴影加深 + 上浮 1px，鼠标移出平滑回落 */
-.ch-card--interactive {
-  cursor: pointer;
-}
-.ch-card--interactive:hover {
-  transform: translateY(-1px);
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-lg);
-}
-.ch-card--interactive:active {
-  transform: translateY(0);
-  box-shadow: var(--shadow-md);
-}
-</style>
+<style scoped src="@/assets/styles/components/ui/Card.css"></style>

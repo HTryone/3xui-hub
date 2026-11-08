@@ -186,7 +186,7 @@ onUnmounted(() => {
       </div>
 
       <div class="st-domains-wrap">
-        <table class="st-domains-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>域名</th>
@@ -233,88 +233,4 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
-.st-title {
-  margin: 0 0 var(--space-5);
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.st-section-title {
-  margin: 0 0 var(--space-3);
-  font-size: var(--text-md);
-  font-weight: var(--font-semibold);
-}
-
-/* 域名管理 */
-.st-domains-add {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  margin-bottom: var(--space-4);
-}
-.st-domains-add .ch-input {
-  max-width: 320px;
-}
-.st-domains-wrap {
-  overflow-x: auto;
-}
-.st-domains-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.st-domains-table th,
-.st-domains-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.st-domains-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.st-domains-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.st-domain-name {
-  font-family: var(--font-mono);
-  font-weight: var(--font-medium);
-}
-.st-dim {
-  color: var(--text-muted);
-}
-.st-domain-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-}
-.st-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: currentColor;
-}
-.st-domain-status.st-status--pending { color: var(--warning); }
-.st-domain-status.st-status--ok { color: var(--success); }
-.st-domain-status.st-status--none { color: var(--text-muted); }
-.st-domain-status.st-status--expiring { color: var(--warning); }
-.st-domain-status.st-status--failed { color: var(--danger); cursor: help; }
-.st-domain-expiry {
-  margin-left: var(--space-2);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-.st-domain-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.st-domain-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/Domains.css"></style>

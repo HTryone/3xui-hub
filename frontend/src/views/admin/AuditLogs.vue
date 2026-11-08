@@ -163,7 +163,7 @@ onMounted(load)
   <div class="al">
     <div class="al-head">
       <div>
-        <h1 class="al-title">操作审计</h1>
+        <h1 class="ch-page-title--mb">操作审计</h1>
         <p class="al-sub">谁在什么时候做了什么、结果如何。历史记录，不自动刷新。</p>
       </div>
       <div class="al-tools">
@@ -194,7 +194,7 @@ onMounted(load)
 
     <Card :padding="false">
       <div class="al-table-wrap">
-        <table class="al-table">
+        <table class="ch-table ch-table--nolasthide">
           <thead>
             <tr>
               <th>时间</th>
@@ -235,10 +235,10 @@ onMounted(load)
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="7" class="al-empty">加载失败：{{ loadError }}</td>
+              <td colspan="7" class="ch-empty">加载失败：{{ loadError }}</td>
             </tr>
             <tr v-else-if="!rows.length && !loading">
-              <td colspan="7" class="al-empty">没有符合条件的记录</td>
+              <td colspan="7" class="ch-empty">没有符合条件的记录</td>
             </tr>
           </tbody>
         </table>
@@ -256,47 +256,4 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.al { max-width: 1280px; }
-.al-head {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: var(--space-3); margin-bottom: var(--space-4); flex-wrap: wrap;
-}
-.al-title { margin: 0 0 4px; font-size: var(--text-xl); font-weight: var(--font-bold); }
-.al-sub { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
-.al-tools { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.al-sel { width: 120px; }
-/* 二级筛选的选项文案更长（「3x-ui 写回失败」），单开一档宽度 */
-.al-sel-action { width: 150px; }
-.al-search { width: 220px; }
-.al-note {
-  margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3);
-  font-size: var(--text-xs); color: var(--text-muted);
-  background: var(--bg-hover); border-radius: var(--radius-sm);
-}
-
-/* 漂移 / 写回失败这类「要人看」的行：左侧色条 + 淡底，扫一眼就能从系统事件里挑出来。
-   颜色只作辅助，方向另有角标（.al-type-cell 里的 Badge），不靠颜色单独表意。 */
-.al-table tbody tr.al-row-danger { background: var(--danger-muted); }
-.al-table tbody tr.al-row-warning { background: var(--warning-muted); }
-.al-table tbody tr.al-row-danger td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
-.al-table tbody tr.al-row-warning td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
-.al-type-cell { display: inline-flex; align-items: center; gap: var(--space-1); }
-
-.al-table-wrap { overflow-x: auto; }
-.al-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-.al-table th, .al-table td {
-  padding: var(--space-3) var(--space-4); text-align: left;
-  border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
-}
-.al-table th { color: var(--text-muted); font-weight: var(--font-medium); font-size: var(--text-xs); }
-.al-table tbody tr:hover { background: var(--bg-hover); }
-/* 报错列：给足宽度 + 允许折行。与用户列表同款口径 —— 列宽由这一列自己定，
-   屏幕放不下时整表横向滚动（.al-table-wrap 已 overflow-x:auto），
-   不再用 max-width:320px 把长报错挤成竖排。 */
-.al-table td.al-err-cell { width: 420px; min-width: 420px; max-width: 480px; white-space: normal; }
-.al-table td.al-action-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
-.al-path { color: var(--text-muted); font-size: var(--text-xs); margin-left: 6px; }
-.al-dim { color: var(--text-muted); }
-.al-empty { text-align: center; color: var(--text-muted); padding: var(--space-6); }
-</style>
+<style scoped src="@/assets/styles/pages/admin/AuditLogs.css"></style>

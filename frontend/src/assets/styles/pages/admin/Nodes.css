@@ -1,0 +1,201 @@
+/* 头部按钮组（证书 + 新建服务器） */
+.an-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* ── TLS 证书库弹窗 ── */
+.ac-loading,
+.ac-empty {
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.ac-empty {
+  line-height: 1.7;
+}
+.ac-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.ac-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 12px);
+}
+.ac-row--expired {
+  background: rgba(255, 69, 58, 0.06);
+}
+.ac-row--expired .ac-name {
+  color: var(--text-muted);
+}
+.ac-main {
+  min-width: 0;
+}
+.ac-name {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.ac-meta {
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.ac-actions {
+  flex: none;
+}
+.ac-hint {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.ac-confirm p {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.ac-confirm-warn {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+}
+.an-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.an-table-wrap {
+  overflow-x: auto;
+}
+
+.an-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
+@media (max-width: 767px) {
+  .an-grid,
+  .an-grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
+.an-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.an-panel-url-row {
+  display: flex;
+  gap: var(--space-2);
+}
+.an-panel-url-row :deep(.ch-input) {
+  flex: 1;
+}
+
+.an-probe-btn {
+  align-self: flex-start;
+}
+.an-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.an-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.an-checkbox-item input[type="checkbox"] {
+  cursor: pointer;
+}
+.an-muted {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.an-metrics {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.an-cmd {
+  width: 100%;
+  padding: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  resize: vertical;
+}
+/* 密钥行：输入框占满剩余宽度，复制按钮固定宽度不换行 */
+.an-secret {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.an-secret > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.an-xray-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+/* agent 有新版的提示行：文字 + 按钮并排，随内容换行 */
+.an-agent-upgrade {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+/* 系统调优（BBR）：四项状态 + 「开启 BBR」按钮同排，窄屏换行 */
+.an-bbr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
+.an-grid { align-items: start; }
+.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }

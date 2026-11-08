@@ -1,0 +1,170 @@
+.sub-settings-title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  margin-bottom: var(--space-4);
+}
+.sub-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.sub-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.sub-settings-section-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  margin: 0;
+}
+.sub-settings-section-desc {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0;
+}
+.sub-settings-formats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.sub-settings-format-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.sub-settings-format-card:hover {
+  border-color: var(--accent);
+}
+.sub-settings-format-card--active {
+  border-color: var(--accent);
+}
+.sub-settings-format-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* clash.png / singbox.svg 都是深色图形，必须恒定白底才可见
+     （激活态改底色会把深色 logo 糊成一团黑） */
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+.sub-settings-format-img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+.sub-settings-format-card--active .sub-settings-format-icon {
+  border-color: var(--accent);
+}
+.sub-settings-format-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sub-settings-format-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+}
+.sub-settings-format-desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.sub-settings-toggle {
+  width: 44px;
+  height: 24px;
+  background: var(--switch-off);
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s;
+}
+.sub-settings-toggle--on {
+  background: var(--switch-on);
+}
+.sub-settings-toggle-knob {
+  width: 20px;
+  height: 20px;
+  background: var(--switch-knob);
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.sub-settings-toggle--on .sub-settings-toggle-knob {
+  transform: translateX(20px);
+}
+.sub-settings-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.sub-settings-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.sub-settings-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.sub-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.sub-settings-field-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0;
+}
+.sub-settings-rename {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.sub-settings-field-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+.sub-settings-textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  padding: 10px 14px;
+  outline: none;
+  resize: vertical;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.sub-settings-textarea::placeholder {
+  color: var(--text-muted);
+}
+.sub-settings-textarea:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--glow-accent);
+}
+.sub-settings-actions {
+  padding-top: var(--space-2);
+}

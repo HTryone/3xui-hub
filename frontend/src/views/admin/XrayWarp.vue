@@ -128,9 +128,9 @@ const saveRotate = async () => {
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">xray WARP</h1>
+      <h1 class="ch-page-title">xray WARP</h1>
     </div>
-    <p class="an-desc">
+    <p class="ch-desc">
       给节点加一个 Cloudflare WARP 出口：注册并应用（自动生成 wireguard 出站）→ 在「路由」里把需要的流量导向 <b>warp</b> 出站。
     </p>
 
@@ -139,7 +139,7 @@ const saveRotate = async () => {
     </div>
 
     <Card v-if="nodeId" :padding="true">
-      <div v-if="loading" class="an-empty">加载中…</div>
+      <div v-if="loading" class="ch-empty">加载中…</div>
       <div v-else-if="state" class="an-warp">
         <div class="an-warp-rows">
           <div class="an-warp-row">
@@ -202,95 +202,9 @@ const saveRotate = async () => {
           </div>
         </div>
       </div>
-      <div v-else class="an-empty">加载失败</div>
+      <div v-else class="ch-empty">加载失败</div>
     </Card>
   </div>
 </template>
 
-<style scoped>
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-desc {
-  margin: 0 0 var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.an-toolbar {
-  display: flex;
-  align-items: center;
-  margin-bottom: var(--space-3);
-}
-.an-warp {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.an-warp-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.an-warp-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  font-size: var(--text-sm);
-}
-.an-warp-row > span:first-child {
-  width: 120px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-.an-warp-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-.an-warp-settings {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-subtle);
-}
-/* 窄屏（手机）：WARP 设置两列压得太窄，单列显示。 */
-@media (max-width: 767px) {
-  .an-warp-settings {
-    grid-template-columns: 1fr;
-  }
-}
-.an-setting {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.an-setting-label {
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-}
-.an-setting-row {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-.an-setting-row :deep(.ch-input),
-.an-setting-row :deep(.ch-select) {
-  flex: 1;
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/XrayWarp.css"></style>

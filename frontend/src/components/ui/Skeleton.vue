@@ -19,44 +19,4 @@ defineProps({
   </div>
 </template>
 
-<style scoped>
-.skel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4);
-}
-.skel-row {
-  width: 100%;
-}
-.skel-bar {
-  display: block;
-  height: 100%;
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  position: relative;
-  overflow: hidden;
-}
-/* 扫光：一道高光从左扫到右，周期 1.4s，只动 transform */
-.skel-bar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent 20%, var(--bg-hover) 50%, transparent 80%);
-  transform: translateX(-100%);
-  animation: skel-shine 1.4s var(--ease-out) infinite;
-}
-.skel--static .skel-bar::after {
-  display: none;
-}
-@keyframes skel-shine {
-  100% {
-    transform: translateX(100%);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .skel-bar::after {
-    animation: none;
-  }
-}
-</style>
+<style scoped src="@/assets/styles/components/ui/Skeleton.css"></style>

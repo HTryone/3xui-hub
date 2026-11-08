@@ -61,32 +61,4 @@ const switchTab = (key) => {
   </div>
 </template>
 
-<style scoped>
-.xa-tabs {
-  display: flex;
-  gap: 4px;
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.xa-tab {
-  padding: 8px 16px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
-}
-.xa-tab:hover {
-  color: var(--text-primary);
-}
-.xa-tab.is-active {
-  color: var(--text-primary);
-  border-bottom-color: var(--accent);
-  font-weight: var(--font-medium);
-}
-</style>
+<style scoped src="@/assets/styles/pages/admin/XrayAdvanced.css"></style>

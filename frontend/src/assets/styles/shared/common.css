@@ -1,0 +1,16 @@
+/* 跨页公共类：由各页重复的表单/字段/空状态/标题/操作区规则合并而来。
+   这些类在模板里直接使用（全局，非 scoped）。 */
+
+.ch-empty { text-align: center; color: var(--text-muted); padding: var(--space-6); }
+.ch-empty-sm { text-align: center; color: var(--text-muted); font-size: var(--text-sm); padding: var(--space-6); }
+.ch-page-title { margin: 0; font-size: var(--text-xl); font-weight: var(--font-bold); }
+.ch-page-title--mb { margin: 0 0 4px; font-size: var(--text-xl); font-weight: var(--font-bold); }
+.ch-page-title-semi { font-size: var(--text-xl); font-weight: var(--font-semibold); margin-bottom: var(--space-5); }
+.ch-form { display: flex; flex-direction: column; gap: var(--space-3); }
+.ch-field { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); color: var(--text-secondary); }
+.ch-field-6 { display: flex; flex-direction: column; gap: 6px; }
+.ch-field-row { flex-direction: row; align-items: center; }
+.ch-check-row { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
+.ch-actions { display: flex; gap: var(--space-1); }
+.ch-actions-4 { display: flex; align-items: center; gap: 4px; }
+.ch-desc { margin: 0 0 var(--space-3); color: var(--text-muted); font-size: var(--text-sm); }

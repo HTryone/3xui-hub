@@ -1,0 +1,101 @@
+/* 背景与用户端登录页一致：浅灰底 + 蓝/紫两个模糊光晕 */
+.al-login {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--space-6);
+  overflow: hidden;
+  background: #fafafa;
+}
+.login-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.login-bg-circle {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.15;
+}
+.login-bg-circle--1 {
+  width: 400px;
+  height: 400px;
+  background: #2563eb;
+  top: -100px;
+  right: -100px;
+}
+.login-bg-circle--2 {
+  width: 300px;
+  height: 300px;
+  background: #7c3aed;
+  bottom: -80px;
+  left: -80px;
+}
+.al-login :deep(.ch-card) {
+  width: 100%;
+  max-width: 420px;
+  position: relative;
+  z-index: 1;
+}
+.al-login-head {
+  text-align: center;
+  margin-bottom: var(--space-5);
+}
+.al-login-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-muted);
+  color: var(--accent);
+  margin-bottom: var(--space-3);
+}
+.al-login-logo:has(img) {
+  background: transparent;
+}
+.al-login-logo-img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: var(--radius-lg);
+}
+.al-login-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+}
+.al-login-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.al-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.al-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-top: var(--space-2);
+}
+.al-login-btn {
+  margin-top: var(--space-4);
+  width: 100%;
+}
+
+/* 暗色模式：与用户端登录页一致 */
+html.dark .al-login {
+  background: #0a0a0a;
+}
+html.dark .login-bg-circle--1 {
+  opacity: 0.08;
+}
+html.dark .login-bg-circle--2 {
+  opacity: 0.08;
+}

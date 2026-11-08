@@ -500,7 +500,7 @@ onActivated(load)
 <template>
   <div class="an">
     <div class="an-head">
-      <h1 class="an-title">节点服务器</h1>
+      <h1 class="ch-page-title">节点服务器</h1>
       <div class="an-head-actions">
         <Button variant="secondary" size="sm" @click="openCerts">
           <Icon name="key" :size="16" /> 证书
@@ -511,7 +511,7 @@ onActivated(load)
 
     <Card padding="false">
       <div class="an-table-wrap">
-        <table class="an-table">
+        <table class="ch-table">
           <thead>
             <tr>
               <th>名称</th>
@@ -557,7 +557,7 @@ onActivated(load)
               <td class="mono">{{ n.inbounds?.trojan?.join(', ') || '—' }}</td>
               <td class="mono">{{ n.inbounds?.hysteria?.join(', ') || '—' }}</td>
               <td>
-                <div class="an-actions">
+                <div class="ch-actions">
                   <Button variant="ghost" size="sm" :loading="testingId === n.id" @click="test(n)"><Icon name="activity" :size="14" /></Button>
                   <Button variant="ghost" size="sm" @click="openEdit(n)"><Icon name="edit" :size="14" /></Button>
                   <Button variant="ghost" size="sm" @click="remove(n)"><Icon name="trash" :size="14" /></Button>
@@ -565,13 +565,13 @@ onActivated(load)
               </td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="8" class="an-empty">
+              <td colspan="8" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!nodes.length">
-              <td colspan="8" class="an-empty">
+              <td colspan="8" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>暂无服务器</template>
               </td>
@@ -591,7 +591,7 @@ onActivated(load)
     />
 
     <Modal v-model="modalOpen" :title="editing ? '编辑服务器' : '新建服务器'" width="560px">
-      <div class="an-form">
+      <div class="ch-form">
         <div class="an-grid">
           <label class="an-field">
             <span>服务器类型</span>
@@ -748,13 +748,13 @@ onActivated(load)
           <Button variant="secondary" size="sm" :loading="probing" class="an-probe-btn" @click="fetchInbounds">
             <Icon name="refresh" :size="14" /> 拉取入站列表
           </Button>
-          <label class="an-field an-field-row">
+          <label class="an-field ch-field-row">
             <input v-model="form.verify_ssl" type="checkbox" />
             <span>校验 SSL 证书（自签/证书链不全时关闭）</span>
           </label>
         </template>
 
-        <label class="an-field an-field-row">
+        <label class="an-field ch-field-row">
           <input v-model="form.enabled" type="checkbox" />
           <span>启用</span>
         </label>
@@ -828,247 +828,4 @@ onActivated(load)
   </div>
 </template>
 
-<style scoped>
-/* 头部按钮组（证书 + 新建服务器） */
-.an-head-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-/* ── TLS 证书库弹窗 ── */
-.ac-loading,
-.ac-empty {
-  padding: var(--space-5);
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-.ac-empty {
-  line-height: 1.7;
-}
-.ac-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-height: 46vh;
-  overflow-y: auto;
-}
-.ac-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg, 12px);
-}
-.ac-row--expired {
-  background: rgba(255, 69, 58, 0.06);
-}
-.ac-row--expired .ac-name {
-  color: var(--text-muted);
-}
-.ac-main {
-  min-width: 0;
-}
-.ac-name {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-.ac-meta {
-  margin: 4px 0 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-}
-.ac-actions {
-  flex: none;
-}
-.ac-hint {
-  margin: var(--space-3) 0 0;
-  font-size: var(--text-xs);
-  line-height: 1.7;
-  color: var(--text-muted);
-}
-.ac-confirm p {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-sm);
-}
-.ac-confirm-warn {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  line-height: 1.7;
-}
-.an-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-4);
-}
-.an-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--font-bold);
-}
-.an-table-wrap {
-  overflow-x: auto;
-}
-.an-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-.an-table th,
-.an-table td {
-  padding: var(--space-3) var(--space-4);
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-.an-table th {
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-}
-.an-table tbody tr:hover {
-  background: var(--bg-hover);
-}
-.an-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.an-empty {
-  text-align: center;
-  color: var(--text-muted);
-  padding: var(--space-6);
-}
-.an-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.an-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-/* 窄屏（手机）：表单两列并排会把控件压到只剩几十像素，一律单列。 */
-@media (max-width: 767px) {
-  .an-grid,
-  .an-grid-3 {
-    grid-template-columns: 1fr;
-  }
-}
-.an-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.an-panel-url-row {
-  display: flex;
-  gap: var(--space-2);
-}
-.an-panel-url-row :deep(.ch-input) {
-  flex: 1;
-}
-.an-field-row {
-  flex-direction: row;
-  align-items: center;
-}
-
-.an-probe-btn {
-  align-self: flex-start;
-}
-.an-checkbox-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-height: 200px;
-  overflow-y: auto;
-  padding: var(--space-2);
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.an-checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-.an-checkbox-item input[type="checkbox"] {
-  cursor: pointer;
-}
-.an-muted {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-.an-metrics {
-  margin-top: 2px;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.an-cmd {
-  width: 100%;
-  padding: var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  resize: vertical;
-}
-/* 密钥行：输入框占满剩余宽度，复制按钮固定宽度不换行 */
-.an-secret {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.an-secret > :first-child {
-  flex: 1;
-  min-width: 0;
-}
-.an-xray-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-/* agent 有新版的提示行：文字 + 按钮并排，随内容换行 */
-.an-agent-upgrade {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-/* 系统调优（BBR）：四项状态 + 「开启 BBR」按钮同排，窄屏换行 */
-.an-bbr {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-
-/* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
-.an-grid { align-items: start; }
-.an-grid > .an-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
-</style>
+<style scoped src="@/assets/styles/pages/admin/Nodes.css"></style>

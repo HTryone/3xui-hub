@@ -1,0 +1,33 @@
+.ord-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+}
+.ord-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ord-search {
+  width: 220px;
+}
+.ord-type {
+  width: 130px;
+}
+
+.ord-table-wrap {
+  overflow-x: auto;
+}
+.ord-no {
+  font-size: var(--text-xs);
+}
+.ord-amount {
+  font-weight: var(--font-medium);
+  color: var(--accent);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}

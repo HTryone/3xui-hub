@@ -1,0 +1,226 @@
+.more {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-bottom: 8px;
+}
+
+/* ===== 资料卡 ===== */
+.mp {
+  border-radius: 24px;
+  overflow: hidden;
+}
+.mp-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: linear-gradient(135deg, rgba(10, 132, 255, 0.18) 0%, transparent 60%);
+}
+.mp-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  flex-shrink: 0;
+}
+.mp-id {
+  flex: 1;
+  min-width: 0;
+}
+.mp-email {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--lbl1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* 重置订阅入口：占整行、弱化样式（低频且危险的操作，不做成主按钮） */
+.mp-reset-row {
+  border-top: 1px solid var(--sep);
+  padding: 10px 14px;
+}
+.mp-reset-btn {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--lbl3);
+  font-size: 13px;
+  cursor: pointer;
+}
+.mp-reset-btn:hover {
+  background: var(--sep);
+  color: var(--lbl2);
+}
+
+/* ===== 重置订阅弹层 ===== */
+.mp-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mp-sheet-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--red-t, rgba(255, 69, 58, 0.12));
+  color: var(--lbl1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mp-sheet-ok {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--lbl2);
+}
+.mp-sheet-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--lbl2);
+}
+.mp-sheet-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--lbl3);
+}
+.mp-sheet-err {
+  margin: 0;
+  font-size: 13px;
+  color: var(--red, #ff453a);
+}
+/* 每个订阅格式一行：左侧名称 + 右侧复制按钮 */
+.mp-sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mp-sub-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--sep);
+}
+.mp-sub-meta {
+  min-width: 0;
+}
+.mp-sub-label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--lbl1);
+}
+.mp-sub-hint {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--lbl3);
+}
+.mp-sub-copy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--blue, #0a84ff);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mp-sub-copy--ok {
+  background: var(--green, #30d158);
+}
+/* 弹层底部按钮 */
+.mp-btn {
+  flex: 1;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mp-btn:disabled {
+  opacity: 0.6;
+}
+.mp-btn--ghost {
+  background: var(--sep);
+  color: var(--lbl2);
+}
+.mp-btn--danger {
+  background: var(--red, #ff453a);
+  color: #fff;
+}
+.mp-btn--primary {
+  background: var(--blue, #0a84ff);
+  color: #fff;
+}
+
+/* ===== 主题开关 ===== */
+.mp-switch {
+  display: flex;
+  align-items: center;
+  width: 48px;
+  height: 28px;
+  padding: 2px 3px;
+  border-radius: 999px;
+  background: var(--blue);
+  justify-content: flex-start;
+  pointer-events: none;
+}
+.mp-switch--on {
+  justify-content: flex-end;
+}
+.mp-switch-knob {
+  width: 23px;
+  height: 23px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+@media (max-width: 480px) {
+  .mp-head {
+    flex-wrap: wrap;
+  }
+}
