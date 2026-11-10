@@ -12,6 +12,7 @@ import UserIcon from "@/components/user/UserIcon.vue";
 import SegControl from "@/components/user/SegControl.vue";
 import QrSheet from "@/components/user/QrSheet.vue";
 import BottomSheet from "@/components/user/BottomSheet.vue";
+import { beginPayWindow, gotoPay, cancelPayWindow } from "@/utils/paywindow";
 
 const auth = useAuthStore();
 const toast = useToast();
@@ -435,6 +436,9 @@ const openReset = async () => {
 };
 
 const createResetOrder = async () => {
+  // iOS Safari 会在「await 之后」拦截 window.open：先同步占住窗口再发请求（非 iOS 不占）
+  const payWin = beginPayWindow();
+  let opened = false;
   creatingReset.value = true;
   try {
     const result = await userApi.createResetOrder(resetPayment.value);
@@ -446,13 +450,15 @@ const createResetOrder = async () => {
     }
     if (result.pay_url) {
       resetOpen.value = false;
-      window.open(result.pay_url, "_blank");
+      gotoPay(payWin, result.pay_url);
+      opened = true;
       toast.success("订单已创建，请完成支付");
       if (result.order_no) startPolling(result.order_no);
     }
   } catch (e) {
     toast.error(e.message || "创建订单失败");
   } finally {
+    if (!opened) cancelPayWindow(payWin);
     creatingReset.value = false;
   }
 };

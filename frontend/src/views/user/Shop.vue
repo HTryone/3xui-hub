@@ -12,6 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 import { userApi } from '@/api/user'
 import { useToast } from '@/components/ui/Toast.vue'
 import { formatYuan } from '@/utils/money'
+import { beginPayWindow, gotoPay, cancelPayWindow } from '@/utils/paywindow'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -126,7 +127,10 @@ const balanceEnough = computed(() => balanceCents.value >= balanceNeededCents.va
 const createOrder = async () => {
   if (!selectedPlan.value) { toast.error('请选择套餐'); return }
   if (isBalancePay.value && !balanceEnough.value) { toast.error('余额不足，请先充值'); return }
+  // iOS Safari 会在「await 之后」拦截 window.open：先同步占住窗口再发请求（非 iOS 不占，行为不变）
+  const payWin = beginPayWindow()
   creatingOrder.value = true
+  let opened = false
   try {
     const code = discountCode.value.trim()
     const result = isBalancePay.value
@@ -142,7 +146,8 @@ const createOrder = async () => {
     }
     if (result.pay_url) {
       buyModalOpen.value = false
-      window.open(result.pay_url, '_blank')
+      gotoPay(payWin, result.pay_url)
+      opened = true
       toast.success('订单已创建，请完成支付')
       pollingOrder.value = result.order_no
       startPolling(result.order_no)
@@ -150,6 +155,7 @@ const createOrder = async () => {
   } catch (e) {
     toast.error(e.message || '创建订单失败')
   } finally {
+    if (!opened) cancelPayWindow(payWin) // 没出支付链接/已支付直返：关掉预占的空白页
     creatingOrder.value = false
   }
 }

@@ -17,6 +17,7 @@ import Modal from '@/components/ui/Modal.vue'
 import Icon from '@/components/ui/Icon.vue'
 import { userApi } from '@/api/user'
 import { useToast } from '@/components/ui/Toast.vue'
+import { beginPayWindow, gotoPay, cancelPayWindow } from '@/utils/paywindow'
 
 const router = useRouter()
 const toast = useToast()
@@ -63,7 +64,10 @@ const doBuy = async () => {
     toast.error('请选择支付方式')
     return
   }
+  // iOS Safari 会在「await 之后」拦截 window.open：先同步占住窗口再发请求（非 iOS 不占）
+  const payWin = beginPayWindow()
   buying.value = true
+  let opened = false
   try {
     const result = await userApi.createProxyOrder(selectedSku.value.id, selectedPayment.value)
     if (result.status === 'paid') {
@@ -74,7 +78,8 @@ const doBuy = async () => {
     }
     if (result.pay_url) {
       buyOpen.value = false
-      window.open(result.pay_url, '_blank')
+      gotoPay(payWin, result.pay_url)
+      opened = true
       toast.success('订单已创建，请在收银台完成支付')
       startPolling(result.order_no)
     } else {
@@ -83,6 +88,7 @@ const doBuy = async () => {
   } catch (e) {
     toast.error(e.message || '下单失败')
   } finally {
+    if (!opened) cancelPayWindow(payWin)
     buying.value = false
   }
 }

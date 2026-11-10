@@ -18,6 +18,7 @@ import BottomSheet from '@/components/user/BottomSheet.vue'
 import { userApi } from '@/api/user'
 import { useToast } from '@/components/ui/Toast.vue'
 import { centsToYuan, yuanToCents, formatYuan } from '@/utils/money'
+import { beginPayWindow, gotoPay, cancelPayWindow } from '@/utils/paywindow'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -144,7 +145,10 @@ const submit = async () => {
   }
   if (waiting.value) return
 
+  // iOS Safari 会在「await 之后」拦截 window.open：先同步占住窗口再发请求（非 iOS 不占，行为不变）
+  const payWin = beginPayWindow()
   submitting.value = true
+  let opened = false
   try {
     const res = await userApi.createRechargeOrder(cents, methodId.value)
     if (!res?.pay_url) {
@@ -152,7 +156,8 @@ const submit = async () => {
       return
     }
     payUrl.value = res.pay_url
-    window.open(res.pay_url, '_blank')
+    gotoPay(payWin, res.pay_url)
+    opened = true
     toast.success('订单已创建，请在支付页完成付款')
     waiting.value = true
     pollCount = 0
@@ -160,6 +165,7 @@ const submit = async () => {
   } catch (e) {
     toast.error(e.message || '创建充值订单失败')
   } finally {
+    if (!opened) cancelPayWindow(payWin) // 没出链接 / 出错：关掉预占的空白页
     submitting.value = false
   }
 }

@@ -24,6 +24,22 @@
   border-bottom: none;
 }
 
+/* 未过期（待支付）的订单：可点击继续支付，给出手型指针与轻微按压反馈 */
+.od-row--payable {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.od-row--payable:active {
+  opacity: 0.6;
+}
+
+.od-pay-hint {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .od-main {
   flex: 1;
   min-width: 0;
