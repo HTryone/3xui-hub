@@ -21,6 +21,16 @@ type fakePaymentStore struct {
 	marked   []uint64 // MarkOrderPaid 的订单 id
 	enableds []bool
 	created  []NewOrderInput
+	payURLs  map[uint64]string // SetOrderPayURL 的记录
+}
+
+// SetOrderPayURL 记录缓存的支付链接（下单后落 orders.pay_url）。
+func (f *fakePaymentStore) SetOrderPayURL(_ context.Context, id uint64, payURL string) error {
+	if f.payURLs == nil {
+		f.payURLs = map[uint64]string{}
+	}
+	f.payURLs[id] = payURL
+	return nil
 }
 
 func (f *fakePaymentStore) PlanForPayment(_ context.Context, id uint64) (*PlanRow, error) {

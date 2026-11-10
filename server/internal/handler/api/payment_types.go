@@ -98,7 +98,11 @@ type Order struct {
 	TradeNo         sql.NullString
 	PaidAt          sql.NullTime
 	PayIP           sql.NullString
-	CreatedAt       time.Time
+	// PayURL 是下单时网关返回的支付链接，缓存进 orders.pay_url。用户点「我的订单」里
+	// 未过期订单继续支付时直接用这个链接，**不再拿原单号去网关重新下单**（payindex 会把
+	// 同单号判重、导致每次都被作废成「过期」）。订单置 expired/paid 时清空。
+	PayURL    sql.NullString
+	CreatedAt time.Time
 }
 
 // IsProxyOrder 对齐 Order::isProxyOrder()。
@@ -180,6 +184,8 @@ type PaymentStore interface {
 
 	CreateOrder(ctx context.Context, in NewOrderInput) (*Order, error)
 	UpdateOrderStatus(ctx context.Context, id uint64, status string) error
+	// SetOrderPayURL 把下单拿到的支付链接缓存进 orders.pay_url（续付直接复用，不再打网关）。
+	SetOrderPayURL(ctx context.Context, id uint64, payURL string) error
 	// MarkOrderPaid 置 paid + trade_no + paid_at。
 	MarkOrderPaid(ctx context.Context, id uint64, tradeNo sql.NullString, paidAt time.Time) error
 	// AddResetTraffic 加总流量 + 清零月用量（completeResetOrder 的用户侧变更）。

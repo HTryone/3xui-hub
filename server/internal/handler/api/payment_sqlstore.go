@@ -196,7 +196,7 @@ func (s *PaymentSQLStore) PlanForPayment(ctx context.Context, id uint64) (*PlanR
 
 const orderColumns = `id, order_no, user_id, order_type, plan_id, proxy_sku_id, amount,
 	original_amount, discount_code_id, discount_amount, status, payment_config_id,
-	trade_no, paid_at, pay_ip, created_at`
+	trade_no, paid_at, pay_ip, pay_url, created_at`
 
 // scanOrder 兼容「列值与 NULL」（金额/时间用 Null 变体，再转成文本或零值）。
 func scanOrder(row interface{ Scan(...any) error }) (*Order, error) {
@@ -211,7 +211,7 @@ func scanOrder(row interface{ Scan(...any) error }) (*Order, error) {
 	)
 	err := row.Scan(&o.ID, &o.OrderNo, &o.UserID, &orderType, &o.PlanID, &o.ProxySkuID, &amount,
 		&originalAmount, &o.DiscountCodeID, &discountAmount, &status, &o.PaymentConfigID,
-		&o.TradeNo, &o.PaidAt, &o.PayIP, &createdAt)
+		&o.TradeNo, &o.PaidAt, &o.PayIP, &o.PayURL, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,7 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT o.id, o.order_no, o.user_id, o.order_type, o.plan_id, o.proxy_sku_id, o.amount,
 		        o.original_amount, o.discount_code_id, o.discount_amount, o.status,
-		        o.payment_config_id, o.trade_no, o.paid_at, o.pay_ip, o.created_at,
+		        o.payment_config_id, o.trade_no, o.paid_at, o.pay_ip, o.pay_url, o.created_at,
 		        p.name AS plan_name, ps.name AS sku_name
 		 FROM orders o
 		 LEFT JOIN plans p ON p.id = o.plan_id
@@ -328,7 +328,7 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 		)
 		if err := rows.Scan(&row.ID, &row.OrderNo, &row.UserID, &orderType, &row.PlanID, &row.ProxySkuID,
 			&amount, &originalAmount, &row.DiscountCodeID, &discountAmount, &status,
-			&row.PaymentConfigID, &row.TradeNo, &row.PaidAt, &row.PayIP, &createdAt,
+			&row.PaymentConfigID, &row.TradeNo, &row.PaidAt, &row.PayIP, &row.PayURL, &createdAt,
 			&row.PlanName, &row.ProxySkuName); err != nil {
 			return nil, err
 		}
@@ -389,15 +389,33 @@ func (s *PaymentSQLStore) orderByID(ctx context.Context, id uint64) (*Order, err
 }
 
 func (s *PaymentSQLStore) UpdateOrderStatus(ctx context.Context, id uint64, status string) error {
+	now := time.Now().UTC().Truncate(time.Second)
+	// 作废（expired）时同步清空缓存的下单链接：不给「已过期」订单留一个可能还在的旧链接
+	// （用户所说「过期就自动删除对应的缓存」）。其它状态流转不动 pay_url。
+	if status == "expired" {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE orders SET status = ?, pay_url = NULL, updated_at = ? WHERE id = ?`,
+			status, now, id)
+		return err
+	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE orders SET status = ?, updated_at = ? WHERE id = ?`,
-		status, time.Now().UTC().Truncate(time.Second), id)
+		status, now, id)
+	return err
+}
+
+// SetOrderPayURL 缓存下单拿到的支付链接（供「我的订单」续付直接复用，不再打网关）。
+func (s *PaymentSQLStore) SetOrderPayURL(ctx context.Context, id uint64, payURL string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE orders SET pay_url = ?, updated_at = ? WHERE id = ?`,
+		payURL, time.Now().UTC().Truncate(time.Second), id)
 	return err
 }
 
 func (s *PaymentSQLStore) MarkOrderPaid(ctx context.Context, id uint64, tradeNo sql.NullString, paidAt time.Time) error {
+	// 支付成功即清空缓存的支付链接（已 paid 的订单不再需要对用户暴露旧链接）。
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE orders SET status = 'paid', trade_no = ?, paid_at = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE orders SET status = 'paid', trade_no = ?, paid_at = ?, pay_url = NULL, updated_at = ? WHERE id = ?`,
 		tradeNo, paidAt.UTC(), paidAt.UTC(), id)
 	return err
 }

@@ -72,6 +72,8 @@ func (s *PaymentService) CreateRechargeOrder(ctx context.Context, user *User, am
 		// 充值单号每次新生成，不做「网关判重后换单重下」那套（概率极低，逻辑越短越好）。
 		return result, errPayURLMissing
 	}
+	// 缓存支付链接：充值单同理，续付直接复用，不再拿原单号打网关判重。
+	s.cachePayURL(ctx, order.ID, payURL)
 	return result, nil
 }
 

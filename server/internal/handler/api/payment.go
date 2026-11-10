@@ -141,6 +141,7 @@ func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 				h.logf("payment/create 重发旧单异常 order=%s: %v", older.OrderNo, berr)
 			}
 			if payURL != "" {
+				h.svc.CachePayURL(ctx, older.ID, payURL)
 				success(c, jo(
 					"order_no", older.OrderNo,
 					"amount", mustMoney(older.Amount).PHPFloat(),
@@ -499,6 +500,18 @@ func (h *PaymentHandlers) handlePaymentRetry(c *gin.Context) {
 		return
 	}
 
+	// 优先用下单时缓存的支付链接，直接返回 —— 不再拿原单号去网关重新下单。
+	// 这正是「点续付就提示过期」的根因：payindex 等网关会把「同单号再次下单」判重，
+	// 我们据此作废旧单 → 每次续付都变成 expired。缓存命中即绕开网关。
+	if order.PayURL.Valid && order.PayURL.String != "" {
+		success(c, jo(
+			"order_no", order.OrderNo,
+			"pay_url", order.PayURL.String,
+		))
+		return
+	}
+
+	// 没有缓存链接（老订单 / 缓存被清）→ 兜底重新出链接；成功则回填缓存，网关判重才作废。
 	payCfg, cerr := h.svc.configForOrder(c.Request.Context(), order)
 	if cerr != nil || payCfg == nil {
 		fail(c, "支付配置异常", 500)
@@ -523,6 +536,7 @@ func (h *PaymentHandlers) handlePaymentRetry(c *gin.Context) {
 		return
 	}
 
+	h.svc.CachePayURL(c.Request.Context(), order.ID, payURL)
 	success(c, jo(
 		"order_no", order.OrderNo,
 		"pay_url", payURL,

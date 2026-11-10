@@ -128,6 +128,9 @@ func ensureSchema(db *sql.DB) error {
 		{"users", "balance", "bigint NOT NULL DEFAULT 0 COMMENT '账户余额(分)'"},
 		// 兑换码归档到文件夹（对齐优惠码分组）：老库升级时补列，null=未归档。
 		{"giftcards", "folder_id", "bigint unsigned DEFAULT NULL COMMENT '所属文件夹 id，null=未归档'"},
+		// 订单缓存的支付链接：下单时落库，「我的订单」续付直接复用，不再拿原单号去网关
+		// 重新下单（payindex 会把同单号判重 → 每次都被作废成 expired）。过期/支付时清空。
+		{"orders", "pay_url", "varchar(2048) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '缓存的支付链接，过期/支付后清空'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {

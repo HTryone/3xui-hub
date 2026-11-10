@@ -776,9 +776,9 @@ func (r *commandRunner) runOrderExpirePending(ctx context.Context, args map[stri
 			}
 		}
 
-		// 更新状态
+		// 更新状态（同时清空缓存的支付链接：过期订单不再保留续付链接）
 		_, err := r.deps.DB.ExecContext(ctx,
-			"UPDATE orders SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending'",
+			"UPDATE orders SET status = 'expired', pay_url = NULL, updated_at = ? WHERE id = ? AND status = 'pending'",
 			now, o.ID)
 		if err != nil {
 			r.logf("作废订单 #%d 失败: %v", o.ID, err)

@@ -283,7 +283,20 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 		// 控制器口径：pending 但没有链接 → 「获取支付链接失败，请稍后再试」code 500。
 		return result, errPayURLMissing
 	}
+	// 缓存支付链接：用户在「我的订单」点未过期订单续付时直接复用，不再拿原单号打网关判重。
+	s.cachePayURL(ctx, order.ID, result.PayURL)
 	return result, nil
+}
+
+// cachePayURL 把下单拿到的支付链接落库（orders.pay_url）。仅用于「续付直接复用」，
+// 失败只记日志：拿不到链接不影响本次下单返回（链接已随响应给出去了）。
+func (s *PaymentService) cachePayURL(ctx context.Context, orderID uint64, payURL string) {
+	if payURL == "" {
+		return
+	}
+	if err := s.store.SetOrderPayURL(ctx, orderID, payURL); err != nil {
+		s.logf("缓存支付链接失败 order_id=%d: %v", orderID, err)
+	}
 }
 
 // errPayURLMissing 对齐控制器 `empty($result['pay_url']) && status==='pending'` 的分支。
@@ -391,6 +404,11 @@ func (s *PaymentService) generateOrderNo() string {
 // 区分后两类至关重要：网络抖动时用户可能已经扫码在付，作废订单会把钱付到已作废的单上。
 func (s *PaymentService) BuildPayURL(ctx context.Context, cfg *PaymentConfig, order *Order) (payURL, failMsg string, err error) {
 	return s.buildPayURL(ctx, cfg, order)
+}
+
+// CachePayURL 供 handler 在重新出链接后把链接缓存进 orders.pay_url（续付直接复用）。
+func (s *PaymentService) CachePayURL(ctx context.Context, orderID uint64, payURL string) {
+	s.cachePayURL(ctx, orderID, payURL)
 }
 
 func (s *PaymentService) buildPayURL(ctx context.Context, cfg *PaymentConfig, order *Order) (string, string, error) {
@@ -969,6 +987,7 @@ func (s *PaymentService) CreateResetOrder(ctx context.Context, user *User, payme
 		payURL, _, _ = s.buildPayURL(ctx, payCfg, order)
 	}
 
+	s.cachePayURL(ctx, order.ID, payURL)
 	return &CreateResetOrderResult{OrderNo: order.OrderNo, PayURL: payURL, Status: "pending"}, nil
 }
 
