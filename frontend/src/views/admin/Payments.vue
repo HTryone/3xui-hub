@@ -21,6 +21,67 @@ const protocols = ref([])
 const protocolOptions = computed(() => protocols.value.map((p) => ({ label: p.label, value: p.key })))
 const loading = ref(false)
 
+/* ===== 全局设置（只有两项）=====
+ * 1) 订单支付有效期：一个值管所有渠道。订单过期时刻 = 下单时间 + 它；配得比网关长会发死链，故上限 120。
+ *    缺省 5 分钟，与后端 payment.DefaultTTLMinutes 同值。
+ * 2) 允许继续支付：关掉后用户端订单不显示「继续支付」，且后端不缓存、不响应续付（整套关闭）。
+ * （兜底作废任务每小时自动跑，只做低风险扫地，不需要开关。） */
+const ttlMinutes = ref(5)
+const ttlSaving = ref(false)
+const ttlInput = ref('5')
+
+const continuePayEnabled = ref(true)
+const continuePayToggling = ref(false)
+
+const loadSettings = async () => {
+  try {
+    const res = await adminApi.getPaymentSettings()
+    ttlMinutes.value = Number(res?.pay_ttl_minutes ?? 5)
+    ttlInput.value = String(ttlMinutes.value)
+    continuePayEnabled.value = res?.continue_pay_enabled !== false
+  } catch (e) {
+    toast.error('支付设置加载失败')
+  }
+}
+
+const saveSettings = async () => {
+  const n = Number(String(ttlInput.value).trim())
+  if (!Number.isInteger(n) || n < 1 || n > 120) {
+    toast.error('支付有效期需为 1~120 之间的整数（分钟）')
+    return
+  }
+  if (n === ttlMinutes.value) {
+    toast.info('无变更')
+    return
+  }
+  ttlSaving.value = true
+  try {
+    const res = await adminApi.updatePaymentSettings({ pay_ttl_minutes: n })
+    ttlMinutes.value = Number(res?.pay_ttl_minutes ?? n)
+    ttlInput.value = String(ttlMinutes.value)
+    toast.success(`已更新：支付有效期 ${ttlMinutes.value} 分钟`)
+  } catch (e) {
+    toast.error(e.message || '保存失败')
+  } finally {
+    ttlSaving.value = false
+  }
+}
+
+// 开关即时生效（与「自动备份」开关同款交互），不回退成需要点保存
+const toggleContinuePay = async () => {
+  const next = !continuePayEnabled.value
+  continuePayToggling.value = true
+  try {
+    const res = await adminApi.updatePaymentSettings({ continue_pay_enabled: next })
+    continuePayEnabled.value = res?.continue_pay_enabled !== false
+    toast.success(continuePayEnabled.value ? '已允许用户继续支付' : '已关闭：用户端将不显示「继续支付」')
+  } catch (e) {
+    toast.error(e.message || '保存失败')
+  } finally {
+    continuePayToggling.value = false
+  }
+}
+
 const modalOpen = ref(false)
 const editing = ref(null)
 const form = ref({
@@ -241,6 +302,7 @@ const remove = async (p) => {
 onMounted(() => {
   load()
   loadProtocols()
+  loadSettings()
 })
 onActivated(load)
 </script>
@@ -251,6 +313,38 @@ onActivated(load)
       <h1 class="ch-page-title">支付配置</h1>
       <Button variant="primary" size="sm" @click="openCreate"><Icon name="plus" :size="16" /> 新建配置</Button>
     </div>
+
+    <!-- 全局设置：一个值管所有渠道（不分支付方式）；开关在有效期输入框的右侧 -->
+    <Card>
+      <div class="pay-settings">
+        <label class="pay-settings-field">
+          <span>订单支付有效期（分钟）</span>
+          <Input v-model="ttlInput" mono placeholder="5" class="pay-settings-input" />
+        </label>
+        <Button variant="primary" size="sm" :loading="ttlSaving" @click="saveSettings">保存</Button>
+
+        <div class="pay-settings-task">
+          <span class="pay-settings-task-label">允许继续支付</span>
+          <label class="ch-switch" :title="continuePayEnabled ? '点击关闭' : '点击开启'">
+            <input
+              type="checkbox"
+              class="ch-switch-input"
+              :checked="continuePayEnabled"
+              :disabled="continuePayToggling"
+              @change="toggleContinuePay"
+            />
+            <span class="ch-switch-slider"></span>
+          </label>
+        </div>
+
+        <p class="pay-settings-hint">
+          当前 {{ ttlMinutes }} 分钟。下单时按它算出订单的支付截止时间，用户端据此倒计时；
+          <b>不要超过网关支付链接本身的有效期</b>（常见 5 或 10 分钟），否则用户会拿到已失效的链接。
+          <b>「允许继续支付」</b>关掉后，用户端「我的订单」不再显示「继续支付」，后端也不再缓存/响应续付
+          （有的网关链接不支持复用，可据此整套关闭）。
+        </p>
+      </div>
+    </Card>
 
     <Card padding="false">
       <div class="pay-table-wrap">

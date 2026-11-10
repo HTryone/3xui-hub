@@ -198,9 +198,13 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 	useDiscount := in.DiscountCode != "" && discountCode != "" && original.cents > 0
 	reused := false
 
+	// 支付有效期：一个全局值管所有渠道，下单时算成绝对时刻落到订单上（前端按它倒计时）。
+	now := s.now().UTC().Truncate(time.Second)
+	ttl := s.PayTTL(ctx)
+
 	var order *Order
 	if useDiscount {
-		order, reused, err = s.createDiscountedOrder(ctx, in, plan, payCfg, original, discountCode)
+		order, reused, err = s.createDiscountedOrder(ctx, in, plan, payCfg, original, discountCode, now, ttl)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +218,8 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 			Status:          "pending",
 			PaymentConfigID: payCfg.ID,
 			PayIP:           nullStr(in.PayIP),
-			Now:             s.now().UTC().Truncate(time.Second),
+			PayExpiresAt:    PayExpiresAt(now, ttl),
+			Now:             now,
 		})
 		if err != nil {
 			return nil, err
@@ -264,7 +269,8 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 			Status:          "pending",
 			PaymentConfigID: payPayment.ID,
 			PayIP:           nullStr(in.PayIP),
-			Now:             s.now().UTC().Truncate(time.Second),
+			PayExpiresAt:    PayExpiresAt(now, ttl),
+			Now:             now,
 		})
 		if err != nil {
 			return nil, err
@@ -288,10 +294,12 @@ func (s *PaymentService) CreateOrder(ctx context.Context, in PaymentCreateInput)
 	return result, nil
 }
 
-// cachePayURL 把下单拿到的支付链接落库（orders.pay_url）。仅用于「续付直接复用」，
-// 失败只记日志：拿不到链接不影响本次下单返回（链接已随响应给出去了）。
+// cachePayURL 把下单拿到的支付链接落库（orders.pay_url），**仅当「允许继续支付」开着才存**。
+//
+// 这套缓存只为「继续支付」服务：开关关掉时整套逻辑关闭 —— 不缓存、不读写旧链接，
+// 用户端也不展示入口。失败只记日志（不影响本次下单返回，链接已随响应给出去了）。
 func (s *PaymentService) cachePayURL(ctx context.Context, orderID uint64, payURL string) {
-	if payURL == "" {
+	if payURL == "" || !s.ContinuePayEnabled(ctx) {
 		return
 	}
 	if err := s.store.SetOrderPayURL(ctx, orderID, payURL); err != nil {
@@ -305,7 +313,67 @@ var errPayURLMissing = errors.New("获取支付链接失败")
 // IsPayURLMissing 判定「下单成功但没拿到链接」。
 func IsPayURLMissing(err error) bool { return errors.Is(err, errPayURLMissing) }
 
+// ContinuePayEnabled 读「允许用户继续支付」总开关（site_configs，缺省开）。
+//
+// 支付网关能力不一（有的链接一次性、复用即失效），后台可随时关掉：
+// 关掉后用户端订单不展示「继续支付」，接口层也直接拒绝，从根上避免点到死链。
+func (s *PaymentService) ContinuePayEnabled(ctx context.Context) bool {
+	if s.siteConfigs == nil {
+		return true // 未接入配置存储 = 无开关限制（兼容测试/老环境）
+	}
+	values, err := s.siteConfigs.SiteConfigMany(ctx, []string{payment.ContinuePayEnabledKey})
+	if err != nil {
+		return true // 读失败不误伤用户，按开处理
+	}
+	switch strings.ToLower(strings.TrimSpace(values[payment.ContinuePayEnabledKey])) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
+// PayTTL 取全局「订单支付有效期」（一个值管所有渠道），来自 site_configs。
+//
+// 读不到 / 值非法 → 缺省 payment.DefaultTTL()：过期判定不能因为一次配置读取失败
+// 就把用户挡在门外（宁可多给几分钟，也不要误判成过期）。
+func (s *PaymentService) PayTTL(ctx context.Context) time.Duration {
+	if s.siteConfigs == nil {
+		return payment.DefaultTTL()
+	}
+	values, err := s.siteConfigs.SiteConfigMany(ctx, []string{payment.TTLMinutesKey})
+	if err != nil {
+		s.logf("读取支付有效期失败，按缺省 %d 分钟: %v", payment.DefaultTTLMinutes, err)
+		return payment.DefaultTTL()
+	}
+	minutes, ok := payment.ParseTTLMinutes(values[payment.TTLMinutesKey])
+	if !ok {
+		return payment.DefaultTTL()
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// PayExpiresAt 由「下单时刻 + 全局有效期」算出支付链接失效时刻。
+func PayExpiresAt(now time.Time, ttl time.Duration) sql.NullTime {
+	return sql.NullTime{Time: now.Add(ttl), Valid: true}
+}
+
+// EffectivePayExpiresAt 是订单实际生效的支付截止时刻：优先用下单时落库的 pay_expires_at；
+// 老单（本字段上线前）为空 → 按缺省有效期从 created_at 兜底。
+// 列表下发、续付判定、兜底作废三处都以它为准（同一判据，不会各算一套）。
+func EffectivePayExpiresAt(o *Order) time.Time {
+	if o.PayExpiresAt.Valid {
+		return o.PayExpiresAt.Time
+	}
+	return o.CreatedAt.Add(payment.DefaultTTL())
+}
+
+// OrderPayExpired 判定订单的支付窗口是否已过（前端倒计时归零与这里同源）。
+func OrderPayExpired(o *Order, now time.Time) bool {
+	return !now.Before(EffectivePayExpiresAt(o))
+}
+
 // createDiscountedOrder 是带折扣码的建单路径（限流 → 校验 → 复用/新建）。
+// now/ttl 由调用方算好传入：同一笔下单里 created_at 与 pay_expires_at 必须同一时刻起算。
 func (s *PaymentService) createDiscountedOrder(
 	ctx context.Context,
 	in PaymentCreateInput,
@@ -313,6 +381,8 @@ func (s *PaymentService) createDiscountedOrder(
 	payCfg *PaymentConfig,
 	original money,
 	code string,
+	now time.Time,
+	ttl time.Duration,
 ) (*Order, bool, error) {
 	userID := int64(in.User.ID)
 
@@ -336,10 +406,9 @@ func (s *PaymentService) createDiscountedOrder(
 		return nil, false, err
 	}
 
-	// 同一用户已有一笔用同一张码、同一套餐的 pending 单 → 复用那笔，不新建。
-	if applied.ReuseOrder != nil {
-		return applied.ReuseOrder, true, nil
-	}
+	// 不再复用旧单：购买一律新开一单（见 payment_discount.go / 下单入口的说明）。
+	// 折扣码在下单时不占次数（used_count+1 只在支付成功时发生），多开待付单不会烧码；
+	// 不付款的单到期自然作废。旧单链是一次性的，复用只会给到死链。
 
 	discountAmount := money{cents: original.cents - applied.Final.cents}
 	order, err := s.store.CreateOrder(ctx, NewOrderInput{
@@ -353,7 +422,8 @@ func (s *PaymentService) createDiscountedOrder(
 		Status:          "pending",
 		PaymentConfigID: payCfg.ID,
 		PayIP:           nullStr(in.PayIP),
-		Now:             s.now().UTC().Truncate(time.Second),
+		PayExpiresAt:    PayExpiresAt(now, ttl),
+		Now:             now,
 	})
 	if err != nil {
 		return nil, false, err
@@ -939,6 +1009,8 @@ func (s *PaymentService) CreateResetOrder(ctx context.Context, user *User, payme
 	}
 
 	resetPrice := plan.ResetPriceMoney()
+	now := s.now().UTC().Truncate(time.Second)
+	ttl := s.PayTTL(ctx)
 	order, err := s.store.CreateOrder(ctx, NewOrderInput{
 		OrderNo:         "RST" + s.generateOrderNo(),
 		UserID:          user.ID,
@@ -947,7 +1019,8 @@ func (s *PaymentService) CreateResetOrder(ctx context.Context, user *User, payme
 		Status:          "pending",
 		PaymentConfigID: payCfg.ID,
 		PayIP:           nullStr(payIP),
-		Now:             s.now().UTC().Truncate(time.Second),
+		PayExpiresAt:    PayExpiresAt(now, ttl),
+		Now:             now,
 	})
 	if err != nil {
 		return nil, err
@@ -978,7 +1051,8 @@ func (s *PaymentService) CreateResetOrder(ctx context.Context, user *User, payme
 			Status:          "pending",
 			PaymentConfigID: payCfg.ID,
 			PayIP:           nullStr(payIP),
-			Now:             s.now().UTC().Truncate(time.Second),
+			PayExpiresAt:    PayExpiresAt(now, ttl),
+			Now:             now,
 		})
 		if cerr != nil {
 			return nil, cerr

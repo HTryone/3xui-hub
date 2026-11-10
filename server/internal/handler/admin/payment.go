@@ -6,6 +6,7 @@ package admin
 // 协议清单来自 driver/payment.Registry 的 Definition()；新增协议自动出现在清单里。
 
 import (
+	"strconv"
 	"strings"
 
 	"controlhub-server/internal/driver/payment"
@@ -19,11 +20,14 @@ var legacyPaymentColumns = []string{"gateway", "query_gateway", "member_id", "ap
 
 // Register 把支付域路由挂到给定分组（调用方负责 /admin-api 前缀与 admin.auth 中间件）。
 //
-// 顺序逐条对齐 backend/routes/web.php：静态段（/payments/protocols）先于参数段。
+// 顺序逐条对齐 backend/routes/web.php：静态段（/payments/protocols、/payments/settings）
+// 必须先于参数段（/payments/:payment），否则 "settings" 会被当成 id 落到详情路由上。
 func (d *PaymentDomain) Register(r gin.IRouter) {
 	r.GET("/payments", d.paymentIndex)
 	r.POST("/payments", d.paymentStore)
 	r.GET("/payments/protocols", d.paymentProtocols)
+	r.GET("/payments/settings", d.paymentSettingsGet)
+	r.PUT("/payments/settings", d.paymentSettingsUpdate)
 	r.GET("/payments/:payment", d.paymentShow)
 	r.PUT("/payments/:payment", d.paymentUpdate)
 	r.DELETE("/payments/:payment", d.paymentDestroy)
@@ -154,6 +158,98 @@ func (d *PaymentDomain) paymentShow(c *gin.Context) {
 		return
 	}
 	d.success(c, d.present(row, true))
+}
+
+// ---- 全局支付设置（订单支付有效期 + 允许继续支付）----
+
+// paymentSettingsGet 读全局支付设置。未配置 → 回缺省值（页面拿到的永远是可直接编辑的值）。
+//
+// 只有两项：订单支付有效期 + 允许继续支付。
+// （兜底作废任务每小时自动跑，只做低风险扫地，不需要开关暴露给页面。）
+func (d *PaymentDomain) paymentSettingsGet(c *gin.Context) {
+	minutes := payment.DefaultTTLMinutes
+	continuePayEnabled := true // 缺省开（键不存在=开启，老行为不变）
+	if d.settings != nil {
+		keys := []string{payment.TTLMinutesKey, payment.ContinuePayEnabledKey}
+		values, err := d.settings.SiteConfigMany(ctxOf(c), keys)
+		if err != nil {
+			d.failServer(c, "读取支付设置", err)
+			return
+		}
+		if v, ok := payment.ParseTTLMinutes(values[payment.TTLMinutesKey]); ok {
+			minutes = v
+		}
+		continuePayEnabled = !isOffValue(values[payment.ContinuePayEnabledKey])
+	}
+	d.success(c, jo(
+		"pay_ttl_minutes", minutes,
+		"continue_pay_enabled", continuePayEnabled,
+	))
+}
+
+// paymentSettingsUpdate 保存全局支付设置（各字段都是可选的，传哪个改哪个）。
+//
+// 支付有效期校验复用 payment.ParseTTLMinutes —— 与运行时读取同一套判据（存得进就读得出）。
+func (d *PaymentDomain) paymentSettingsUpdate(c *gin.Context) {
+	if d.settings == nil {
+		d.fail(c, "当前实例未接入站点配置存储", 500)
+		return
+	}
+	data := jsonInput(c)
+
+	kv := make([]KV, 0, 2)
+	if raw, ok := data["pay_ttl_minutes"]; ok && raw != nil {
+		text, _ := inputString(raw)
+		minutes, valid := payment.ParseTTLMinutes(text)
+		if !valid {
+			d.fail(c, "支付有效期需为 1~120 之间的整数（分钟）", 400)
+			return
+		}
+		value := strconv.Itoa(minutes)
+		kv = append(kv, KV{Key: payment.TTLMinutesKey, Value: &value})
+	}
+	if raw, ok := data["continue_pay_enabled"]; ok && raw != nil {
+		value := boolConfigValue(inputBool(raw))
+		kv = append(kv, KV{Key: payment.ContinuePayEnabledKey, Value: &value})
+	}
+	if len(kv) == 0 {
+		d.fail(c, "没有需要保存的设置", 400)
+		return
+	}
+	if err := d.settings.SiteConfigSetMany(ctxOf(c), kv); err != nil {
+		d.failServer(c, "保存支付设置", err)
+		return
+	}
+	// 「允许继续支付」被关掉时，整套逻辑关闭：立刻清空所有已缓存的旧支付链接。
+	if raw, ok := data["continue_pay_enabled"]; ok && raw != nil && !inputBool(raw) {
+		if clearer, ok := d.settings.(payURLClearer); ok {
+			if n, cerr := clearer.ClearOrderPayURLs(ctxOf(c)); cerr != nil {
+				d.logger.Printf("admin 清空已缓存支付链接失败: %v", cerr)
+			} else {
+				d.logger.Printf("admin 已关闭继续支付，清空缓存支付链接 %d 条", n)
+			}
+		}
+	}
+	// 回读一次，返回保存后的完整状态（前端据此同步开关与输入框，不自己猜）
+	d.paymentSettingsGet(c)
+}
+
+// isOffValue 判定 site_configs 的「关」值：'0'/'false'/'off'/'no'（忽略大小写），
+// 其余（含键不存在、空串）都算开 —— 与调度器侧 task 包的判据逐字一致。
+func isOffValue(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no":
+		return true
+	}
+	return false
+}
+
+// boolConfigValue 把布尔写成 site_configs 的字面值（'1'/'0'）。
+func boolConfigValue(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 // paymentStore 对齐 POST /admin-api/payments。

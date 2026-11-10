@@ -8,6 +8,8 @@ import (
 	"context"
 	"time"
 
+	"controlhub-server/internal/driver/payment"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,6 +33,10 @@ type OrderRow struct {
 	TradeNo       *string
 	PaidAt        *time.Time
 	CreatedAt     *time.Time
+	// PayExpiresAt 是支付链接失效时刻（下单时按全局支付有效期算好落库）；
+	// 为空的老单按缺省有效期从 CreatedAt 兜底。列表据此**自己算**过期，
+	// 不依赖兜底任务有没有跑过（任务只是低频扫地）。
+	PayExpiresAt *time.Time
 }
 
 // OrderFilter 是列表筛选条件（order_type + search）。
@@ -71,6 +77,13 @@ func presentOrder(o *OrderRow) *jsObj {
 	if o.OrderType != nil {
 		orderType = *o.OrderType
 	}
+	// 支付窗口由我们自己的时钟判定：待支付但已到点 → 按「已过期」展示。
+	// 与用户端、/api/payment/retry 同一套判据（payment.ExpiredAt + payment.DefaultTTL），
+	// 因此不需要靠兜底任务勤跑来对齐显示。
+	status := o.Status
+	if status == "pending" && payWindowClosed(o.CreatedAt, o.PayExpiresAt) {
+		status = "expired"
+	}
 	return jo(
 		"order_no", o.OrderNo,
 		"user_id", o.UserID,
@@ -78,12 +91,24 @@ func presentOrder(o *OrderRow) *jsObj {
 		"plan_name", planName,
 		"order_type", orderType,
 		"amount", phpFloatOf(o.Amount),
-		"status", o.Status,
+		"status", status,
 		"payment_name", payment,
 		"trade_no", nullableStr(o.TradeNo),
 		"paid_at", nullableISO(o.PaidAt),
 		"created_at", nullableISO(o.CreatedAt),
 	)
+}
+
+// payWindowClosed 判定订单的支付窗口是否已过。
+// 有 pay_expires_at 用它（下单时冻结的绝对时刻）；老单为空 → created_at + 缺省有效期。
+func payWindowClosed(createdAt *time.Time, payExpiresAt *time.Time) bool {
+	if payExpiresAt != nil {
+		return !time.Now().Before(*payExpiresAt)
+	}
+	if createdAt == nil {
+		return false
+	}
+	return !time.Now().Before(createdAt.Add(payment.DefaultTTL()))
 }
 
 // orderIndex 对齐 OrderController::index：50/页 + order_type 筛选 + 全表搜索。

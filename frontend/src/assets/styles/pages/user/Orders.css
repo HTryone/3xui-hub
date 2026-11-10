@@ -1,3 +1,22 @@
+/* ============================================================
+   用户端「我的订单」页 · 页面专属样式（对应 views/user/Orders.vue）
+   ------------------------------------------------------------
+   架构依据（见 assets/styles/README.md 硬规矩）：
+     · 单页特有样式放 pages/user/ 下（与 .vue 同名），不塞进 shared/——
+       只有「跨页复用」的类才进 shared/；.od-* 别处不用，故留本文件。
+     · 只用 base/tokens.css 与 base/user-ui.css 的语义变量，**不硬编码颜色**：
+       --lbl1/--lbl2/--lbl3（文字层级）· --sep（分隔线）· --fill3/--fill4（填充）
+       · --blue（用户端主色，仅用于「继续支付」这个动作）· --radius-full（胶囊）
+       · --duration-fast（过渡）
+     · 由 Orders.vue 以 `<style scoped src="@/assets/styles/pages/user/Orders.css">` 引入。
+   ------------------------------------------------------------
+   行布局（定稿）：**两栏**——左「套餐名 + 时间」，右「金额 +（状态徽标 [+ 继续支付]）」。
+     金额/状态靠右对齐：金额是数字、右对齐才好纵向扫读（表格与账单的通行做法）；
+     不做三栏中置——中置会让金额与套餐名脱开、且非待支付行右侧留出幽灵空列，显得别扭。
+     状态徽标与动作按钮同一行、都靠右；只有「待支付」行才有按钮，故不额外增高。
+     手机与电脑同一套布局：网格 `minmax(0,1fr) auto`，左栏可收缩省略，右栏不压缩。
+   ============================================================ */
+
 .od {
   display: flex;
   flex-direction: column;
@@ -13,35 +32,47 @@
   display: flex;
   flex-direction: column;
 }
+
+/* 一行订单：两栏网格。左右 padding + 负 margin 让「整行 hover 高亮」有圆角内缩，
+   分隔线用 ::after 内缩绘制，因此与文字左右对齐，不会顶到卡片边缘。 */
 .od-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--sep);
+  column-gap: 12px;
+  position: relative;
+  margin: 0 -10px;
+  padding: 14px 10px;
+  border-radius: 10px;
+  transition: background-color var(--duration-fast) ease;
 }
-.od-row:last-child {
-  border-bottom: none;
+.od-row::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 1px;
+  background: var(--sep);
+}
+.od-row:last-child::after {
+  content: none;
 }
 
-/* 未过期（待支付）的订单：可点击继续支付，给出手型指针与轻微按压反馈 */
+/* 待支付（未过期）整行可点续付：手机按压反馈 + 电脑 hover 高亮 */
 .od-row--payable {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
+.od-row--payable:hover {
+  background: var(--fill4);
+}
 .od-row--payable:active {
-  opacity: 0.6;
+  background: var(--fill3);
 }
 
-.od-pay-hint {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  white-space: nowrap;
-}
-
+/* ① 左栏：套餐名 + 时间；名字单行省略，不挤压右栏 */
 .od-main {
-  flex: 1;
   min-width: 0;
 }
 .od-plan {
@@ -54,16 +85,17 @@
   white-space: nowrap;
 }
 .od-time {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   font-size: 12px;
   color: var(--lbl3);
 }
 
+/* ② 右栏：金额在上、状态/动作在下，整体靠右、不压缩 */
 .od-side {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .od-amount {
@@ -71,14 +103,55 @@
   font-size: 15px;
   font-weight: 700;
   color: var(--lbl1);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums; /* 等宽数字：多行金额竖向对齐 */
 }
+
+/* 状态行：徽标 [+ 继续支付]，都靠右；窄屏允许换行，不会挤破布局 */
+.od-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* 徽标配色由 Orders.vue 按 status 内联注入（--orange/--green/--red 等 token） */
 .od-badge {
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* 「继续支付」：蓝色描边胶囊 —— 与填充式状态徽标区分开，一眼看出是「可点的动作」 */
+.od-pay-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 9px;
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-full);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.od-pay-btn.is-busy {
+  opacity: 0.55;
+}
+.od-pay-arrow {
+  font-size: 14px;
+  line-height: 1;
+  margin-top: -1px;
+}
+
+/* 倒计时「剩 mm:ss」：等宽数字避免每秒跳动时宽度抖动；用次级文字色，不抢金额/状态 */
+.od-left {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lbl2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .od-empty {

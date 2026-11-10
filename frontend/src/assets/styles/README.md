@@ -46,6 +46,13 @@ src/assets/styles/
 
 ## 硬规矩
 
+> 适用范围：**任何人（含 AI 助手）改前端样式都必须遵守本规范，不接受绕过。**
+> 改任何样式前先读本文件；新增/修改后在 PR/提交说明里注明归类依据。
+
+0. **样式与 `.vue` 分离**：一律抽到 `pages/` 或 `components/` 分类目录，用 `<style scoped src="@/...">` 引入；
+   只有「跨页复用」的类才进 `shared/`，**单页专属样式留在本页 css**（如 `pages/user/Orders.css` 的 `.od-*`）。
+   **颜色/间距/圆角只用 `base/tokens.css` 的语义变量**（`--accent/--lbl1/--fill3/--sep/--radius-*`…），
+   **禁止硬编码 hex/rgba/px 魔法值**（新样式至少复用既有 token，缺变量先在 tokens 里加）。
 1. **加载顺序**：`base/tokens.css` → `base/main.css`（`src/main.js` 已固定），`shared/*` 次之。
 2. **scoped 样式**放对应 `pages/` 或 `components/` 分类目录，用 `<style scoped src="@/...">`；不再写进 `.vue`。
 3. **跨页复用**的样式才进 `shared/`（如 `.ch-table`、`.ch-form`）；单页特有样式留在该页自己的 css。

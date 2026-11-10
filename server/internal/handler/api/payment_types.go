@@ -101,8 +101,13 @@ type Order struct {
 	// PayURL 是下单时网关返回的支付链接，缓存进 orders.pay_url。用户点「我的订单」里
 	// 未过期订单继续支付时直接用这个链接，**不再拿原单号去网关重新下单**（payindex 会把
 	// 同单号判重、导致每次都被作废成「过期」）。订单置 expired/paid 时清空。
-	PayURL    sql.NullString
-	CreatedAt time.Time
+	PayURL sql.NullString
+	// PayExpiresAt 是这笔订单的支付链接失效时刻＝下单时间 + 全局支付有效期
+	// （site_configs.payment_ttl_minutes，键名/缺省/范围见 driver/payment 的 ttl.go）。
+	// 到点即视为过期（前端倒计时与后端判定同源），不再把网关那边已失效的链接发给用户。
+	// 老单（本字段上线前创建）为 NULL，读取时按缺省 TTL 兜底。
+	PayExpiresAt sql.NullTime
+	CreatedAt    time.Time
 }
 
 // IsProxyOrder 对齐 Order::isProxyOrder()。
@@ -172,11 +177,6 @@ type PaymentStore interface {
 	OrderByNo(ctx context.Context, orderNo string) (*Order, error)
 	// PendingOrderCreatedSince 取「该用户 + 该套餐」在 since 之后创建的 pending 单（最早一笔）。
 	PendingOrderCreatedSince(ctx context.Context, userID, planID uint64, since time.Time) (*Order, error)
-	// LatestPendingOrderCreatedBefore 取「该用户 + 该套餐」在 before 之前创建的最后一笔 pending 单。
-	LatestPendingOrderCreatedBefore(ctx context.Context, userID, planID uint64, before time.Time) (*Order, error)
-	// LatestPendingOrderWithCode 取「该用户 + 该套餐 + 该折扣码」最后一笔 pending 单
-	// （对齐 DiscountCodeService::validateAndApply 的复用查询：不带时间条件）。
-	LatestPendingOrderWithCode(ctx context.Context, userID, planID uint64, codeID int64) (*Order, error)
 	// OrderByNoForUser 取属于该用户、指定状态的订单（status 为空表示不限）。
 	OrderByNoForUser(ctx context.Context, userID uint64, orderNo, status string) (*Order, error)
 	// UserOrders 取该用户最近 N 笔订单（按 id 降序，含展示名）。
@@ -252,6 +252,8 @@ type NewOrderInput struct {
 	Status          string
 	PaymentConfigID uint64
 	PayIP           sql.NullString
+	// PayExpiresAt 是下单时按全局支付有效期算好的支付链接失效时刻（orders.pay_expires_at）。
+	PayExpiresAt sql.NullTime
 	// Now 是 created_at/updated_at 的字面值（UTC，与 Laravel now() 一致）。
 	Now time.Time
 }

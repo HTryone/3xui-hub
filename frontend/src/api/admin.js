@@ -124,6 +124,9 @@ export const adminApi = {
   // 支付配置
   listPayments: () => client.get('/admin-api/payments'),
   listPaymentProtocols: () => client.get('/admin-api/payments/protocols'),
+  // 支付域全局设置（当前只有「订单支付有效期」，单位分钟；一个值管所有渠道）
+  getPaymentSettings: () => client.get('/admin-api/payments/settings'),
+  updatePaymentSettings: (data) => client.put('/admin-api/payments/settings', data),
   getPayment: (id) => client.get(`/admin-api/payments/${id}`),
   createPayment: (data) => client.post('/admin-api/payments', data),
   updatePayment: (id, data) => client.put(`/admin-api/payments/${id}`, data),

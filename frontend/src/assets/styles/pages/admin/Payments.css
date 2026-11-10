@@ -48,3 +48,42 @@
 /* 表单栅格对齐：标签统一占两行高度，长标签换行时不会把输入框挤下去 */
 .pay-grid { align-items: start; }
 .pay-grid > .pay-field > span:first-child { display: block; min-height: 2.6em; line-height: 1.35; }
+
+/* ===== 全局支付设置（订单支付有效期）=====
+   一行「标签 + 输入 + 保存」，提示语换行到下面，窄屏自动堆叠。
+   颜色只用语义 token（与全站一致，不硬编码）。 */
+.pay-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.pay-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.pay-settings-input {
+  width: 120px;
+}
+/* 兜底作废任务开关：紧挨在有效期输入框右侧，标签在开关左边，底对齐输入框 */
+.pay-settings-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: 2px;
+}
+.pay-settings-task-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.pay-settings-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.6;
+}

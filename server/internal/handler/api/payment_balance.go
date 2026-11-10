@@ -45,6 +45,7 @@ func (s *PaymentService) CreateRechargeOrder(ctx context.Context, user *User, am
 	}
 
 	amount := money{cents: amountCents}
+	now := s.now().UTC().Truncate(time.Second)
 	order, err := s.store.CreateOrder(ctx, NewOrderInput{
 		OrderNo:         s.generateOrderNo(),
 		UserID:          user.ID,
@@ -54,7 +55,8 @@ func (s *PaymentService) CreateRechargeOrder(ctx context.Context, user *User, am
 		Status:          "pending",
 		PaymentConfigID: payCfg.ID,
 		PayIP:           nullStr(payIP),
-		Now:             s.now().UTC().Truncate(time.Second),
+		PayExpiresAt:    PayExpiresAt(now, s.PayTTL(ctx)),
+		Now:             now,
 	})
 	if err != nil {
 		return nil, err

@@ -613,6 +613,17 @@ func (s *sqlStore) SiteConfigSetMany(ctx context.Context, kv []KV) error {
 	return tx.Commit()
 }
 
+// ClearOrderPayURLs 清空所有订单缓存的支付链接（orders.pay_url 置 NULL），返回影响行数。
+// 「允许继续支付」关掉时用：整套逻辑关闭，不留任何旧链接缓存。
+func (s *sqlStore) ClearOrderPayURLs(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE orders SET pay_url = NULL WHERE pay_url IS NOT NULL")
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ---- 教程 ----
 
 const tutorialColumns = `id, title, category, content, sort, enabled, created_at, updated_at`

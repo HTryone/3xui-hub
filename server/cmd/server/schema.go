@@ -131,6 +131,9 @@ func ensureSchema(db *sql.DB) error {
 		// 订单缓存的支付链接：下单时落库，「我的订单」续付直接复用，不再拿原单号去网关
 		// 重新下单（payindex 会把同单号判重 → 每次都被作废成 expired）。过期/支付时清空。
 		{"orders", "pay_url", "varchar(2048) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '缓存的支付链接，过期/支付后清空'"},
+		// 支付链接失效时刻 = 下单时间 + 全局支付有效期（site_configs.payment_ttl_minutes）。
+		// 由我们自己的时钟判定过期（前端倒计时同源），不再依赖定时任务。老单为 NULL，按缺省 TTL 兜底。
+		{"orders", "pay_expires_at", "datetime DEFAULT NULL COMMENT '支付链接失效时刻（下单时按全局支付有效期算出）'"},
 	}
 	for _, c := range columns {
 		if err := ensureColumn(db, c.table, c.column, c.definition); err != nil {
@@ -152,6 +155,8 @@ func ensureSchema(db *sql.DB) error {
 		{"mail_logs", "mail_logs_created_at_index", "(`created_at`)"},
 		{"node_api_commands", "node_api_commands_status_updated_at_index", "(`status`,`updated_at`)"},
 		{"giftcards", "giftcards_folder_id_index", "(`folder_id`)"},
+		// 兜底作废任务按 (status, pay_expires_at) 扫超时未支付单；没有它就是全表扫。
+		{"orders", "orders_status_pay_expires_at_index", "(`status`,`pay_expires_at`)"},
 	}
 	for _, idx := range indexes {
 		if err := ensureIndex(db, idx.table, idx.name, idx.definition); err != nil {

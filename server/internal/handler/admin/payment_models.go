@@ -46,6 +46,22 @@ type PaymentStore interface {
 	DeletePayment(ctx context.Context, id uint64) error
 }
 
+// PaymentSettings 读写支付域的全局设置（site_configs 单键）。
+//
+// 复用 admin sqlStore 的 SiteConfigMany / SiteConfigSetMany（与自动备份开关同一套），
+// 与 PaymentStore 分开：配置读写的实现方是站点配置存储，不是 payment_configs 表。
+type PaymentSettings interface {
+	SiteConfigMany(ctx context.Context, keys []string) (map[string]string, error)
+	SiteConfigSetMany(ctx context.Context, kv []KV) error
+}
+
+// payURLClearer 是「清空订单缓存支付链接」的可选能力。
+// 用局部接口 + 类型断言接入，而不是塞进 PaymentSettings：避免为了一个开关去扩宽
+// admin.Store 那个大接口（那会牵连所有实现/测试假对象）。
+type payURLClearer interface {
+	ClearOrderPayURLs(ctx context.Context) (int64, error)
+}
+
 // PaymentWrite 是一次落库的完整列（对齐 PHP validateConfig 的 $out）。
 //
 // Legacy 只包含**本次要写**的旧列（键 = 列名）：更新时密文留空不修改 → 该键不出现，
@@ -72,6 +88,8 @@ type PaymentDeps struct {
 	Store PaymentStore
 	// Registry 提供协议定义（protocols 清单 + driver_type 归一化）。
 	Registry *payment.Registry
+	// Settings 读写支付域的全局设置（当前只有「订单支付有效期」）；nil = 用缺省值。
+	Settings PaymentSettings
 	Now      func() time.Time
 	Logger   loggerLike
 }
@@ -80,6 +98,7 @@ type PaymentDeps struct {
 type PaymentDomain struct {
 	store    PaymentStore
 	registry *payment.Registry
+	settings PaymentSettings
 	now      func() time.Time
 	logger   loggerLike
 }
@@ -101,5 +120,5 @@ func NewPaymentDomain(d PaymentDeps) *PaymentDomain {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &PaymentDomain{store: d.Store, registry: reg, now: now, logger: logger}
+	return &PaymentDomain{store: d.Store, registry: reg, settings: d.Settings, now: now, logger: logger}
 }

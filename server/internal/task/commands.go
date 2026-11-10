@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"controlhub-server/internal/driver/payment"
 	"controlhub-server/internal/driver/threexui"
 	"controlhub-server/internal/tgbot"
 )
@@ -708,25 +709,44 @@ func (r *commandRunner) runMonitorRollup(ctx context.Context) error {
 
 // ── 4. order:expire-pending ─────────────────────────────────────────
 
-// runOrderExpirePending 对齐 ExpirePendingOrders::handle()。
-// 作废超时（1 小时）未支付的订单。
+// runOrderExpirePending 作废「支付窗口已过」的订单。
+//
+// ⚠️ 过期时间**不由这个任务决定**：判定是 orders.pay_expires_at（下单时按全局支付有效期
+// 算好的绝对时刻，site_configs.payment_ttl_minutes），用户端倒计时与 /api/payment/retry
+// 都按它实时判，到点即过期、不等任务。本任务只做**兜底落库**：把没人访问、状态还停在
+// pending 的废单扫成 expired、清掉缓存链接，保证库与管理端不长期漂移。
+// 因此它可以被停掉而不影响用户侧的过期表现（stop 后只是库里 pending 会多留一会儿）。
 func (r *commandRunner) runOrderExpirePending(ctx context.Context, args map[string]string) error {
-	hours := 1
-	if v, ok := args["--hours"]; ok {
-		fmt.Sscanf(v, "%d", &hours)
-	}
-	if hours < 1 {
-		hours = 1
-	}
 	dryRun := args["--dry-run"] == "1" || args["--dry-run"] == "true"
 
-	cutoff := r.now().UTC().Add(-time.Duration(hours) * time.Hour)
+	// 全局支付有效期（分钟）：老单没有 pay_expires_at，用 created_at + 它兜底。
+	ttlMinutes := r.siteConfigInt(ctx, payment.TTLMinutesKey, payment.DefaultTTLMinutes)
+	if ttlMinutes < 1 {
+		ttlMinutes = payment.DefaultTTLMinutes
+	}
+	now := r.now().UTC()
+	legacyCutoff := now.Add(-time.Duration(ttlMinutes) * time.Minute)
 
-	// 查询超时 pending 订单
+	// 兜底清扫：把所有「非待支付」订单上残留的缓存支付链接清掉。
+	// 正常路径在订单变 expired/paid 时已经清过（UpdateOrderStatus / MarkOrderPaid / 充值到账）；
+	// 这里兜住历史遗留、以及「本次上线前就已过期/支付」老单上从来没有过的 pay_url。
+	// 幂等、且只动非 pending 行（只看 status，不会误伤索引）。
+	if !dryRun {
+		if _, err := r.deps.DB.ExecContext(ctx,
+			"UPDATE orders SET pay_url = NULL WHERE status <> 'pending' AND pay_url IS NOT NULL"); err != nil {
+			r.logf("清扫非待支付订单的缓存支付链接失败: %v", err)
+		}
+	}
+
+	// 查询支付窗口已过的 pending 订单：优先用 pay_expires_at（新单），老单按 created_at + TTL 兜底。
 	rows, err := r.deps.DB.QueryContext(ctx,
 		`SELECT id, order_no, user_id, amount, created_at, proxy_sku_id, proxy_renewal
-		 FROM orders WHERE status = 'pending' AND created_at < ?
-		 ORDER BY id LIMIT 10000`, cutoff)
+		 FROM orders WHERE status = 'pending'
+		   AND (
+		     (pay_expires_at IS NOT NULL AND pay_expires_at <= ?)
+		     OR (pay_expires_at IS NULL AND created_at < ?)
+		   )
+		 ORDER BY id LIMIT 10000`, now, legacyCutoff)
 	if err != nil {
 		return fmt.Errorf("查询超时订单失败: %w", err)
 	}
@@ -757,7 +777,6 @@ func (r *commandRunner) runOrderExpirePending(ctx context.Context, args map[stri
 	}
 
 	expired := 0
-	now := r.now().UTC()
 	for _, o := range orders {
 		if dryRun {
 			r.logf("[DRY-RUN] #%d %s（用户 %d，%.2f 元，创建于 %s）",

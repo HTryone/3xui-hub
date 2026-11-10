@@ -69,7 +69,7 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 
 	q := `SELECT o.id, o.order_no, o.user_id, u.email, p.name, s.name,
 			o.order_type, o.amount, o.status, pc.name, o.trade_no, o.paid_at, o.created_at,
-			o.payment_driver_type
+			o.payment_driver_type, o.pay_expires_at
 		FROM orders o
 		LEFT JOIN users u ON u.id = o.user_id
 		LEFT JOIN plans p ON p.id = o.plan_id
@@ -102,9 +102,11 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 			// paymentDriver 区分余额支付单（'balance'）：它们没有 payment_config，
 			// 不读这个字段的话支付方式列只能显示「—」。
 			paymentDriver sql.NullString
+			payExpiresAt  sql.NullTime
 		)
 		if err := rows.Scan(&o.ID, &o.OrderNo, &o.UserID, &userEmail, &planName, &skuName,
-			&orderType, &amount, &o.Status, &payment, &tradeNo, &paidAt, &createdAt, &paymentDriver); err != nil {
+			&orderType, &amount, &o.Status, &payment, &tradeNo, &paidAt, &createdAt, &paymentDriver,
+			&payExpiresAt); err != nil {
 			return nil, 0, err
 		}
 		o.UserEmail = nullStrPtr(userEmail)
@@ -121,6 +123,7 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 		o.TradeNo = nullStrPtr(tradeNo)
 		o.PaidAt = nullTimePtr(paidAt)
 		o.CreatedAt = nullTimePtr(createdAt)
+		o.PayExpiresAt = nullTimePtr(payExpiresAt)
 		out = append(out, o)
 	}
 	return out, total, rows.Err()

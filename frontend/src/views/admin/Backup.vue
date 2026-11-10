@@ -277,15 +277,16 @@ const tableLabel = (t) => ({
             关闭后每天的定时备份不再执行，「定时任务」列表里也不再显示它。手动导出 / 导入不受影响。
           </span>
         </div>
-        <label class="bk-switch">
+        <!-- 滑动开关用公共类 .ch-switch（shared/common.css），本页不再自带一份 -->
+        <label class="ch-switch">
           <input
             type="checkbox"
-            class="bk-switch-input"
+            class="ch-switch-input"
             :checked="autoEnabled"
             :disabled="autoToggling"
             @change="toggleAuto"
           />
-          <span class="bk-switch-slider"></span>
+          <span class="ch-switch-slider"></span>
         </label>
       </div>
     </Card>

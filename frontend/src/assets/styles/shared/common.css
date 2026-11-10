@@ -14,3 +14,62 @@
 .ch-actions { display: flex; gap: var(--space-1); }
 .ch-actions-4 { display: flex; align-items: center; gap: 4px; }
 .ch-desc { margin: 0 0 var(--space-3); color: var(--text-muted); font-size: var(--text-sm); }
+
+/* ============================================================
+   公共开关 .ch-switch（滑动开关）
+   ------------------------------------------------------------
+   来源：原 Backup.vue 的 .bk-switch*（自动备份开关）逐条搬来，声明未改，
+   成为跨页唯一一份实现；新页面直接挂 class，不要再各写一份。
+   用法：
+     <label class="ch-switch">
+       <input type="checkbox" class="ch-switch-input" :checked="on" @change="..." />
+       <span class="ch-switch-slider"></span>
+     </label>
+   颜色走 token（--switch-off/--switch-on/--switch-knob，缺省值兜底）。
+   注：AppVersion.vue 的 .av-switch 是带内嵌文案的变体（勾选态无阴影），
+   与本体要求不同，暂未合并。
+   ============================================================ */
+.ch-switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 27px;
+  flex-shrink: 0;
+}
+.ch-switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.ch-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--switch-off, #d1d5db);
+  border-radius: 14px;
+  transition: 0.3s;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.ch-switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 21px;
+  width: 21px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--switch-knob, #fff);
+  border-radius: 50%;
+  transition: 0.3s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+.ch-switch-input:checked + .ch-switch-slider {
+  background: var(--switch-on, #2563eb);
+}
+.ch-switch-input:checked + .ch-switch-slider::before {
+  transform: translateX(21px);
+}
+.ch-switch-input:disabled + .ch-switch-slider {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

@@ -28,10 +28,9 @@ const inviteMaxUses = 999999
 
 // discountCheckResult 对齐 validateAndApply 的返回数组。
 type discountCheckResult struct {
-	Discount   money
-	Final      money
-	Code       *DiscountCode
-	ReuseOrder *Order
+	Discount money
+	Final    money
+	Code     *DiscountCode
 }
 
 // validateAndApply 对齐 DiscountCodeService::validateAndApply：只校验，不占用。
@@ -116,26 +115,13 @@ func (s *PaymentService) validateAndApply(ctx context.Context, user *User, rawCo
 		return nil, NewPaymentError("折后金额不足 1 元，无法使用优惠码")
 	}
 
-	// 8. 同一用户 + 同一张码 + 同一套餐，已有未支付的 pending 单 → 交给调用方复用。
-	//
-	//    与 PHP 一样**不带时间条件**：pending 单没有 TTL（占用后移到支付成功后，
-	//    重复建单没有任何意义），旧 pending 单可以一直复用。
-	//    但复用前必须比对金额：管理员改过折扣（或套餐改价）后，旧单仍是旧价，
-	//    直接复用会让用户按改价前的金额支付，促销调价不即时生效。
-	reuse, err := s.store.LatestPendingOrderWithCode(ctx, user.ID, plan.ID, code.ID)
-	if err != nil && !IsNoRows(err) {
-		return nil, err
-	}
-	if reuse != nil && reuse.Amount != final.String() {
-		// 金额不一致 → 不复用，调用方会按当前折扣新建一笔。
-		reuse = nil
-	}
-
+	// 8. 不再查「同用户+同码+同套餐的旧 pending 单」：购买一律新开单（见 payment_service
+	//    createDiscountedOrder 的说明）。折扣码在下单时不占次数，多开待付单不会烧码；
+	//    旧单的支付链接是一次性的，复用只会给到死链。
 	return &discountCheckResult{
-		Discount:   mustMoney(code.Discount),
-		Final:      final,
-		Code:       code,
-		ReuseOrder: reuse,
+		Discount: mustMoney(code.Discount),
+		Final:    final,
+		Code:     code,
 	}, nil
 }
 

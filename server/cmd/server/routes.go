@@ -231,6 +231,8 @@ func registerRoutes(r *gin.Engine, app *httpx.App, col *collector.Collector, tgS
 	// 支付配置域
 	paymentDomain := admin.NewPaymentDomain(admin.PaymentDeps{
 		Store: admin.NewPaymentSQLStore(db),
+		// 全局支付设置（订单支付有效期）读写 site_configs，与自动备份开关同一套存储。
+		Settings: adminStore,
 	})
 	paymentDomain.Register(adminGroup)
 

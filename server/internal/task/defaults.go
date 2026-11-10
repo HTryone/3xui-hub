@@ -245,11 +245,17 @@ func DefaultJobs(d Deps) []Job {
 			Name: NameDataRetention, Spec: SpecDaily0400, WithoutOverlap: true,
 			Run: func(ctx context.Context) error { return commands.Run(ctx, "retention:purge", nil) },
 		},
-		// 作废超时（1 小时）未支付的订单。TTL 显式传参，不依赖命令默认值。
+		// 支付窗口已过的订单：兜底作废并清缓存链接（每小时一轮，低频扫地）。
+		//
+		// ⚠️ 过期时间**不由本任务决定**：判定是 orders.pay_expires_at（下单时按全局支付有效期
+		// 算好的绝对时刻，site_configs.payment_ttl_minutes 可改），用户端倒计时、/api/payment/retry
+		// 与管理端订单列表都按它实时判 —— 到点即过期，不等任务。
+		// 本任务只负责把没人访问、状态还停在 pending 的废单落库（清 pay_url），
+		// 所以频率高低都不影响用户看到的结果，低频即可。
 		{
 			Name: NameExpirePendingOrders, Spec: SpecHourly, WithoutOverlap: true,
 			Run: func(ctx context.Context) error {
-				return commands.Run(ctx, "order:expire-pending", map[string]string{"--hours": "1"})
+				return commands.Run(ctx, "order:expire-pending", nil)
 			},
 		},
 		// 代理商城的维护：回采 webshare 用量 + 到期权益标记 + 到期停用上游子账号。

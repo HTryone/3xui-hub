@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 	"time"
@@ -67,8 +68,8 @@ func (h *PaymentHandlers) RegisterPayment(r gin.IRouter) {
 //  1. 校验（plan_id required|integer，payment_config_id sometimes|nullable|integer，
 //     discount_code sometimes|nullable|string|max:32）
 //  2. 套餐存在 / 已上架
-//  3. **1 分钟内的同套餐 pending 单 → 429 文案**（防连点重复下单）
-//  4. 超过 1 分钟的 pending 单 → 先试重发旧单；判重则作废走新建
+//  3. **1 分钟内的同套餐 pending 单 → 429**（防连点重复下单）
+//  4. 超过 1 分钟 → **直接新建一笔订单 + 新链接**（不再复用旧单：旧链接是一次性的，复用只会给死链）
 //  5. 建单（含折扣码）→ 有 pay_url 才算成功
 //
 // 两个余额分支在入口处分流（字段互斥，见 docs/balance/implementation-plan.md §3.1.3/§3.1.4）：
@@ -110,7 +111,7 @@ func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 
 	now := h.cfg.now()
 
-	// 3. 1 分钟内的同套餐 pending 单 → 拒绝（防连点）
+	// 3. 1 分钟内的同套餐 pending 单 → 拒绝（防连点，避免手误生成多张单）
 	recent, err := h.store.PendingOrderCreatedSince(ctx, user.ID, plan.ID, now.Add(-time.Minute))
 	if err != nil && !IsNoRows(err) {
 		h.logf("payment/create 查询近期订单失败: %v", err)
@@ -123,42 +124,13 @@ func (h *PaymentHandlers) handlePaymentCreate(c *gin.Context) {
 		return
 	}
 
-	// 4. 超过 1 分钟的 pending 单：先试重发旧单（可以重新发起支付）
-	older, err := h.store.LatestPendingOrderCreatedBefore(ctx, user.ID, plan.ID, now.Add(-time.Minute))
-	if err != nil && !IsNoRows(err) {
-		h.logf("payment/create 查询历史订单失败: %v", err)
-		fail(c, "创建订单失败", 500)
-		return
-	}
-	if older != nil {
-		payCfg, cerr := h.svc.configForOrder(ctx, older)
-		if cerr != nil {
-			h.logf("payment/create 取支付配置失败 order=%s: %v", older.OrderNo, cerr)
-		}
-		if payCfg != nil {
-			payURL, failMsg, berr := h.svc.BuildPayURL(ctx, payCfg, older)
-			if berr != nil {
-				h.logf("payment/create 重发旧单异常 order=%s: %v", older.OrderNo, berr)
-			}
-			if payURL != "" {
-				h.svc.CachePayURL(ctx, older.ID, payURL)
-				success(c, jo(
-					"order_no", older.OrderNo,
-					"amount", mustMoney(older.Amount).PHPFloat(),
-					"status", "pending",
-					"pay_url", payURL,
-				))
-				return
-			}
-			// 网关明确认为该订单号不可用（判重）→ 旧单已废，直接作废，让下面走新建流程。
-			// 不作废的话用户每次点购买都会复用这笔死单，永远「获取支付链接失败」。
-			if h.svc.IsOrderNoUnusable(failMsg) {
-				if uerr := h.store.UpdateOrderStatus(ctx, older.ID, "expired"); uerr != nil {
-					h.logf("payment/create 作废旧单失败 order=%s: %v", older.OrderNo, uerr)
-				}
-			}
-		}
-	}
+	// 4. 不再「复用旧单」：每次重新购买都**新开一单**。
+	//
+	// 原本这里会查「同套餐未过期的 pending 单」，拿它的旧单号重新出链接再返回给用户。
+	// 但支付网关的 h5 链接是**一次性**的（打开过就失效，再开只剩会话 token、不出二维码），
+	// 所以复用旧单必然把用户导向一个死链接——这正是「续付/重新购买拿不到二维码」的根因。
+	// 现改为：直接往下走新建流程（新订单号 + 新链接），旧 pending 单交给「支付有效期 + 兜底
+	// 任务」自然过期，不再拿它的单号和链接给用户。
 
 	// 5. 建单
 	result, err := h.svc.CreateOrder(ctx, PaymentCreateInput{
@@ -438,6 +410,9 @@ func (h *PaymentHandlers) handlePaymentOrders(c *gin.Context) {
 	}
 
 	items := make(jsArr, 0, len(rows))
+	now := h.cfg.now().UTC()
+	// 「允许继续支付」总开关（后台可关）：关掉后前端不展示按钮，接口层也拒绝。
+	continuePay := h.svc.ContinuePayEnabled(c.Request.Context())
 	for i := range rows {
 		row := &rows[i]
 
@@ -457,13 +432,39 @@ func (h *PaymentHandlers) handlePaymentOrders(c *gin.Context) {
 			planID = row.PlanID.Int64
 		}
 
+		// 支付有效期由我们自己的时钟判定（不靠定时任务）：到点即按「已过期」下发，
+		// 前端据此倒计时并隐藏「继续支付」。判据与续付、兜底作废三处同源
+		// （EffectivePayExpiresAt / OrderPayExpired）。
+		//
+		// 同时下发 remaining_seconds（**以服务端时钟为准**）：前端拿它当基线 + 本地单调时钟
+		// 递减，这样设备时间被改坏也不会把倒计时算歪 —— 剩余时间只由「服务端存的绝对时刻
+		// 减去真实流逝」决定，关浏览器/退出登录/换设备都不影响。
+		status := row.Status
+		var expires, remaining any
+		if status == "pending" {
+			exp := EffectivePayExpiresAt(&row.Order)
+			if now.Before(exp) {
+				expires = nullableISOTime(sql.NullTime{Time: exp, Valid: true})
+				secs := int(exp.Sub(now) / time.Second)
+				if secs < 0 {
+					secs = 0
+				}
+				remaining = secs
+			} else {
+				status = "expired" // 已到点
+			}
+		}
+
 		items = append(items, jo(
 			"order_no", row.OrderNo,
 			"plan_id", planID,
 			"plan_name", planName,
 			"order_type", row.OrderType,
 			"amount", mustMoney(row.Amount).PHPFloat(),
-			"status", row.Status,
+			"status", status,
+			"expires_at", expires,
+			"remaining_seconds", remaining,
+			"can_continue_pay", continuePay,
 			"paid_at", nullableISOTime(row.PaidAt),
 			"created_at", isoTime(row.CreatedAt),
 		))
@@ -480,6 +481,13 @@ func (h *PaymentHandlers) handlePaymentOrders(c *gin.Context) {
 // 其它失败 → code 500；成功 → {order_no, pay_url}。
 func (h *PaymentHandlers) handlePaymentRetry(c *gin.Context) {
 	user := currentUser(c)
+
+	// 「允许继续支付」总开关：后台关掉后，用户端不展示入口，这里也直接拒绝
+	// （双保险：防止旧页面/直接调接口绕过）。网关能力不一时由管理员自己掌阀。
+	if !h.svc.ContinuePayEnabled(c.Request.Context()) {
+		fail(c, "继续支付已关闭，请返回商城重新下单", 403)
+		return
+	}
 
 	input := jsonInput(c)
 	v := newPaymentValidator(input).field("order_no", "required", "string")
@@ -500,9 +508,19 @@ func (h *PaymentHandlers) handlePaymentRetry(c *gin.Context) {
 		return
 	}
 
-	// 优先用下单时缓存的支付链接，直接返回 —— 不再拿原单号去网关重新下单。
-	// 这正是「点续付就提示过期」的根因：payindex 等网关会把「同单号再次下单」判重，
-	// 我们据此作废旧单 → 每次续付都变成 expired。缓存命中即绕开网关。
+	// 支付窗口由我们自己的时钟判定：到点即作废，**绝不把网关那边已失效的链接发给用户**
+	// （这正是「点续付打不开/报过期」的根因）。这里顺手把状态落库，不必等定时任务。
+	if OrderPayExpired(order, h.cfg.now().UTC()) {
+		if uerr := h.store.UpdateOrderStatus(c.Request.Context(), order.ID, "expired"); uerr != nil {
+			h.logf("payment/retry 支付窗口已过、作废订单失败 order=%s: %v", order.OrderNo, uerr)
+		}
+		fail(c, "支付链接已过期，请返回商城重新下单", 410)
+		return
+	}
+
+	// 未过期：优先用下单时缓存的支付链接，直接返回 —— 不再拿原单号去网关重新下单。
+	// payindex 等网关会把「同单号再次下单」判重，我们据此作废旧单 → 每次续付都变成 expired。
+	// 缓存命中即绕开网关。
 	if order.PayURL.Valid && order.PayURL.String != "" {
 		success(c, jo(
 			"order_no", order.OrderNo,

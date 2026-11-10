@@ -196,7 +196,7 @@ func (s *PaymentSQLStore) PlanForPayment(ctx context.Context, id uint64) (*PlanR
 
 const orderColumns = `id, order_no, user_id, order_type, plan_id, proxy_sku_id, amount,
 	original_amount, discount_code_id, discount_amount, status, payment_config_id,
-	trade_no, paid_at, pay_ip, pay_url, created_at`
+	trade_no, paid_at, pay_ip, pay_url, pay_expires_at, created_at`
 
 // scanOrder 兼容「列值与 NULL」（金额/时间用 Null 变体，再转成文本或零值）。
 func scanOrder(row interface{ Scan(...any) error }) (*Order, error) {
@@ -211,7 +211,7 @@ func scanOrder(row interface{ Scan(...any) error }) (*Order, error) {
 	)
 	err := row.Scan(&o.ID, &o.OrderNo, &o.UserID, &orderType, &o.PlanID, &o.ProxySkuID, &amount,
 		&originalAmount, &o.DiscountCodeID, &discountAmount, &status, &o.PaymentConfigID,
-		&o.TradeNo, &o.PaidAt, &o.PayIP, &o.PayURL, &createdAt)
+		&o.TradeNo, &o.PaidAt, &o.PayIP, &o.PayURL, &o.PayExpiresAt, &createdAt)
 	if err != nil {
 		return nil, err
 	}
@@ -249,31 +249,6 @@ func (s *PaymentSQLStore) PendingOrderCreatedSince(ctx context.Context, userID, 
 	return o, err
 }
 
-func (s *PaymentSQLStore) LatestPendingOrderCreatedBefore(ctx context.Context, userID, planID uint64, before time.Time) (*Order, error) {
-	o, err := scanOrder(s.db.QueryRowContext(ctx,
-		`SELECT `+orderColumns+` FROM orders
-		 WHERE user_id = ? AND plan_id = ? AND status = 'pending' AND created_at < ?
-		 ORDER BY id DESC LIMIT 1`, userID, planID, before.UTC()))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return o, err
-}
-
-// LatestPendingOrderWithCode 对齐 DiscountCodeService::validateAndApply 的复用查询：
-// where(user_id, discount_code_id, plan_id, status=pending)->orderByDesc('id')->first()
-// —— **不带时间条件**（pending 单没有 TTL）。
-func (s *PaymentSQLStore) LatestPendingOrderWithCode(ctx context.Context, userID, planID uint64, codeID int64) (*Order, error) {
-	o, err := scanOrder(s.db.QueryRowContext(ctx,
-		`SELECT `+orderColumns+` FROM orders
-		 WHERE user_id = ? AND plan_id = ? AND discount_code_id = ? AND status = 'pending'
-		 ORDER BY id DESC LIMIT 1`, userID, planID, codeID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return o, err
-}
-
 func (s *PaymentSQLStore) OrderByNoForUser(ctx context.Context, userID uint64, orderNo, status string) (*Order, error) {
 	if orderNo == "" {
 		return nil, nil
@@ -302,7 +277,8 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT o.id, o.order_no, o.user_id, o.order_type, o.plan_id, o.proxy_sku_id, o.amount,
 		        o.original_amount, o.discount_code_id, o.discount_amount, o.status,
-		        o.payment_config_id, o.trade_no, o.paid_at, o.pay_ip, o.pay_url, o.created_at,
+		        o.payment_config_id, o.trade_no, o.paid_at, o.pay_ip, o.pay_url, o.pay_expires_at,
+		        o.created_at,
 		        p.name AS plan_name, ps.name AS sku_name
 		 FROM orders o
 		 LEFT JOIN plans p ON p.id = o.plan_id
@@ -328,7 +304,8 @@ func (s *PaymentSQLStore) UserOrders(ctx context.Context, userID uint64, limit i
 		)
 		if err := rows.Scan(&row.ID, &row.OrderNo, &row.UserID, &orderType, &row.PlanID, &row.ProxySkuID,
 			&amount, &originalAmount, &row.DiscountCodeID, &discountAmount, &status,
-			&row.PaymentConfigID, &row.TradeNo, &row.PaidAt, &row.PayIP, &row.PayURL, &createdAt,
+			&row.PaymentConfigID, &row.TradeNo, &row.PaidAt, &row.PayIP, &row.PayURL,
+			&row.PayExpiresAt, &createdAt,
 			&row.PlanName, &row.ProxySkuName); err != nil {
 			return nil, err
 		}
@@ -369,10 +346,11 @@ func (s *PaymentSQLStore) CreateOrder(ctx context.Context, in NewOrderInput) (*O
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO orders (order_no, user_id, order_type, plan_id, amount, original_amount,
 		                     discount_code_id, discount_amount, status, payment_config_id, pay_ip,
-		                     created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                     pay_expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		in.OrderNo, in.UserID, orderType, planID, in.Amount, in.OriginalAmount,
-		in.DiscountCodeID, in.DiscountAmount, in.Status, paymentConfigID, in.PayIP, now, now)
+		in.DiscountCodeID, in.DiscountAmount, in.Status, paymentConfigID, in.PayIP,
+		in.PayExpiresAt, now, now)
 	if err != nil {
 		return nil, err
 	}
