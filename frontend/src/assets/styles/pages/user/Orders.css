@@ -23,6 +23,22 @@
   gap: 20px;
 }
 
+/* 顶部提示：未支付订单建议重新购买，「继续支付」可能不稳定。
+   只用语义 token（次级文字色 + 底），不抢订单主体的视觉。 */
+.od-tip {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--fill4);
+  color: var(--lbl2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.od-tip strong {
+  color: var(--lbl1);
+  font-weight: 600;
+}
+
 .od-card {
   border-radius: 24px;
   padding: 8px 16px;

@@ -137,6 +137,10 @@ onUnmounted(() => {
 
 <template>
   <div class="od uu-slide-up">
+    <!-- 顶部提示：未支付成功的订单建议重新购买，「继续支付」可能不稳定 -->
+    <p class="od-tip">
+      未支付成功的订单，建议<strong>重新购买</strong>；「继续支付」可能不稳定。
+    </p>
     <section class="od-card uu-mat-regular">
       <div v-if="orders.length" class="od-list">
         <div
@@ -148,7 +152,8 @@ onUnmounted(() => {
           :tabindex="canPay(o) ? 0 : undefined"
           @click="payOrder(o)"
           @keyup.enter="payOrder(o)"
-        >          <div class="od-main">
+        >
+          <div class="od-main">
             <p class="od-plan">{{ o.plan_name || '套餐' }}</p>
             <p class="od-time">{{ fmtTime(o) }}</p>
           </div>
