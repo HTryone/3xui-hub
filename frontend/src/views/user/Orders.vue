@@ -137,9 +137,13 @@ onUnmounted(() => {
 
 <template>
   <div class="od uu-slide-up">
-    <!-- 顶部提示：未支付成功的订单建议重新购买，「继续支付」可能不稳定 -->
-    <p class="od-tip">
-      未支付成功的订单，建议<strong>重新购买</strong>；「继续支付」可能不稳定。
+    <!-- 顶部提示：未支付成功的订单建议重新购买，「继续支付」可能不稳定。
+         用内联样式而非 scoped css：这段提示必须两端都稳显示（不依赖该页 css 加载）。 -->
+    <p
+      class="od-tip"
+      style="margin: 0; padding: 10px 14px; border-radius: 10px; background: var(--fill4); color: var(--lbl2); font-size: 13px; line-height: 1.6; word-break: break-word;"
+    >
+      未支付成功的订单，建议<strong style="color: var(--lbl1); font-weight: 600;">重新购买</strong>；「继续支付」可能不稳定。
     </p>
     <section class="od-card uu-mat-regular">
       <div v-if="orders.length" class="od-list">
