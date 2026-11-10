@@ -161,12 +161,15 @@ func (s *PaymentService) PayPlanWithBalance(ctx context.Context, user *User, pla
 
 // completeRechargeOrder 处理 order_type=balance 的充值订单到账（规划 §3.1.4 第 3–4 步）：
 // 置 paid + 加余额 + 写流水在一个事务里完成，status==paid 时直接跳过（回调重推不会重复加钱）。
-func (s *PaymentService) completeRechargeOrder(ctx context.Context, order *Order) error {
+//
+// tradeNo 是网关回传的交易号（易支付 trade_no / payindex transaction_id）：必须像套餐订单
+// 一样落进 orders.trade_no，否则管理端订单页「交易号」列对充值单永远是空（只显示「—」）。
+func (s *PaymentService) completeRechargeOrder(ctx context.Context, order *Order, tradeNo sql.NullString) error {
 	if s.balance == nil {
 		s.logf("余额服务未接入，充值订单无法到账 order_no=%s", order.OrderNo)
 		return nil
 	}
-	credited, _, err := s.balance.CreditRecharge(ctx, order)
+	credited, _, err := s.balance.CreditRecharge(ctx, order, tradeNo)
 	if err != nil {
 		return err
 	}
@@ -174,6 +177,7 @@ func (s *PaymentService) completeRechargeOrder(ctx context.Context, order *Order
 		return nil
 	}
 	order.Status = "paid"
+	order.TradeNo = tradeNo
 	order.PaidAt = sql.NullTime{Time: s.now().UTC().Truncate(time.Second), Valid: true}
 	s.notifyPaidTG(ctx, order)
 	return nil

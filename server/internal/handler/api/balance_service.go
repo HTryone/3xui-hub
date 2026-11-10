@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 	"unicode"
@@ -83,12 +84,14 @@ func (s *BalanceService) DeductForOrder(ctx context.Context, in BalancePayInput)
 }
 
 // CreditRecharge 充值订单到账：把订单金额加到余额上（幂等，重复回调不会重复加钱）。
-func (s *BalanceService) CreditRecharge(ctx context.Context, order *Order) (bool, int64, error) {
+// tradeNo 是网关回传的交易号，随到账事务一并落进 orders.trade_no（查单/免费场景为空）。
+func (s *BalanceService) CreditRecharge(ctx context.Context, order *Order, tradeNo sql.NullString) (bool, int64, error) {
 	cents := mustMoney(order.Amount).cents
 	return s.store.CreditRechargeOrder(ctx, CreditRechargeInput{
 		OrderID:     order.ID,
 		UserID:      order.UserID,
 		AmountCents: cents,
+		TradeNo:     tradeNo,
 		Note:        "余额充值",
 		Now:         s.now().UTC().Truncate(time.Second),
 	})

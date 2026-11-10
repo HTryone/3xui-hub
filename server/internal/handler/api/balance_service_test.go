@@ -32,7 +32,9 @@ type fakeBalanceStore struct {
 	orders      []*Order
 	orderStatus map[uint64]string
 	lastPay     BalancePayInput
-	nextLogID   int64
+	// lastRechargeTradeNo 记录「充值到账」时传来的交易号，供单测断言它没有被丢掉。
+	lastRechargeTradeNo sql.NullString
+	nextLogID           int64
 }
 
 type fakeGiftcard struct {
@@ -145,6 +147,7 @@ func (f *fakeBalanceStore) PayOrderWithBalance(_ context.Context, in BalancePayI
 }
 
 func (f *fakeBalanceStore) CreditRechargeOrder(_ context.Context, in CreditRechargeInput) (bool, int64, error) {
+	f.lastRechargeTradeNo = in.TradeNo
 	if f.orderStatus[in.OrderID] == "paid" {
 		return false, f.balances[in.UserID], nil
 	}
@@ -334,17 +337,22 @@ func TestCreditRechargeIsIdempotent(t *testing.T) {
 	store.orderStatus[11] = "pending"
 	svc := newBalanceSvc(store)
 	order := &Order{ID: 11, UserID: 7, OrderNo: "20261103100000000003", OrderType: "balance", Amount: "50.00"}
+	tradeNo := sql.NullString{String: "TXN-RECHARGE-0001", Valid: true}
 
-	credited, balance, err := svc.CreditRecharge(context.Background(), order)
+	credited, balance, err := svc.CreditRecharge(context.Background(), order, tradeNo)
 	if err != nil || !credited {
 		t.Fatalf("首次到账应成功: credited=%v err=%v", credited, err)
 	}
 	if balance != 5000 || store.balances[7] != 5000 {
 		t.Fatalf("到账后余额 = %d/%d, 期望 5000", balance, store.balances[7])
 	}
+	// 交易号必须原样传进到账事务（否则订单页「交易号」列永远是空的）。
+	if !store.lastRechargeTradeNo.Valid || store.lastRechargeTradeNo.String != "TXN-RECHARGE-0001" {
+		t.Fatalf("充值到账丢失交易号: %+v", store.lastRechargeTradeNo)
+	}
 
 	// 重复回调（网关重推/查单再完成）：不能再加一次钱。
-	credited, balance, err = svc.CreditRecharge(context.Background(), order)
+	credited, balance, err = svc.CreditRecharge(context.Background(), order, tradeNo)
 	if err != nil {
 		t.Fatalf("重复到账不应报错: %v", err)
 	}

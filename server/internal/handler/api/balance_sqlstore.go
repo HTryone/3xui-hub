@@ -272,9 +272,11 @@ func (s *PaymentSQLStore) CreditRechargeOrder(ctx context.Context, in CreditRech
 	}
 
 	now := in.Now.UTC()
+	// trade_no 与置 paid 同一个 UPDATE：网关回传的交易号落库，管理端订单页「交易号」列才有值
+	// （查单/免费场景 in.TradeNo 为空 → 写 NULL，与套餐订单一致）。
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE orders SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ?`,
-		now, now, in.OrderID); err != nil {
+		`UPDATE orders SET status = 'paid', trade_no = ?, paid_at = ?, updated_at = ? WHERE id = ?`,
+		in.TradeNo, now, now, in.OrderID); err != nil {
 		return false, 0, err
 	}
 	if _, err := tx.ExecContext(ctx,

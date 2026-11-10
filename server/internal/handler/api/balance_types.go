@@ -79,8 +79,11 @@ type CreditRechargeInput struct {
 	OrderID     uint64
 	UserID      uint64
 	AmountCents int64
-	Note        string
-	Now         time.Time
+	// TradeNo 是网关回传的交易号（易支付 trade_no / payindex transaction_id），
+	// 到账时一并写进 orders.trade_no 供管理端核对；查单或免费场景为空。
+	TradeNo sql.NullString
+	Note    string
+	Now     time.Time
 }
 
 // BalanceStore 是余额域对数据库的全部依赖。

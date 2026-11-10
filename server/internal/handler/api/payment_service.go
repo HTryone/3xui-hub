@@ -562,8 +562,9 @@ func (s *PaymentService) CompleteOrder(ctx context.Context, order *Order, tradeN
 	}
 
 	// 余额充值订单（order_type=balance）：置 paid + 加余额 + 写流水在一个事务里，不开套餐。
+	// tradeNo 一并传入，落进 orders.trade_no（与套餐订单同口径，管理端「交易号」列才有值）。
 	if order.IsBalanceRecharge() {
-		return s.completeRechargeOrder(ctx, order)
+		return s.completeRechargeOrder(ctx, order, tradeNo)
 	}
 
 	now := s.now().UTC().Truncate(time.Second)

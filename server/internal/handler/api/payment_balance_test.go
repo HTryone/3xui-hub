@@ -170,11 +170,16 @@ func TestCompleteOrderBalanceRecharge(t *testing.T) {
 	svc := newBalancePayService(payStore, balanceStore)
 
 	order := &Order{ID: 21, UserID: 7, OrderNo: "20261103100000000021", OrderType: "balance", Amount: "50.00", Status: "pending"}
-	if err := svc.CompleteOrder(context.Background(), order, sql.NullString{}); err != nil {
+	tradeNo := sql.NullString{String: "TXN-20261103-0021", Valid: true}
+	if err := svc.CompleteOrder(context.Background(), order, tradeNo); err != nil {
 		t.Fatalf("充值到账失败: %v", err)
 	}
 	if order.Status != "paid" {
 		t.Fatalf("订单状态 = %s, 期望 paid", order.Status)
+	}
+	// 交易号必须落到订单对象上（管理端「交易号」列读的就是它）。
+	if !order.TradeNo.Valid || order.TradeNo.String != "TXN-20261103-0021" {
+		t.Fatalf("充值订单丢了交易号: %+v", order.TradeNo)
 	}
 	if balanceStore.balances[7] != 5000 {
 		t.Fatalf("余额 = %d, 期望 5000", balanceStore.balances[7])
