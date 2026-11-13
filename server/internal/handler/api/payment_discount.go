@@ -77,7 +77,10 @@ func (s *PaymentService) validateAndApply(ctx context.Context, user *User, rawCo
 	if code.Status != "active" {
 		return nil, NewPaymentError("%s", codeInvalidMsg)
 	}
-	if code.ExpiresAt.Valid && code.ExpiresAt.Time.Before(now) {
+	if code.ExpiresAt.Valid && !code.ExpiresAt.Time.After(now) {
+		// 到点即过期：用 !After（expires_at <= now）而不是 Before，
+		// 与展示/筛选的 internal/discount.EffectiveStatus 同口径。
+		// Before 在「恰好等于截止秒」时判为未过期，会造成「列表显示已过期却能下单」的裂缝。
 		// 顺手把过期状态落库（幂等）
 		if eerr := s.store.ExpireDiscountCode(ctx, code.ID); eerr != nil {
 			s.logf("折扣码置过期失败 id=%d: %v", code.ID, eerr)

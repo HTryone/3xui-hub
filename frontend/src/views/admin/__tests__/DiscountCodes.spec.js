@@ -8,7 +8,7 @@ import { mount, flushPromises } from '@vue/test-utils'
  * 只有渲染层才知道的事：
  *  ① 文件夹行按 folders[].matched 标「搜索命中」，不标在 unmatched 的文件夹上
  *  ② 勾选跨文件夹与平铺混勾，导出弹窗里的文件名可自填（不是随机串）
- *  ③ CSV 列序与转义：码/折扣/有效期/已用上限/说明，含逗号引号的按 RFC4180 转义
+ *  ③ CSV 列序与转义：码/折扣/有效期(UTC)/已用上限/说明，含逗号引号的按 RFC4180 转义
  *  ④ 生成时前缀非法就地拦下，不往后端发请求
  */
 
@@ -178,8 +178,8 @@ describe('DiscountCodes.vue — 勾选与导出', () => {
     const csv = await readCsv(captured[0])
     const lines = csv.split('\n')
 
-    // 列序：码/折扣/有效期/已用上限/说明
-    expect(lines[0]).toBe('码,折扣,有效期,已用上限,说明')
+    // 列序：码/折扣/有效期(UTC)/已用上限/说明
+    expect(lines[0]).toBe('码,折扣,有效期(UTC),已用上限,说明')
     // 按码排序，两条都在
     expect(lines[1]).toBe('FOLDER0001,0.88,2027-01-31 23:59:59,5,"文件夹里的码, 带逗号""引号"""')
     expect(lines[2]).toBe('PROLOOSE01,0.90,永久,3,未归档的码')

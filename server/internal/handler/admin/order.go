@@ -17,16 +17,20 @@ import (
 //
 // 金额按 data-contract §3 以字符串持有，输出时按 PHP 的 (float) 走 phpFloat。
 type OrderRow struct {
-	ID            uint64
-	OrderNo       string
-	UserID        uint64
-	UserEmail     *string
-	PlanName      *string
-	ProxySKUName  *string
-	OrderType     *string
-	Amount        string // decimal(10,2)
-	Status        string
-	PaymentName   *string
+	ID           uint64
+	OrderNo      string
+	UserID       uint64
+	UserEmail    *string
+	PlanName     *string
+	ProxySKUName *string
+	OrderType    *string
+	Amount       string // decimal(10,2)
+	Status       string
+	PaymentName  *string
+	// DiscountCode 是这单用的优惠码文本（LEFT JOIN discount_codes）；NULL=没用码。
+	// DiscountCodeDeleted 标记该码是否已被软删（status='deleted'）：展示「码已删除」而非悬空。
+	DiscountCode        *string
+	DiscountCodeDeleted bool
 	// PaymentDriver 是 orders.payment_driver_type：余额支付单为 'balance'，
 	// 它们没有 payment_config（PaymentName 为空），展示层靠它补「余额支付」。
 	PaymentDriver *string
@@ -84,6 +88,15 @@ func presentOrder(o *OrderRow) *jsObj {
 	if status == "pending" && payWindowClosed(o.CreatedAt, o.PayExpiresAt) {
 		status = "expired"
 	}
+	// 优惠码列：有码 → 码文本（已删则标「（码已删除）」）；没码 → null。
+	var discountCode any
+	if o.DiscountCode != nil {
+		if o.DiscountCodeDeleted {
+			discountCode = *o.DiscountCode + "（码已删除）"
+		} else {
+			discountCode = *o.DiscountCode
+		}
+	}
 	return jo(
 		"order_no", o.OrderNo,
 		"user_id", o.UserID,
@@ -93,6 +106,7 @@ func presentOrder(o *OrderRow) *jsObj {
 		"amount", phpFloatOf(o.Amount),
 		"status", status,
 		"payment_name", payment,
+		"discount_code", discountCode,
 		"trade_no", nullableStr(o.TradeNo),
 		"paid_at", nullableISO(o.PaidAt),
 		"created_at", nullableISO(o.CreatedAt),

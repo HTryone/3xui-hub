@@ -69,12 +69,13 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 
 	q := `SELECT o.id, o.order_no, o.user_id, u.email, p.name, s.name,
 			o.order_type, o.amount, o.status, pc.name, o.trade_no, o.paid_at, o.created_at,
-			o.payment_driver_type, o.pay_expires_at
+			o.payment_driver_type, o.pay_expires_at, dc.code, dc.status
 		FROM orders o
 		LEFT JOIN users u ON u.id = o.user_id
 		LEFT JOIN plans p ON p.id = o.plan_id
 		LEFT JOIN proxy_skus s ON s.id = o.proxy_sku_id
 		LEFT JOIN payment_configs pc ON pc.id = o.payment_config_id
+		LEFT JOIN discount_codes dc ON dc.id = o.discount_code_id
 		WHERE 1=1` + where + `
 		ORDER BY o.id DESC
 		LIMIT ? OFFSET ?`
@@ -103,16 +104,20 @@ func (s *orderSQLStore) OrderPage(ctx context.Context, f OrderFilter, page, perP
 			// 不读这个字段的话支付方式列只能显示「—」。
 			paymentDriver sql.NullString
 			payExpiresAt  sql.NullTime
+			discountCode  sql.NullString
+			discountStat  sql.NullString
 		)
 		if err := rows.Scan(&o.ID, &o.OrderNo, &o.UserID, &userEmail, &planName, &skuName,
 			&orderType, &amount, &o.Status, &payment, &tradeNo, &paidAt, &createdAt, &paymentDriver,
-			&payExpiresAt); err != nil {
+			&payExpiresAt, &discountCode, &discountStat); err != nil {
 			return nil, 0, err
 		}
 		o.UserEmail = nullStrPtr(userEmail)
 		o.PlanName = nullStrPtr(planName)
 		o.ProxySKUName = nullStrPtr(skuName)
 		o.OrderType = nullStrPtr(orderType)
+		o.DiscountCode = nullStrPtr(discountCode)
+		o.DiscountCodeDeleted = discountStat.Valid && discountStat.String == "deleted"
 		if amount.Valid {
 			o.Amount = amount.String
 		} else {

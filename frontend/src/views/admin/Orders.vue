@@ -117,6 +117,7 @@ onActivated(load)
               <th>套餐</th>
               <th>金额</th>
               <th>状态</th>
+              <th>优惠码</th>
               <th>支付方式</th>
               <th>交易号</th>
               <th>时间</th>
@@ -129,18 +130,19 @@ onActivated(load)
               <td>{{ o.plan_name }}</td>
               <td class="mono ord-amount">{{ fmtPrice(o.amount) }}</td>
               <td><Badge :variant="statusVariant(o.status)" dot>{{ statusText(o.status) }}</Badge></td>
+              <td class="mono">{{ o.discount_code || '—' }}</td>
               <td>{{ o.payment_name || '—' }}</td>
               <td class="mono">{{ o.trade_no || '—' }}</td>
               <td>{{ new Date(o.created_at).toLocaleString() }}</td>
             </tr>
             <tr v-if="loadError">
-              <td colspan="8" class="ch-empty">
+              <td colspan="9" class="ch-empty">
                 加载失败：{{ loadError }}
                 <Button variant="secondary" size="sm" @click="load">重试</Button>
               </td>
             </tr>
             <tr v-else-if="!orders.length">
-              <td colspan="8" class="ch-empty">
+              <td colspan="9" class="ch-empty">
                 <Skeleton v-if="loading" :rows="5" height="32px" />
                 <template v-else>{{ searchQuery ? '无匹配结果' : '暂无订单' }}</template>
               </td>

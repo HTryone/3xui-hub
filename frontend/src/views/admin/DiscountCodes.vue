@@ -121,6 +121,9 @@ const statusLabel = (s) => STATUS_LABELS[s] || s
 const discountLabel = (d) => `${(Number(d) * 10).toFixed(1)} 折`
 
 // datetime-local <-> 后端可解析字符串
+//
+// ⚠️ 全链路 UTC（用户定稿）：后端的 expires_at 一律按 UTC 字面量存取与判定，
+// 这里**不做任何时区换算**——输入框里填/看到的原样就是 UTC。
 const toApiDate = (v) => {
   if (!v) return null
   const s = String(v).replace('T', ' ')
@@ -482,7 +485,7 @@ const openEdit = (c) => {
     discount: Number(c.discount),
     max_uses: c.max_uses,
     max_uses_per_user: c.max_uses_per_user ?? 1,
-    expires_at: toInputDay(c.expires_at),
+    expires_at: toInputDate(c.expires_at),
     note: c.note || '',
     status: c.status,
     plan_id: c.plan_id || '',
@@ -543,7 +546,7 @@ const remove = async (c) => {
 
 /* ── 导出 CSV（写法对齐 Dashboard.vue：BOM + RFC4180 转义 + Blob 下载） ── */
 
-const CSV_HEADER = ['码', '折扣', '有效期', '已用上限', '说明']
+const CSV_HEADER = ['码', '折扣', '有效期(UTC)', '已用上限', '说明']
 
 /** 缺失值输出空字段；含逗号/引号/换行的按 RFC4180 转义。 */
 const csvCell = (value) => {
@@ -695,7 +698,7 @@ onMounted(async () => {
                   <th class="dc-col-opt">持有用户</th>
                   <th>折扣</th>
                   <th>已用/上限</th>
-                  <th>有效期</th>
+                  <th>有效期(UTC)</th>
                   <th>状态</th>
                   <th class="dc-col-opt">关联套餐</th>
                   <th class="dc-col-opt">说明文字</th>
@@ -712,7 +715,7 @@ onMounted(async () => {
                   <td class="dc-owner dc-col-opt" :title="c.user_email || ''">{{ c.user_email || '—' }}</td>
                   <td class="dc-num">{{ discountLabel(c.discount) }}</td>
                   <td class="dc-num">{{ c.used_count }} / {{ c.max_uses >= 999999 ? '∞' : c.max_uses }}</td>
-                  <td class="dc-dim">{{ c.expires_at || '永久' }}</td>
+                  <td class="dc-dim">{{ c.expires_at ? `${c.expires_at} (UTC)` : '永久' }}</td>
                   <td><span class="dc-status" :class="`dc-status--${c.status}`">{{ statusLabel(c.status) }}</span></td>
                   <td class="dc-dim dc-col-opt">{{ c.plan_name || '不限' }}</td>
                   <td class="dc-note dc-col-opt" :title="c.note || ''">{{ c.note || '—' }}</td>
@@ -746,7 +749,7 @@ onMounted(async () => {
               <th class="dc-col-opt">持有用户</th>
               <th>折扣</th>
               <th>已用/上限</th>
-              <th>有效期</th>
+              <th>有效期(UTC)</th>
               <th>状态</th>
               <th class="dc-col-opt">关联套餐</th>
               <th class="dc-col-opt">说明文字</th>
@@ -807,8 +810,9 @@ onMounted(async () => {
           <input v-model.number="createForm.max_uses" type="number" min="1" class="dc-input" />
         </label>
         <label class="dc-field">
-          <span class="dc-label">有效期（留空 = 永久）</span>
+          <span class="dc-label">有效期（UTC，留空 = 永久）</span>
           <input v-model="createForm.expires_at" type="datetime-local" class="dc-input" />
+          <span class="dc-rate-tip">按 UTC 填写与显示，不做时区换算；到该时刻即失效（不能再用）</span>
         </label>
         <label class="dc-field">
           <span class="dc-label">绑定套餐（可选，留空 = 不限）</span>
@@ -856,8 +860,9 @@ onMounted(async () => {
           <input v-model.number="editForm.max_uses_per_user" type="number" min="1" class="dc-input" />
         </label>
         <label class="dc-field">
-          <span class="dc-label">有效期（留空 = 永久）</span>
-          <input v-model="editForm.expires_at" type="date" class="dc-input" />
+          <span class="dc-label">有效期（UTC，留空 = 永久）</span>
+          <input v-model="editForm.expires_at" type="datetime-local" class="dc-input" />
+          <span class="dc-rate-tip">按 UTC 填写与显示，不做时区换算；到该时刻即失效（不能再用）</span>
         </label>
         <label class="dc-field">
           <span class="dc-label">绑定套餐（可选，留空 = 不限）</span>
@@ -939,7 +944,7 @@ onMounted(async () => {
         <label class="dc-field">
           <span class="dc-label">文件名</span>
           <input v-model="exportName" class="dc-input" maxlength="120" placeholder="discount-codes.csv" @keyup.enter="submitExport" />
-          <span class="dc-rate-tip">共 {{ selectedCount }} 个码；列：码 / 折扣 / 有效期 / 已用上限 / 说明</span>
+          <span class="dc-rate-tip">共 {{ selectedCount }} 个码；列：码 / 折扣 / 有效期(UTC) / 已用上限 / 说明</span>
         </label>
       </div>
       <template #footer>

@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"time"
 
+	discountstatus "controlhub-server/internal/discount"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -99,8 +101,9 @@ func (h *Handler) listDiscountCodes(c *gin.Context) {
 	filtering := filter.Source != nil || filter.Status != nil || filter.User != nil
 
 	list := make(jsArr, 0, len(rows))
+	now := h.now()
 	for i := range rows {
-		list = append(list, presentDiscount(&rows[i]))
+		list = append(list, presentDiscount(&rows[i], now))
 	}
 	folders := make(jsArr, 0, len(folderCounts))
 	for _, f := range folderCounts {
@@ -606,7 +609,11 @@ func parseDateTimeString(raw string) time.Time {
 }
 
 // presentDiscount 对齐控制器里 map 出来的字段顺序。
-func presentDiscount(r *DiscountRow) *jsObj {
+//
+// status 输出的是**现算的有效状态**（过了截止时间即显示已过期），不是库里那个会漂移的
+// status 原值 —— 过期不靠定时任务回写，与筛选、用户端口径完全一致（见 internal/discount）。
+func presentDiscount(r *DiscountRow, now time.Time) *jsObj {
+	status := discountstatus.EffectiveStatus(r.Status, r.ExpiresAt, r.UsedCount, r.MaxUses, now)
 	return jo(
 		"id", r.ID,
 		"code", r.Code,
@@ -619,7 +626,7 @@ func presentDiscount(r *DiscountRow) *jsObj {
 		"used_count", r.UsedCount,
 		"expires_at", nullableDateTime(r.ExpiresAt),
 		"note", nullableStr(r.Note),
-		"status", r.Status,
+		"status", status,
 		"plan_id", nullableUint(r.PlanID),
 		"plan_name", nullableStr(r.PlanName),
 		"folder_id", nullableUint(r.FolderID),

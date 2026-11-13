@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	discountstatus "controlhub-server/internal/discount"
 )
 
 // 本文件是支付域的 database/sql 实现（手写 SQL，不用 ORM）。
@@ -492,18 +494,26 @@ func (s *PaymentSQLStore) ConsumeDiscountCode(ctx context.Context, id int64, use
 		maxUses        int64
 		source         string
 		maxUsesPerUser int64
+		expiresAt      sql.NullTime
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT status, used_count, max_uses, source, max_uses_per_user
+		`SELECT status, used_count, max_uses, source, max_uses_per_user, expires_at
 		 FROM discount_codes WHERE id = ? FOR UPDATE`, id).
-		Scan(&status, &usedCount, &maxUses, &source, &maxUsesPerUser)
+		Scan(&status, &usedCount, &maxUses, &source, &maxUsesPerUser, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrDiscountExhausted
 	}
 	if err != nil {
 		return nil, err
 	}
-	if status != "active" || usedCount >= maxUses {
+	// 加锁后按有效状态复核（含 expires_at）：下单时没过期、支付回调时已过期的那段窗口，
+	// 必须在这里拦下；否则过期码还能被核销。与 internal/discount 同一口径。
+	var exp *time.Time
+	if expiresAt.Valid {
+		t := expiresAt.Time
+		exp = &t
+	}
+	if discountstatus.EffectiveStatus(status, exp, usedCount, maxUses, time.Now().UTC().Truncate(time.Second)) != "active" {
 		return nil, ErrDiscountExhausted
 	}
 

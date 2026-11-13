@@ -746,6 +746,10 @@ const discountFrom = ` FROM discount_codes c
 	LEFT JOIN users u ON u.id = c.user_id
 	LEFT JOIN plans p ON p.id = c.plan_id`
 
+// discountNotDeleted 是「软删除过滤」：已删（status='deleted'）的码不对后台展示。
+// 拼在 discountFrom 之后与其它 WHERE 条件合并使用（各查询自己接 WHERE/AND 前缀）。
+const discountNotDeleted = "c.status <> 'deleted'"
+
 func scanDiscount(row interface{ Scan(...any) error }) (*DiscountRow, error) {
 	var d DiscountRow
 	var userID, planID, folderID sql.NullInt64
@@ -769,31 +773,51 @@ func scanDiscount(row interface{ Scan(...any) error }) (*DiscountRow, error) {
 	return &d, nil
 }
 
+// discountEffectiveStatusSQL 是「有效状态」在 SQL 侧的等价表达式，必须与
+// internal/discount.EffectiveStatus() 逐字同判据（改一处必须同步另一处，否则列表与筛选会打架）。
+//
+//   - status 非 active → 原样（终态：used_up / refreshed / expired）
+//   - active 且 expires_at 已到/已过 ?（now）→ 'expired'
+//   - active 且 max_uses>0 且 used_count>=max_uses → 'used_up'
+//   - 其余 → 'active'
+//
+// expires_at / used_count 均为非空列语义（active 分支里 expires_at 为 NULL 时
+// "NULL <= ?" 为 NULL → 落到 ELSE，正合「永久有效」）。
+const discountEffectiveStatusSQL = `(CASE
+	WHEN c.status <> 'active' THEN c.status
+	WHEN c.expires_at IS NOT NULL AND c.expires_at <= ? THEN 'expired'
+	WHEN c.max_uses > 0 AND c.used_count >= c.max_uses THEN 'used_up'
+	ELSE 'active'
+END)`
+
 // discountWhere 构造筛选条件（list 与 folders 计数共用以避免两处走偏）。
-func discountWhere(f DiscountFilter) (string, []any) {
-	conds := []string{}
+//
+// 状态筛选走「有效状态」现算，不读库里那个会漂移的 c.status：
+// 过期不靠定时任务回写，到点即按 expires_at 判成 expired。
+// 先 append 状态 CASE 的 now 参数、再 append 其它条件参数，保证占位符顺序一致。
+//
+// 软删除：无条件先加 `c.status <> 'deleted'`，保证已删的码不出现在列表/计数里。
+func discountWhere(f DiscountFilter, now time.Time) (string, []any) {
+	conds := []string{discountNotDeleted}
 	args := []any{}
+	if f.Status != nil {
+		conds = append(conds, discountEffectiveStatusSQL+" = ?")
+		args = append(args, now.UTC(), *f.Status)
+	}
 	if f.Source != nil {
 		conds = append(conds, "c.source = ?")
 		args = append(args, *f.Source)
-	}
-	if f.Status != nil {
-		conds = append(conds, "c.status = ?")
-		args = append(args, *f.Status)
 	}
 	if f.User != nil {
 		// 按持有用户邮箱模糊搜。LEFT JOIN 下 user_id 为 null 的管理员码天然不匹配。
 		conds = append(conds, "u.email LIKE ?")
 		args = append(args, "%"+*f.User+"%")
 	}
-	if len(conds) == 0 {
-		return "", args
-	}
 	return " WHERE " + strings.Join(conds, " AND "), args
 }
 
 func (s *sqlStore) DiscountPage(ctx context.Context, f DiscountFilter, folderID *uint64, page, perPage int64) ([]DiscountRow, int64, error) {
-	where, args := discountWhere(f)
+	where, args := discountWhere(f, s.now())
 	if folderID != nil {
 		where += andOrWhere(where) + "c.folder_id = ?"
 		args = append(args, *folderID)
@@ -836,7 +860,7 @@ func (s *sqlStore) DiscountPage(ctx context.Context, f DiscountFilter, folderID 
 }
 
 func (s *sqlStore) DiscountFolderCounts(ctx context.Context, f DiscountFilter) ([]FolderCount, error) {
-	where, args := discountWhere(f)
+	where, args := discountWhere(f, s.now())
 	// withCount 的口径：按 folder_id 分组计数，文件夹本身单独排序。
 	query := "SELECT c.folder_id, COUNT(*)" + discountFrom + where
 	if where == "" {
@@ -907,7 +931,7 @@ func (s *sqlStore) DiscountByIDOrCode(ctx context.Context, raw string) (*Discoun
 
 func (s *sqlStore) discountWhere1(ctx context.Context, cond string, arg any) (*DiscountRow, error) {
 	return scanDiscount(s.db.QueryRowContext(ctx,
-		"SELECT "+discountColumns+discountFrom+" WHERE "+cond+" LIMIT 1", arg))
+		"SELECT "+discountColumns+discountFrom+" WHERE "+cond+" AND "+discountNotDeleted+" LIMIT 1", arg))
 }
 
 func (s *sqlStore) DiscountsByIDs(ctx context.Context, ids []uint64) (map[uint64]*DiscountRow, error) {
@@ -925,7 +949,7 @@ func (s *sqlStore) DiscountsByIDs(ctx context.Context, ids []uint64) (map[uint64
 		"SELECT "+discountColumns+" FROM discount_codes c"+
 			" LEFT JOIN users u ON u.id = c.user_id"+
 			" LEFT JOIN plans p ON p.id = c.plan_id"+
-			" WHERE c.id IN ("+strings.Join(marks, ",")+")", args...)
+			" WHERE c.id IN ("+strings.Join(marks, ",")+") AND "+discountNotDeleted, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1043,8 +1067,16 @@ func (s *sqlStore) UpdateDiscount(ctx context.Context, id uint64, in DiscountUpd
 	return err
 }
 
+// DeleteDiscount 软删除：把码置为 status='deleted'，行保留。
+//
+// 为什么不物理删：订单 orders.discount_code_id 逻辑引用着码行（无外键），物理删会让
+// 历史订单「用了哪个码」永远查不到（悬空）。软删后行还在 → 订单可反查码文本；
+// 同时 status='deleted' 在凭码下单的校验里本就不是 'active'，天然买不了。
+// 不用加列/加表（用户要求，控库体积）：只复用既有 status 列，'deleted' 在 varchar(16) 内。
 func (s *sqlStore) DeleteDiscount(ctx context.Context, id uint64) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM discount_codes WHERE id = ?", id)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE discount_codes SET status = 'deleted', updated_at = ? WHERE id = ?",
+		s.now().UTC().Truncate(time.Second), id)
 	return err
 }
 
@@ -1108,7 +1140,8 @@ func (s *sqlStore) DetachCodesFromFolder(ctx context.Context, folderID uint64) e
 
 func (s *sqlStore) DiscountCodesInFolder(ctx context.Context, folderID uint64) ([]DiscountRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+discountColumns+discountFrom+" WHERE c.folder_id = ? ORDER BY c.id DESC", folderID)
+		"SELECT "+discountColumns+discountFrom+" WHERE c.folder_id = ? AND "+discountNotDeleted+
+			" ORDER BY c.id DESC", folderID)
 	if err != nil {
 		return nil, err
 	}

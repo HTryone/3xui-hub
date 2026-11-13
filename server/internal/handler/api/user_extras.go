@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	discountstatus "controlhub-server/internal/discount"
 	"controlhub-server/internal/handler/admin"
 	"controlhub-server/internal/task"
 
@@ -242,7 +243,7 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 		u.ID).Scan(&invitedCount)
 
 	rows, err := e.db.QueryContext(ctx,
-		"SELECT code, status, expires_at FROM discount_codes WHERE user_id = ? AND source = 'redeem' ORDER BY id DESC",
+		"SELECT code, status, expires_at FROM discount_codes WHERE user_id = ? AND source = 'redeem' AND status <> 'deleted' ORDER BY id DESC",
 		u.ID)
 	if err != nil {
 		fail(c, "服务器错误", 500)
@@ -251,15 +252,20 @@ func (e *UserExtras) handleInviteMe(c *gin.Context) {
 	defer rows.Close()
 
 	redeemCodes := make(jsArr, 0, 8)
+	redeemNow := time.Now()
 	for rows.Next() {
 		var code, status string
 		var expiresAt sql.NullTime
 		if err := rows.Scan(&code, &status, &expiresAt); err != nil {
 			continue
 		}
-		if status == "active" && expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
-			status = "expired"
+		// 与后台列表、下单校验同一口径现算有效状态（到点即过期，不靠定时任务回写）。
+		var exp *time.Time
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			exp = &t
 		}
+		status = discountstatus.EffectiveStatus(status, exp, 0, 0, redeemNow)
 		redeemCodes = append(redeemCodes, jo("code", code, "status", status))
 	}
 
