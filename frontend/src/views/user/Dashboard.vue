@@ -131,6 +131,19 @@ const expiredLabel = computed(() => {
   if (!user.value.expired_at) return "永不过期";
   return new Date(user.value.expired_at).toLocaleDateString();
 });
+// 是否已到期（compare against now）。到期后流量被关闭、用量冻结为最后记录。
+const isExpired = computed(() => {
+  if (!user.value.expired_at) return false;
+  return new Date(user.value.expired_at).getTime() <= Date.now();
+});
+// 距到期天数（未到期且 >0 才显示；到期返回 0）
+const daysLeft = computed(() => {
+  if (!user.value.expired_at) return null;
+  const diff = Math.ceil(
+    (new Date(user.value.expired_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+  );
+  return diff > 0 ? diff : 0;
+});
 const planLabel = computed(() => user.value.plan_name || "无套餐");
 
 // 重置倒计时（沿用原显示条件：周期套餐且 >1 月才显示）
@@ -482,6 +495,20 @@ onUnmounted(() => {
   <div class="db uu-slide-up">
     <!-- 流量卡（纯第三方套餐：不显示流量，只显示到期日期） -->
     <section class="db-card uu-mat-regular">
+      <!-- 到期横幅：到期后流量已关闭，引导购买/续费 -->
+      <div v-if="isExpired" class="db-expired-banner">
+        <span class="db-expired-text">
+          <UserIcon name="bell" :size="16" />
+          套餐已到期，购买套餐后恢复
+        </span>
+        <button
+          type="button"
+          class="db-expired-buy uu-press"
+          @click="router.push({ name: 'user-shop' })"
+        >
+          去购买
+        </button>
+      </div>
       <div v-if="!hideTraffic" class="db-traffic-head">
         <div>
           <p class="db-traffic-label">{{ trafficLabel }}</p>
@@ -551,8 +578,12 @@ onUnmounted(() => {
           <span>重置日期：<b>{{ resetDateLabel }}</b></span>
         </div>
         <div class="db-foot-item">
-          <span class="db-foot-dot"></span>
-          <span>到期：<b>{{ expiredLabel }}</b></span>
+          <span class="db-foot-dot" :class="{ 'db-foot-dot--off': !isExpired }"></span>
+          <span>
+            到期：<b>{{ expiredLabel }}</b>
+            <template v-if="isExpired">· 已到期</template>
+            <template v-else-if="daysLeft !== null && daysLeft > 0">（剩 {{ daysLeft }} 天）</template>
+          </span>
         </div>
       </div>
     </section>

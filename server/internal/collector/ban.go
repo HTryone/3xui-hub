@@ -25,27 +25,40 @@ const toggleConcurrency = 6
 //   - 到期 / 超量只关 3x-ui 流量（client enable=false，xray 节点投 rmu）；
 //   - 「无套餐」不在这里处理（既不关流量也不发通知）。
 
-// banReasonDisabled 是 banReason() 返回 'disable' 的 Go 形态（空串 = 无需关闭）。
-const banReasonDisabled = "disable"
-
-// banReasonAt 复刻 BanService::banReason()：返回 "disable"（需要关闭流量）或 ""（正常）。
+// banReason 的返回值（空串 = 无需关闭）。
 //
-// 判定顺序与 PHP 逐条一致，任一条命中即关：
-//  1. 已过期（expired_at < now）；
-//  2. 周期套餐当月超量（monthly_traffic_limit > 0 且已用 ≥ 限额）；
-//  3. 总流量超量（traffic_limit > 0 且已用 ≥ 限额）。
+// 区分「为什么关」而不是笼统一个 "disable"：关闭流量后要按原因发对应的通知，
+// 到期用户不能被误发「流量用尽」（到期有专门的「套餐已到期」通知）。
+const (
+	// banReasonExpired 已过期（到期优先：到期用户即使当月也没满额，也只按到期处理）。
+	banReasonExpired = "expired"
+	// banReasonQuota 超量（周期套餐当月超量或总流量超量）。
+	banReasonQuota = "quota"
+	// banReasonDisabled 旧常量保留给历史引用，等价「需要关闭」的任意非空值。
+	banReasonDisabled = "disable"
+)
+
+// banReasonAt 复刻 BanService::banReason()：返回关闭原因（非空）或 ""（正常）。
+//
+// 判定顺序（到期优先，命中即返回）：
+//  1. 已过期（expired_at < now）→ banReasonExpired；
+//  2. 周期套餐当月超量（monthly_traffic_limit > 0 且已用 ≥ 限额）→ banReasonQuota；
+//  3. 总流量超量（traffic_limit > 0 且已用 ≥ 限额）→ banReasonQuota。
+//
+// 「到期优先」保证：一个既到期又超量的用户只归因为到期，只发「套餐已到期」一封，
+// 不再叠加「流量用尽」。
 //
 // 永不返回「封号」：只有管理员手动封禁才写 enabled=false。
 // now 显式传入（不取 time.Now），保证「同一轮扫描用同一个时钟」且测试可复现。
 func banReasonAt(u userRow, now time.Time) string {
 	if u.ExpiredAt.Valid && u.ExpiredAt.Time.Before(now) {
-		return banReasonDisabled
+		return banReasonExpired
 	}
 	if u.PlanID.Valid && u.MonthlyLimit > 0 && u.MonthlyTrafficUsed >= u.MonthlyLimit {
-		return banReasonDisabled
+		return banReasonQuota
 	}
 	if u.PlanID.Valid && u.TrafficLimit > 0 && u.TrafficUsed >= u.TrafficLimit {
-		return banReasonDisabled
+		return banReasonQuota
 	}
 	return ""
 }
@@ -284,7 +297,7 @@ func (c *Collector) toggleClient(ctx context.Context, userID int64, enable, book
 		return out, nil
 	}
 
-	// 关闭确认：写 traffic_disabled_at。
+	// 关闭成功：写 traffic_disabled_at。
 	if _, err := c.db.ExecContext(ctx,
 		"UPDATE users SET traffic_disabled_at = ?, updated_at = ? WHERE id = ?",
 		dbDateTime(c.now()), dbDateTime(c.now()), userID); err != nil {
@@ -293,6 +306,9 @@ func (c *Collector) toggleClient(ctx context.Context, userID int64, enable, book
 
 	// 流量用尽通知（对齐 BanService::notifyTrafficExhausted）：挂在「关闭成功」这个动作上。
 	//
+	// ⚠️ 只有「超量」才发，到期不发 —— 到期有专门的「套餐已到期」通知（定时扫描 scanExpired）。
+	// 不区分原因的话，整点到期那一刻会同时命中「套餐已到期」和「流量用尽」，用户一秒收两封。
+	//
 	// 这里不是天然的单次触发点 —— 超时用户每 ban.recheck_after_hours 小时会被重关一次，
 	// 防重靠 mail_notify:{scene}:{who} 标记（同一收件人同一场景只发一封）；
 	// 重置/续费/改套餐后由 restoreReminders 解锁，下次用尽再发。
@@ -300,9 +316,25 @@ func (c *Collector) toggleClient(ctx context.Context, userID int64, enable, book
 	return out, nil
 }
 
-// notifyTrafficExhausted 关闭流量后发「流量已用尽」通知（开关未开 / 已发过时静默跳过）。
+// notifyTrafficExhausted 关闭流量后按原因发通知：
+//   - 超量（quota）→ 发「流量已用尽」；
+//   - 到期（expired）→ **不发**（到期通知由 scanExpired 定时任务负责，避免重复）；
+//   - 其它 / 读不到 → 保守不发。
+//
+// 开关未开 / 已发过时静默跳过。发信失败绝不冒泡打断封禁流程。
 func (c *Collector) notifyTrafficExhausted(ctx context.Context, userID int64) {
 	if c.notifier == nil {
+		return
+	}
+	u, err := c.loadUser(ctx, userID)
+	if err != nil || u == nil {
+		if err != nil {
+			c.logf_("流量用尽通知前读用户失败（user=%d）: %v", userID, err)
+		}
+		return
+	}
+	if banReasonAt(*u, c.now()) != banReasonQuota {
+		// 到期或其它原因：不发「流量用尽」（到期另有通知）。
 		return
 	}
 	if err := c.notifier.NotifyScene(ctx, "traffic_exhausted", userID); err != nil {

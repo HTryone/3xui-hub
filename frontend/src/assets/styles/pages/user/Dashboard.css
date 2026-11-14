@@ -26,6 +26,41 @@
 }
 
 /* ===== 流量卡 ===== */
+/* 到期横幅：到期后流量已关闭，红底提示并给「去购买」入口 */
+.db-expired-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--red-t);
+  border: 1px solid rgba(255, 69, 58, 0.35);
+}
+.db-expired-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--red);
+  min-width: 0;
+}
+.db-expired-text svg {
+  flex-shrink: 0;
+}
+.db-expired-buy {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 12px;
+  background: var(--red);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+}
+
 .db-traffic-head {
   display: flex;
   align-items: flex-start;
@@ -180,6 +215,10 @@
   border-radius: 999px;
   background: var(--red);
   flex-shrink: 0;
+}
+/* 未到期：红点转灰（只有到期才用红色强调） */
+.db-foot-dot--off {
+  background: var(--lbl3);
 }
 
 /* ===== 订阅管理 ===== */

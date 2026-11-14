@@ -13,6 +13,9 @@ import (
 //   - **只清已用流量**（monthly_traffic_used），next_traffic_reset_at += 30 天；
 //   - 不动套餐时长 / 额度：traffic_limit、expired_at 一律不碰；
 //   - 仅「绑定 period 套餐 + next_traffic_reset_at 非空且 ≤ now」的用户参与；
+//   - **已到期用户不参与**：到期后用量就是「最后使用记录」，不能来一次月重置把它清零
+//     （否则到期当天仪表盘显示「0 B / 95GB」，和「已到期、流量已关闭」自相矛盾）。
+//     续费/购买时走正常流程按新套餐清零，不需要这条定时任务替他清。
 //   - 重置后重置 3x-ui 计数并重新打开流量（用户从新周期开始即可用）。
 //
 // 「管理员手动重置」「用户购买重置」是另外两条入口（P8a/支付），口径同样是「只清零已用」，
@@ -53,8 +56,9 @@ func (c *Collector) MonthlyReset(ctx context.Context) (MonthlyResetResult, error
 	rows, err := c.db.QueryContext(ctx,
 		"SELECT u.id, u.next_traffic_reset_at FROM users u JOIN plans p ON p.id = u.plan_id "+
 			"WHERE u.plan_id IS NOT NULL AND u.next_traffic_reset_at IS NOT NULL "+
-			"AND u.next_traffic_reset_at <= ? AND p.type = 'period' ORDER BY u.id",
-		dbDateTime(now))
+			"AND u.next_traffic_reset_at <= ? AND p.type = 'period' "+
+			"AND (u.expired_at IS NULL OR u.expired_at > ?) ORDER BY u.id",
+		dbDateTime(now), dbDateTime(now))
 	if err != nil {
 		return out, fmt.Errorf("查询待重置用户失败: %w", err)
 	}
