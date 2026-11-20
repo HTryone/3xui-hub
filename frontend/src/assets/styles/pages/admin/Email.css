@@ -74,7 +74,13 @@ html.dark .email-warn-note { color: #fbbf24; }
 @media (max-width: 640px) { .email-grid, .email-grid--3 { grid-template-columns: 1fr; } }
 .email-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); display: block; margin-bottom: var(--space-1); }
 
-.email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); }
+.email-hint { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+/* 注册邮箱域名策略块：与上方开关留出间隔；黑名单段单独留白，避免两段粘在一起 */
+.email-domain-policy { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border-subtle); }
+.email-domain-gap { margin-top: var(--space-4); }
+/* 行内文字按钮：用于「填入常用邮箱」，不抢主按钮视觉权重 */
+.email-link-btn { background: none; border: none; padding: 0; color: var(--accent); font-size: var(--text-xs); cursor: pointer; text-decoration: underline; }
+.email-link-btn:hover { opacity: .85; }
 .email-hint code { background: var(--bg-hover); padding: 0 4px; border-radius: var(--radius-sm); font-size: var(--text-xs); }
 /* 「全部」发送方式的说明：单独一行纯文字，正常换行 */
 .email-all-note { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.7; margin: 0; }

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="email-page">
     <div class="email-head">
       <h1 class="ch-page-title-semi">邮箱配置</h1>
@@ -32,6 +32,39 @@
 
       </div>
       <p class="email-hint"><Badge variant="info">提示</Badge> 开启后，用户注册将通过邮箱接收验证码，关闭则使用图形验证码。</p>
+
+      <!-- 注册邮箱域名策略：白名单 / 黑名单。两个都空 = 不限制（行为同以前）。 -->
+      <div class="email-domain-policy">
+        <div class="email-switch-row">
+          <span class="email-switch-label">邮箱域名白名单</span>
+          <span class="email-switch-hint">{{ form.register_email_allowed_domains ? '仅允许名单内域名' : '不限制' }}</span>
+        </div>
+        <Input
+          v-model="form.register_email_allowed_domains"
+          placeholder="qq.com,163.com,gmail.com,outlook.com"
+          mono
+        />
+        <p class="email-hint">
+          <Badge variant="info">说明</Badge>
+          逗号分隔，<b>子域自动匹配</b>（填 <code>qq.com</code> 即含 <code>vip.qq.com</code>）。
+          留空 = 不限制。用于挡住一次性 / 临时邮箱（如 euploading.com）。
+          <button type="button" class="email-link-btn" @click="fillDefaultDomains">填入常用邮箱</button>
+        </p>
+
+        <div class="email-switch-row email-domain-gap">
+          <span class="email-switch-label">邮箱域名黑名单</span>
+          <span class="email-switch-hint">{{ form.register_email_blocked_domains ? '名单内一律拒绝' : '未启用' }}</span>
+        </div>
+        <Input
+          v-model="form.register_email_blocked_domains"
+          placeholder="mailinator.com,euploading.com,smtp.is"
+          mono
+        />
+        <p class="email-hint">
+          <Badge variant="warning">注意</Badge>
+          <b>优先于白名单</b>：命中即拒，防止误把一次性域名加进白名单时被放行。留空 = 未启用。
+        </p>
+      </div>
     </Card>
 
       <!-- 其余卡片（发送测试/SMTP/模板/批量发信）两栏均分，归「设置」Tab，仍受邮箱验证开关控制 -->
@@ -688,6 +721,9 @@ const form = ref({
   smtp_password: '',
   smtp_from_name: 'ControlHub',
   register_email_verify: false,
+  // 注册邮箱域名策略：白名单空=不限制；黑名单空=未启用（黑名单优先于白名单）
+  register_email_allowed_domains: '',
+  register_email_blocked_domains: '',
   email_template: '',
   // 发信速度限制（「限制」页配置，批量与定时共用）
   mail_rate_limit_enabled: false,
@@ -714,6 +750,19 @@ const testTo = ref('')
 // 点眼睛就会让 JSON 快照变化，触发一次毫无意义的自动保存。
 const smtpPwdVisible = ref(false)
 const loading = ref(false)
+
+// 常用邮箱基线：与后端 api 包 defaultAllowedEmailDomains 同一份口径。
+// 「填入常用邮箱」只在输入框为空或用户明确点击时覆盖，不做隐式默认值 ——
+// 隐式默认会让「本来想不限」的站点被静默收紧成白名单。
+const DEFAULT_ALLOWED_DOMAINS =
+  'qq.com,vip.qq.com,foxmail.com,163.com,126.com,yeah.net,188.com,' +
+  'sina.com,sina.cn,sohu.com,139.com,189.cn,aliyun.com,' +
+  'gmail.com,googlemail.com,outlook.com,hotmail.com,live.com,msn.com,' +
+  'icloud.com,me.com,yahoo.com,protonmail.com,proton.me'
+
+const fillDefaultDomains = () => {
+  form.value.register_email_allowed_domains = DEFAULT_ALLOWED_DOMAINS
+}
 // 读取已存的邮件配置（老 UI 行为：读失败不阻塞页面）。
 // 不做「加载失败就禁用保存」的前端门禁——后端 save() 已挡空值覆盖，
 // 前端再拦一层只会误伤正常操作。
